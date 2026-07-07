@@ -47,7 +47,7 @@ loadIndividualExtension("en", "miruro")
 
 ## Structure
 
-- `src/<lang>/<source>/build.gradle.kts` – extension metadata in the `yuzono { }` block (`name`, `versionCode`, `contentWarning`, `libVersion`, optional `theme`, `torrent`, `deeplink { }`) and one `source { }` block per source (`lang`, `baseUrl` – static `baseUrl = "…"`, `baseUrl("…") { mirrors = listOf(…) }` or `baseUrl("…") { withCustom = true }` – and optional `name`, `id`, `versionId`). The source class is `@Source abstract class` with no `lang`/`id`/`versionId` overrides, which KSP rejects; it may override `name`, or `baseUrl` over a static `baseUrl`, and codegen then skips that property, but this is discouraged. KSP generates `ExtensionGenerated` from the blocks (`CONTRIBUTING.md#source-declaration`). Only `src/all/jellyfin` and `src/all/streamingcommunity` still use the legacy `className`
+- `src/<lang>/<source>/build.gradle.kts` – extension metadata in the `yuzono { }` block (`name`, `versionCode`, `contentWarning`, `libVersion`, optional `theme`, `torrent`, `deeplink { }`) and one `source { }` block per source (`lang`, `baseUrl` – static `baseUrl = "…"`, `baseUrl { mirrors("…", …) }` (or `mirrors("label" to "…", …)` for labeled entries) or `baseUrl { custom("…") }` – and optional `name`, `id`, `versionId`). The source class is `@Source abstract class` with no `lang`/`id`/`versionId` overrides, which KSP rejects; it may override `name`, or `baseUrl` over a static `baseUrl`, and codegen then skips that property, but this is discouraged. KSP generates `ExtensionGenerated` from the blocks (`CONTRIBUTING.md#source-declaration`). Only `src/all/jellyfin` and `src/all/streamingcommunity` still use the legacy `className`
 - `src/<lang>/<source>/src/eu/kanade/tachiyomi/animeextension/<lang>/<source>/` – source code (package must match)
 - `lib-multisrc/<theme>/build.gradle.kts` – theme base (`alias(kei.plugins.multisrc)`, `yuzono { baseVersionCode; libVersion; deeplink { } }`)
 - `lib-multisrc/<theme>/src/.../multisrc/<theme>/` – abstract theme class `extends AnimeHttpSource`
@@ -77,8 +77,8 @@ See `CONTRIBUTING.md` for full rules. Critical for agents:
 - Many overloads use Kotlin **context parameters** (`context(source: AnimeHttpSource)`). Inside a
   class that *is* an `AnimeHttpSource` the implicit receiver satisfies them, so `client.get(url)` and
   `.addCookie("k" to "v")` work with no `with(...)` wrapper and pick up `headers`/`baseUrl`.
-- Mirror lists and user-editable base URLs belong in `source { baseUrl("…") { mirrors = listOf(…) } }` /
-  `{ withCustom = true }`, not in hand-written preferences. The generated `baseUrl` reads a preference
+- Mirror lists and user-editable base URLs belong in `source { baseUrl { mirrors(…) } }` /
+  `baseUrl { custom(…) }`, not in hand-written preferences. The generated `baseUrl` reads a preference
   holder that the generated subclass creates, so it throws while the `@Source` class or its theme is
   constructed: never read `baseUrl` (or `headers` that add a `Referer`) in a property initializer or
   `init` block – use a getter or `by lazy`. Build what depends on it at use (a getter), as `docHeaders`

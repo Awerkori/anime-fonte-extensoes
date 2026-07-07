@@ -10,8 +10,9 @@ yuzono {
 
     source {
         lang = "en"
-        baseUrl("https://kisskh.ovh") {
-            mirrors = listOf(
+        baseUrl {
+            mirrors(
+                "https://kisskh.ovh",
                 "https://kisskh.do",
                 "https://kisskh.co",
                 "https://kisskh.id",

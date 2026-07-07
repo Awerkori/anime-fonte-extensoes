@@ -10,8 +10,13 @@ yuzono {
 
     source {
         lang = "ru"
-        baseUrl("https://animelib.org/ru") {
-            mirrors = listOf("https://v3.animelib.org/ru", "https://v4.animelib.org/ru", "https://v5.animelib.org/ru")
+        baseUrl {
+            mirrors(
+                "https://animelib.org/ru",
+                "https://v3.animelib.org/ru",
+                "https://v4.animelib.org/ru",
+                "https://v5.animelib.org/ru",
+            )
         }
     }
 }

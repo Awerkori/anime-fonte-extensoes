@@ -406,18 +406,29 @@ source {
 }
 ```
 
-**Mirrors**, where the user picks one URL from a list. The URL passed to `baseUrl(...)` is the default, and the picker
-shows each mirror's host:
+**Mirrors**, where the user picks one URL from a list:
 
 ```kotlin
 source {
     lang = "en"
-    baseUrl("https://example.com") {
-        mirrors = listOf(
+    baseUrl {
+        mirrors(
+            "https://example.com",
             "https://mirror1.com",
             "https://mirror2.com",
         )
     }
+}
+```
+
+The first url is the default; each mirror's host is shown in the picker. To show custom labels instead, pass `"label" to "url"` pairs — either all urls are naked or all are labeled, not a mix:
+
+```kotlin
+baseUrl {
+    mirrors(
+        "Main" to "https://example.com",
+        "Mirror" to "https://mirror1.com",
+    )
 }
 ```
 
@@ -426,8 +437,8 @@ source {
 ```kotlin
 source {
     lang = "en"
-    baseUrl("https://example.com") {
-        withCustom = true
+    baseUrl {
+        custom("https://example.com")
     }
 }
 ```
@@ -438,7 +449,7 @@ preferences, calling `super.setupPreferenceScreen(screen)` when your class alrea
 the default URL changes in an update. Their titles are translated in `core/translations/strings.json`.
 
 > [!IMPORTANT]
-> When using `mirrors` or `withCustom`, **do not** add your own domain preference or read one from `SharedPreferences`:
+> When using `mirrors(...)` or `custom(...)`, **do not** add your own domain preference or read one from `SharedPreferences`:
 > the generated code handles it, and doing both creates duplicate preferences.
 >
 > The generated `baseUrl` reads a preference that the generated subclass creates, so it is not available while your
@@ -1188,7 +1199,7 @@ open class UriPartFilter(displayName: String, private val vals: Array<Pair<Strin
 
 #### Configurable Sources and Preferences
 
-- **Mirrors and custom URLs:** Declare a mirror list or a user-editable base URL with `mirrors` or `withCustom` in the `source {}` block (see [baseUrl modes](#baseurl-modes)) instead of writing the preference yourself. The generated preferences store the mirror index, clamp it when mirrors are removed, and reset a custom URL when the default changes.
+- **Mirrors and custom URLs:** Declare a mirror list or a user-editable base URL with `mirrors(...)` or `custom(...)` in the `source {}` block (see [baseUrl modes](#baseurl-modes)) instead of writing the preference yourself. The generated preferences store the mirror index, clamp it when mirrors are removed, and reset a custom URL when the default changes.
 - **Base URL getter:** If the class still computes `baseUrl` from its own preferences (by overriding `baseUrl`, for example to follow a domain redirect), use a custom getter (e.g., `override val baseUrl: String get() = ...`) instead of `by lazy`. Using `by lazy` requires the user to restart the app for the domain change to take effect.
 
 #### URL intent filter
