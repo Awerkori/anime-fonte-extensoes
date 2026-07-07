@@ -26,7 +26,6 @@ or fixing it directly by submitting a Pull Request.
       - [Declare sources in build.gradle.kts](#declare-sources-in-buildgradlekts)
       - [baseUrl modes](#baseurl-modes)
       - [Multiple sources from one class](#multiple-sources-from-one-class)
-      - [Keeping name and baseUrl in the class](#keeping-name-and-baseurl-in-the-class)
     - [Core dependencies](#core-dependencies)
       - [Extension API](#extension-api)
       - [lib tools](#lib-tools)
@@ -45,6 +44,7 @@ or fixing it directly by submitting a Pull Request.
         - [Filter helpers - `firstInstance` / `firstInstanceOrNull`](#filter-helpers---firstinstance--firstinstanceornull)
         - [Next.js data extraction - `extractNextJs` / `extractNextJsRsc`](#nextjs-data-extraction---extractnextjs--extractnextjsrsc)
         - [Extracting URLs - `setUrlWithoutDomain` + `absUrl`](#extracting-urls---seturlwithoutdomain--absurl)
+        - [GraphQL Requests - `graphQLPost` / `parseGraphQLAs`](#graphql-requests---graphqlpost--parsegraphqlas)
       - [Additional dependencies](#additional-dependencies)
     - [Extension main class](#extension-main-class)
       - [Main class key variables](#main-class-key-variables)
@@ -333,7 +333,8 @@ your source class. The build uses KSP to generate a subclass of it, `ExtensionGe
 
 #### Annotate your source class
 
-Add `@Source` to your main class, make it `abstract`, and don't declare `name`, `lang`, `id`, `versionId` or `baseUrl`:
+Add `@Source` to your main class, make it `abstract`, and don't declare `name`, `lang`, `id`, `versionId` or `baseUrl`
+(except the discouraged `name`/`baseUrl` overrides described under [the table below](#declare-sources-in-buildgradlekts)):
 
 ```kotlin
 import keiyoushi.annotation.Source
@@ -356,7 +357,8 @@ Each module has exactly one `@Source` class. If it extends `keiyoushi.utils.Sour
 | `baseUrl`     | The source's base URL. See [baseUrl modes](#baseurl-modes) below.                                                                                                                      |
 | `id`          | Explicit source ID, written as a `Long` (`id = 1234L`). Optional; computed from `name`, `lang` and `versionId` when omitted. Set it when renaming a source to keep users' libraries. |
 | `versionId`   | Seed used to compute `id`. Defaults to `1`. Only bump it if the source's URL structure fundamentally changes and old entries can no longer be redirected.                              |
-| `skipCodeGen` | Optional. Leaves `name`, `lang`, `id` and `baseUrl` to the class. See [Keeping name and baseUrl in the class](#keeping-name-and-baseurl-in-the-class).                                 |
+
+A source class may compute `name` and/or `baseUrl` itself by declaring `override val name` / `override val baseUrl`; codegen detects the override and skips generating that property (the DSL value is then used only for metadata such as the repo index and deeplink hosts). **This is discouraged** — prefer letting the DSL own `name` and `baseUrl`, and only override them in the source class when you have a very specific reason. `baseUrl` may only be overridden when the DSL declares a plain static `baseUrl` — the `mirrors`/`custom` modes generate preference infrastructure and cannot be hand-overridden. `id` and `lang` are always owned by the DSL; overriding them in the source class is an error.
 
 #### baseUrl modes
 
@@ -435,21 +437,6 @@ yuzono {
 
 Anything that used to be a constructor parameter is derived from `name` or `lang` in the class, for example
 `private val siteLang get() = when (lang) { ... }`.
-
-#### Keeping name and baseUrl in the class
-
-When the class must compute these values itself, for example a `baseUrl` that follows the site's redirects to a new
-domain, set `skipCodeGen = true`. The generated class then adds nothing, and the class declares `name`, `lang`,
-`baseUrl` and, when it differs from the computed one, `id`. Keep the `source {}` values in step with the class: they are
-still used for the deeplink hosts. `skipCodeGen` only works with a single `source {}` block and a static `baseUrl`.
-
-```kotlin
-source {
-    lang = "fr"
-    baseUrl = "https://example.com"
-    skipCodeGen = true
-}
-```
 
 ### Core dependencies
 
@@ -1167,7 +1154,7 @@ open class UriPartFilter(displayName: String, private val vals: Array<Pair<Strin
 #### Configurable Sources and Preferences
 
 - **Mirrors and custom URLs:** Declare a mirror list or a user-editable base URL with `mirrors` or `withCustom` in the `source {}` block (see [baseUrl modes](#baseurl-modes)) instead of writing the preference yourself. The generated preferences store the mirror index, clamp it when mirrors are removed, and reset a custom URL when the default changes.
-- **Base URL getter:** If the class still computes `baseUrl` from its own preferences (with `skipCodeGen`, for example to follow a domain redirect), use a custom getter (e.g., `override val baseUrl: String get() = ...`) instead of `by lazy`. Using `by lazy` requires the user to restart the app for the domain change to take effect.
+- **Base URL getter:** If the class still computes `baseUrl` from its own preferences (by overriding `baseUrl`, for example to follow a domain redirect), use a custom getter (e.g., `override val baseUrl: String get() = ...`) instead of `by lazy`. Using `by lazy` requires the user to restart the app for the domain change to take effect.
 
 #### URL intent filter
 

@@ -48,10 +48,6 @@ abstract class AnimeSama :
     AnimeHttpLegacySource(),
     ConfigurableAnimeSource {
 
-    override val name = "Anime-Sama"
-
-    override val lang = "fr"
-
     override val supportsLatest = true
 
     private val preferences by getPreferencesLazy()

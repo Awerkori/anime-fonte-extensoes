@@ -11,6 +11,5 @@ yuzono {
     source {
         lang = "ru"
         baseUrl = "https://hdrezka.me"
-        skipCodeGen = true
     }
 }

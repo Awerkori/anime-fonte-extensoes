@@ -11,6 +11,5 @@ yuzono {
     source {
         lang = "en"
         baseUrl = "https://uhdmovies.vip"
-        skipCodeGen = true
     }
 }

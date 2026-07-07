@@ -12,7 +12,6 @@ yuzono {
     source {
         lang = "all"
         baseUrl = "https://app.strem.io/shell-v4.4"
-        skipCodeGen = true
     }
 }
 

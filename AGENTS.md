@@ -47,7 +47,7 @@ loadIndividualExtension("en", "miruro")
 
 ## Structure
 
-- `src/<lang>/<source>/build.gradle.kts` – extension metadata in the `yuzono { }` block (`name`, `versionCode`, `contentWarning`, `libVersion`, optional `theme`, `torrent`, `deeplink { }`) and one `source { }` block per source (`lang`, `baseUrl` – static `baseUrl = "…"`, `baseUrl("…") { mirrors = listOf(…) }` or `baseUrl("…") { withCustom = true }` – and optional `name`, `id`, `versionId`, `skipCodeGen`). The source class is `@Source abstract class` with no `name`/`lang`/`id`/`baseUrl` overrides; KSP generates `ExtensionGenerated` from the blocks (`CONTRIBUTING.md#source-declaration`). Only `src/all/jellyfin` and `src/all/streamingcommunity` still use the legacy `className`
+- `src/<lang>/<source>/build.gradle.kts` – extension metadata in the `yuzono { }` block (`name`, `versionCode`, `contentWarning`, `libVersion`, optional `theme`, `torrent`, `deeplink { }`) and one `source { }` block per source (`lang`, `baseUrl` – static `baseUrl = "…"`, `baseUrl("…") { mirrors = listOf(…) }` or `baseUrl("…") { withCustom = true }` – and optional `name`, `id`, `versionId`). The source class is `@Source abstract class` with no `lang`/`id`/`versionId` overrides, which KSP rejects; it may override `name`, or `baseUrl` over a static `baseUrl`, and codegen then skips that property, but this is discouraged. KSP generates `ExtensionGenerated` from the blocks (`CONTRIBUTING.md#source-declaration`). Only `src/all/jellyfin` and `src/all/streamingcommunity` still use the legacy `className`
 - `src/<lang>/<source>/src/eu/kanade/tachiyomi/animeextension/<lang>/<source>/` – source code (package must match)
 - `lib-multisrc/<theme>/build.gradle.kts` – theme base (`alias(kei.plugins.multisrc)`, `yuzono { baseVersionCode; libVersion; deeplink { } }`)
 - `lib-multisrc/<theme>/src/.../multisrc/<theme>/` – abstract theme class `extends AnimeHttpSource`
@@ -83,8 +83,9 @@ See `CONTRIBUTING.md` for full rules. Critical for agents:
   constructed: never read `baseUrl` (or `headers` that add a `Referer`) in a property initializer or
   `init` block – use a getter or `by lazy`. Build what depends on it at use (a getter), as `docHeaders`
   does in `lib-multisrc/anikototheme/.../AnikotoTheme.kt`, so a mirror change applies at once.
-- A source that owns a preference-backed `baseUrl` itself (`skipCodeGen = true` plus `override var
-  baseUrl`, e.g. to follow a domain redirect) must rebuild everything derived from it when it changes.
+- A source that owns a preference-backed `baseUrl` itself (`override var baseUrl` over a static
+  `baseUrl` in its `source { }` block, e.g. to follow a domain redirect) must rebuild everything derived
+  from it when it changes.
   Use `keiyoushi.utils.LazyMutable` (a read/write lazy delegate) and reassign it in the setter – a plain
   `by lazy` keeps serving the stale value. See `src/fr/animesama`.
 - Do not eagerly initialize `client` in a theme base class: the initializer runs before subclass

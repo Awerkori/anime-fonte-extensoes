@@ -11,6 +11,5 @@ yuzono {
     source {
         lang = "all"
         baseUrl = ""
-        skipCodeGen = true
     }
 }
