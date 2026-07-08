@@ -78,11 +78,11 @@ See `CONTRIBUTING.md` for full rules. Critical for agents:
   class that *is* an `AnimeHttpSource` the implicit receiver satisfies them, so `client.get(url)` and
   `.addCookie("k" to "v")` work with no `with(...)` wrapper and pick up `headers`/`baseUrl`.
 - Mirror lists and user-editable base URLs belong in `source { baseUrl { mirrors(…) } }` /
-  `baseUrl { custom(…) }`, not in hand-written preferences. The generated `baseUrl` reads a preference
-  holder that the generated subclass creates, so it throws while the `@Source` class or its theme is
-  constructed: never read `baseUrl` (or `headers` that add a `Referer`) in a property initializer or
-  `init` block – use a getter or `by lazy`. Build what depends on it at use (a getter), as `docHeaders`
-  does in `lib-multisrc/anikototheme/.../AnikotoTheme.kt`, so a mirror change applies at once.
+  `baseUrl { custom(…) }`, not in hand-written preferences. The generated `baseUrl` reads that setting on
+  every access, so a value read once – in a property initializer or `init` block, including `headers`
+  that add a `Referer` – keeps the old mirror until the app restarts. Build what depends on it at use (a
+  getter), as `docHeaders` does in `lib-multisrc/anikototheme/.../AnikotoTheme.kt`, so a mirror change
+  applies at once.
 - A source that owns a preference-backed `baseUrl` itself (`override var baseUrl` over a static
   `baseUrl` in its `source { }` block, e.g. to follow a domain redirect) must rebuild everything derived
   from it when it changes.

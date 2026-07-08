@@ -452,10 +452,9 @@ the default URL changes in an update. Their titles are translated in `core/trans
 > When using `mirrors(...)` or `custom(...)`, **do not** add your own domain preference or read one from `SharedPreferences`:
 > the generated code handles it, and doing both creates duplicate preferences.
 >
-> The generated `baseUrl` reads a preference that the generated subclass creates, so it is not available while your
-> class (or its theme) is being constructed. Don't read `baseUrl`, or `headers` built from it, in a property initializer
-> or an `init` block: use a getter (`private val apiUrl get() = "$baseUrl/api"`) or `by lazy` instead. A getter also
-> picks up a new mirror at once, while anything built once keeps the old one until the app restarts.
+> The generated `baseUrl` reads the setting on every access. Anything built from it once, in a property initializer or
+> an `init` block, keeps the URL the source had when it was created until the app restarts, so build it in a getter
+> instead (`private val apiUrl get() = "$baseUrl/api"`): a getter picks up a new mirror at once.
 
 #### Multiple sources from one class
 
@@ -1398,8 +1397,8 @@ When no `host()` is specified in a theme `deeplink {}` block, the host is resolv
 The main class of the theme (e.g., `<ThemeName>.kt`) contains the default implementation for the source sites. It should be declared as an `abstract class` extending `AnimeHttpSource`, allowing individual extensions to inherit and override its properties and methods.
 
 `name`, `lang`, `id` and `baseUrl` come from each extension's `source {}` block, so the theme neither takes them as
-constructor parameters nor overrides them. The theme only reads them, and not while it is being constructed (see
-[baseUrl modes](#baseurl-modes)).
+constructor parameters nor overrides them. The theme only reads them, preferably in getters so a mirror change applies
+at once (see [baseUrl modes](#baseurl-modes)).
 
 ```kotlin
 package eu.kanade.tachiyomi.multisrc.<theme_name>
