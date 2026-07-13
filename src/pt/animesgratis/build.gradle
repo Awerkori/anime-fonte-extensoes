@@ -3,7 +3,7 @@ ext {
     extClass = '.TopAnimes'
     themePkg = 'dooplay'
     baseUrl = 'https://topanimes.net'
-    overrideVersionCode = 33
+    overrideVersionCode = 34
     isNsfw = false
 }
 
