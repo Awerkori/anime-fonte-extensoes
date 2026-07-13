@@ -1,223 +1,147 @@
 package eu.kanade.tachiyomi.animeextension.pt.animeito.extractors
 
 import android.util.Base64
+import android.util.Log
 import aniyomi.lib.playlistutils.PlaylistUtils
 import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.awaitSuccess
 import keiyoushi.utils.useAsJsoup
 import okhttp3.Headers
-import okhttp3.HttpUrl.Companion.toHttpUrl
-import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
-import org.json.JSONArray
-import org.json.JSONObject
 
 class AnimeItoExtractor(private val client: OkHttpClient, private val headers: Headers) {
+    private val tag = javaClass.simpleName
     private val playlistUtils by lazy { PlaylistUtils(client, headers) }
-    private val sourceUserAgent by lazy { headers["User-Agent"] ?: DEFAULT_USER_AGENT }
-    private val videoHeaders by lazy {
-        Headers.Builder()
-            .set("User-Agent", sourceUserAgent)
-            .set("Accept", "video/webm,video/ogg,video/*;q=0.9,application/ogg;q=0.7,audio/*;q=0.6,*/*;q=0.5")
-            .set("Accept-Language", "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7")
-            .set("Accept-Encoding", "identity")
-            .set("Sec-Fetch-Dest", "video")
-            .set("Sec-Fetch-Mode", "no-cors")
-            .set("Sec-Fetch-Site", "cross-site")
-            .set("Priority", "u=4")
-            .set("Pragma", "no-cache")
-            .set("Cache-Control", "no-cache")
-            .build()
-    }
+    private val arraySepRegex = Regex("""\],\s*\[""")
+    private val keySepRegex = Regex("""\],\s*"""")
+    private val stringsRegex = Regex("\"([^\"]*?)\"")
 
     suspend fun videosFromUrl(url: String): List<Video> {
         val playerDoc = client.newCall(GET(url, headers)).awaitSuccess().useAsJsoup()
-        val script = playerDoc.selectFirst("script:containsData(atob):containsData(charCodeAt)")
-            ?.data()
-            ?.let(::extractXorObfuscatedPayload)
-            ?: return emptyList()
-        val (parentOrigin, token) = extractPlayerDataToken(script)
-            ?: return emptyList()
-        val sources = fetchFreshSources(url, parentOrigin, token)
 
-        return sources.toVideos(url)
-    }
-
-    private suspend fun List<Source>.toVideos(referer: String): List<Video> = flatMap { source ->
-        if (source.isHls()) {
-            playlistUtils.extractFromHls(
-                source.file,
-                referer = referer,
-                videoNameGen = { "Animei.to - $it" },
-            )
+        val encodedScript = playerDoc.selectFirst("script:containsData(TextDecoder)")?.data()
+        val script = if (encodedScript != null) {
+            Log.d(tag, "TextDecoder script found, length=${encodedScript.length}")
+            decodeTextDecoderScript(encodedScript).takeIf { it.isNotEmpty() }
         } else {
-            listOf(
-                Video(
-                    url = source.file,
-                    quality = "Animei.to - ${source.label}",
-                    videoUrl = source.file,
-                    headers = videoHeaders,
-                ),
-            )
-        }
-    }
-        .distinctBy { it.videoUrl }
-        .sortedByDescending { it.qualityValue() }
-
-    private fun extractXorObfuscatedPayload(script: String): String? {
-        val stringsArrayStart = XOR_FUNC_CALL_REGEX.find(script)?.range?.last
-            ?: return null
-        val stringsArray = script.extractBalanced(stringsArrayStart, '[', ']')
-            ?: return null
-        val indicesArrayStart = script.indexOf('[', stringsArrayStart + stringsArray.length)
-            .takeIf { it != -1 }
-            ?: return null
-        val indicesArray = script.extractBalanced(indicesArrayStart, '[', ']')
-            ?: return null
-        val xorKeyBase64 = XOR_KEY_REGEX.find(script, indicesArrayStart + indicesArray.length)
-            ?.groupValues
-            ?.get(1)
-            ?: return null
-
-        val strings = STRING_LITERAL_REGEX.findAll(stringsArray).map { it.groupValues[1] }.toList()
-        val indices = INTEGER_REGEX.findAll(indicesArray).map { it.value.toInt() }.toList()
-        val joinedBase64 = indices.joinToString("") { strings[it] }
-        val decodedPayload = Base64.decode(joinedBase64, Base64.DEFAULT)
-        val xorKey = Base64.decode(xorKeyBase64, Base64.DEFAULT)
-
-        val decrypted = ByteArray(decodedPayload.size) { index ->
-            (decodedPayload[index].toInt() xor xorKey[index % xorKey.size].toInt()).toByte()
+            null
+        } ?: run {
+            Log.w(tag, "TextDecoder script not found, falling back to const player")
+            playerDoc.selectFirst("script:containsData(const player)")?.data()
+                ?: return emptyList<Video>().also { Log.e(tag, "No const player script found") }
         }
 
-        return String(decrypted, Charsets.UTF_8)
-    }
+        Log.d(tag, "Script type: ${if ("googlevideo" in script) "direct" else "hls"}")
 
-    private suspend fun fetchFreshSources(
-        playerUrl: String,
-        parentOrigin: String,
-        token: String,
-    ): List<Source> {
-        val freshUrl = playerUrl.toHttpUrl().newBuilder()
-            .setQueryParameter("player_data", "1")
-            .setQueryParameter("parent_origin", parentOrigin)
-            .setQueryParameter("player_data_token", token)
-            .setQueryParameter("nocache", "1")
-            .setQueryParameter("_stream_refresh", System.currentTimeMillis().toString())
-            .build()
-            .toString()
-        val dataHeaders = headers.newBuilder()
-            .set("User-Agent", sourceUserAgent)
-            .set("Referer", playerUrl)
-            .set("Accept", "application/json, text/plain, */*")
-            .set("Cache-Control", "no-cache")
-            .build()
-        val response = client.newCall(GET(freshUrl, dataHeaders)).awaitSuccess()
-        val data = JSONObject(response.body.string())
-
-        return if (data.optBoolean("ok")) {
-            data.optJSONArray("sources")?.toSources().orEmpty()
+        return if ("googlevideo" in script) {
+            script.substringAfter("sources:").substringBefore("]")
+                .split("{")
+                .drop(1)
+                .map {
+                    val videoUrl = it.substringAfter("file\":\"").substringBefore('"')
+                    val quality = it.substringAfter("label\":\"").substringBefore('"')
+                    Log.d(tag, "Found video: $quality - ${videoUrl.take(80)}...")
+                    Video(videoUrl, "Animei.to - $quality", videoUrl, headers)
+                }
         } else {
-            emptyList()
+            val masterPlaylistUrl = script.substringAfter("sources:")
+                .substringAfter("file\":\"")
+                .substringBefore('"')
+            Log.d(tag, "HLS master URL: $masterPlaylistUrl")
+
+            playlistUtils.extractFromHls(masterPlaylistUrl, videoNameGen = { "Animei.to - $it" })
         }
     }
 
-    private fun extractPlayerDataToken(script: String): Pair<String, String>? {
-        val objectStart = script.indexOf("playerDataTokens")
-            .takeIf { it != -1 }
-            ?.let { script.indexOf('{', it) }
-            ?.takeIf { it != -1 }
-            ?: return null
-        val tokens = JSONObject(script.extractBalanced(objectStart, '{', '}') ?: return null)
-        val refererOrigin = headers["Referer"]?.toHttpUrlOrNull()
-            ?.let { "${it.scheme}://${it.host}" }
-        val origins = listOfNotNull(refererOrigin, DEFAULT_PARENT_ORIGIN) + tokens.keys().asSequence().toList()
+    private fun decodeTextDecoderScript(script: String): String {
+        val mainContent = script.substringBefore("})();")
 
-        return origins.distinct().firstNotNullOfOrNull { origin ->
-            tokens.optString(origin).takeIf(String::isNotBlank)?.let { origin to it }
-        }
-    }
-
-    private fun JSONArray.toSources(): List<Source> {
-        return List(length()) { index -> getJSONObject(index) }
-            .mapNotNull { item ->
-                val file = item.optString("file").takeIf(String::isNotBlank)
-                    ?: return@mapNotNull null
-                Source(
-                    file = file,
-                    label = item.optString("label").takeIf(String::isNotBlank) ?: qualityFromUrl(file),
-                    type = item.optString("type"),
-                )
-            }
-    }
-
-    private fun String.extractBalanced(openIndex: Int, openChar: Char, closeChar: Char): String? {
-        var depth = 0
-        var quote: Char? = null
-        var escaped = false
-
-        for (index in openIndex until length) {
-            val char = this[index]
-
-            if (quote != null) {
-                when {
-                    escaped -> escaped = false
-                    char == '\\' -> escaped = true
-                    char == quote -> quote = null
-                }
-                continue
-            }
-
-            when (char) {
-                '"', '\'', '`' -> quote = char
-                openChar -> depth += 1
-                closeChar -> {
-                    depth -= 1
-                    if (depth == 0) return substring(openIndex, index + 1)
-                }
-            }
+        val funcCallStart = mainContent.indexOf("([\"")
+        val funcCallEnd = mainContent.lastIndexOf("\");")
+        if (funcCallStart < 0 || funcCallEnd < 0 || funcCallEnd <= funcCallStart + 1) {
+            Log.w(tag, "Could not find function call boundaries: start=$funcCallStart end=$funcCallEnd")
+            return ""
         }
 
-        return null
-    }
+        val params = mainContent.substring(funcCallStart + 2, funcCallEnd + 1)
 
-    private fun Source.isHls(): Boolean = file.endsWith(".m3u8", ignoreCase = true) || type.contains("mpegurl", ignoreCase = true)
+        val array1End = arraySepRegex.find(params)?.range?.first ?: -1
+        if (array1End < 0) {
+            Log.w(tag, "Could not find first array boundary")
+            return ""
+        }
 
-    private fun qualityFromUrl(url: String): String {
-        val itag = ITAG_REGEX.find(url)?.groupValues?.get(1)
-        return ITAG_QUALITY_MAP[itag] ?: QUALITY_REGEX.find(url)?.value ?: "Video"
-    }
+        val array2End = keySepRegex.find(params)?.range?.first ?: -1
+        if (array2End < 0) {
+            Log.w(tag, "Could not find second array boundary")
+            return ""
+        }
 
-    private fun Video.qualityValue(): Int = REGEX_QUALITY.find(quality)
-        ?.groupValues
-        ?.get(1)
-        ?.toIntOrNull()
-        ?: 0
+        val firstArrayStr = params.substring(0, array1End + 1)
+        val secondArrayOpen = params.indexOf('[', array1End + 1)
+        if (secondArrayOpen < 0 || secondArrayOpen >= array2End) {
+            Log.w(tag, "Could not find second array brackets")
+            return ""
+        }
+        val secondArrayStr = params.substring(secondArrayOpen, array2End + 1)
 
-    private data class Source(
-        val file: String,
-        val label: String,
-        val type: String,
-    )
+        val keyQuoteStart = params.indexOf('"', array2End + 1)
+        if (keyQuoteStart < 0) {
+            Log.w(tag, "Could not find key string start")
+            return ""
+        }
+        val keyQuoteEnd = params.indexOf('"', keyQuoteStart + 1)
+        if (keyQuoteEnd < 0) {
+            Log.w(tag, "Could not find key string end")
+            return ""
+        }
+        val keyStr = params.substring(keyQuoteStart + 1, keyQuoteEnd)
 
-    companion object {
-        private const val DEFAULT_PARENT_ORIGIN = "https://animesonline.io"
-        private const val DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:136.0) Gecko/20100101 Firefox/136.0"
+        val strings = stringsRegex
+            .findAll(firstArrayStr)
+            .map { it.groupValues[1] }
+            .toList()
 
-        private val STRING_LITERAL_REGEX = Regex(""""((?:\\.|[^"\\])*)"""")
-        private val XOR_FUNC_CALL_REGEX = Regex("""\}\s*_[0-9A-Fa-f]+\s*\(\s*\[""")
-        private val XOR_KEY_REGEX = Regex("""[,\s]+"([A-Za-z0-9+/=]+)"""")
-        private val INTEGER_REGEX = Regex("""\d+""")
-        private val QUALITY_REGEX = Regex("""\d{3,4}p""")
-        private val REGEX_QUALITY = Regex("""(\d+)p""")
-        private val ITAG_REGEX = Regex("""[?&]itag=(\d+)""")
-        private val ITAG_QUALITY_MAP = mapOf(
-            "18" to "360p",
-            "22" to "720p",
-            "37" to "1080p",
-            "38" to "3072p",
-            "59" to "480p",
-            "78" to "480p",
-        )
+        val rawIndexTokens = secondArrayStr
+            .removeSurrounding("[", "]")
+            .split(",")
+        val indices = rawIndexTokens.mapNotNull { token ->
+            val trimmed = token.trim()
+            if (trimmed.isEmpty()) {
+                Log.w(tag, "Skipping empty index token while decoding")
+                return@mapNotNull null
+            }
+            val value = trimmed.toIntOrNull()
+            if (value == null) {
+                Log.w(tag, "Skipping non-numeric index token while decoding: '$trimmed'")
+            }
+            value
+        }
+
+        if (indices.isEmpty()) {
+            Log.w(tag, "No valid indices found")
+            return ""
+        }
+
+        val joined = indices.joinToString("") { strings.getOrNull(it) ?: "" }
+        if (joined.isEmpty()) {
+            Log.w(tag, "Joined base64 is empty")
+            return ""
+        }
+
+        val decodedData = runCatching { Base64.decode(joined, Base64.DEFAULT) }.getOrNull() ?: return ""
+        val key = runCatching { Base64.decode(keyStr, Base64.DEFAULT) }.getOrNull() ?: return ""
+
+        if (decodedData.isEmpty() || key.isEmpty()) {
+            Log.w(tag, "Decoded data or key is empty")
+            return ""
+        }
+
+        val result = ByteArray(decodedData.size) { i ->
+            (decodedData[i].toInt() xor key[i % key.size].toInt()).toByte()
+        }
+
+        return String(result, Charsets.UTF_8)
     }
 }
