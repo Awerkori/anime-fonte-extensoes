@@ -1,258 +1,162 @@
 package eu.kanade.tachiyomi.animeextension.pt.anikyuu.extractors
 
-import android.annotation.SuppressLint
-import android.app.Application
-import android.os.Build
-import android.os.Handler
-import android.os.Looper
-import android.webkit.CookieManager
-import android.webkit.WebResourceRequest
-import android.webkit.WebResourceResponse
-import android.webkit.WebView
-import android.webkit.WebViewClient
+import android.util.Base64
 import aniyomi.lib.playlistutils.PlaylistUtils
 import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.awaitSuccess
 import keiyoushi.utils.bodyString
+import keiyoushi.utils.flatMapCatching
+import keiyoushi.utils.parseAs
+import kotlinx.serialization.Serializable
 import okhttp3.Headers
 import okhttp3.HttpUrl.Companion.toHttpUrl
-import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
-import uy.kohesive.injekt.injectLazy
-import java.io.ByteArrayInputStream
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
+import java.net.URI
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
+import javax.crypto.Cipher
+import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.SecretKeySpec
 
 class ByseExtractor(
     private val client: OkHttpClient,
     private val headers: Headers,
     private val baseUrl: String,
 ) {
-    private val context: Application by injectLazy()
-    private val handler by lazy { Handler(Looper.getMainLooper()) }
+
+    private val playlistUtils by lazy { PlaylistUtils(client, headers) }
 
     suspend fun videosFromUrl(url: String): List<Video> {
-        val id = url.toHttpUrl().pathSegments.getOrNull(1) ?: return emptyList()
-        val embedUrl = getEmbedUrl(url, id) ?: return emptyList()
-        val playlist = resolveMasterPlaylist(url, embedUrl, id) ?: return emptyList()
-        val videoHeaders = buildVideoHeaders(playlist.frameUrl ?: embedUrl)
+        val id = url.split("/")[4]
+        val embedUrl =
+            client.newCall(GET("https://${url.toHttpUrl().host}/api/videos/$id/embed/details"))
+                .awaitSuccess().bodyString()
+                .substringAfter("embed_frame_url", "")
+                .substringAfter(":")
+                .substringAfter('"')
+                .substringBefore('"')
 
-        return PlaylistUtils(client, videoHeaders).extractFromHls(
-            playlistUrl = playlist.url,
-            referer = videoHeaders["Referer"] ?: (playlist.frameUrl ?: embedUrl),
-            masterHeadersGen = { _, _ -> videoHeaders },
-            videoHeadersGen = { _, _, _ -> videoHeaders },
-            videoNameGen = { "Byse - $it" },
-        )
-    }
-
-    private suspend fun getEmbedUrl(url: String, id: String): String? {
-        val detailsHeaders = headers.newBuilder()
-            .set("Referer", url)
-            .set("X-Embed-Parent", url)
-            .set("X-Embed-Referer", baseUrl)
-            .set("X-Embed-Origin", baseUrl.toHttpUrl().host)
-            .build()
-
-        return client.newCall(GET("https://${url.toHttpUrl().host}/api/videos/$id/embed/details", detailsHeaders))
-            .awaitSuccess()
-            .bodyString()
-            .substringAfter("\"embed_frame_url\"", "")
-            .substringAfter(":")
-            .substringAfter('"')
-            .substringBefore('"')
-            .takeIf(String::isNotBlank)
-    }
-
-    @SuppressLint("SetJavaScriptEnabled")
-    private fun resolveMasterPlaylist(pageUrl: String, embedUrl: String, id: String): ResolvedPlaylist? {
-        val latch = CountDownLatch(1)
-        val embedHost = embedUrl.toHttpUrl().host
-        val loadHeaders = headers.toWebViewHeaders().apply {
-            put("Referer", baseUrl)
-            put("X-Embed-Origin", baseUrl.toHttpUrl().host)
-            put("X-Embed-Parent", pageUrl)
-            put("X-Embed-Referer", baseUrl)
-        }
-        var webView: WebView? = null
-        var masterPlaylist: ResolvedPlaylist? = null
-        var frameUrl: String? = null
-
-        handler.post {
-            val currentWebView = WebView(context)
-            webView = currentWebView
-
-            CookieManager.getInstance().setAcceptCookie(true)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                CookieManager.getInstance().setAcceptThirdPartyCookies(currentWebView, true)
-            }
-
-            with(currentWebView.settings) {
-                javaScriptEnabled = true
-                domStorageEnabled = true
-                databaseEnabled = true
-                mediaPlaybackRequiresUserGesture = false
-                useWideViewPort = false
-                loadWithOverviewMode = false
-                headers["User-Agent"]?.let { userAgentString = it }
-            }
-
-            currentWebView.webViewClient = object : WebViewClient() {
-                override fun shouldInterceptRequest(
-                    view: WebView,
-                    request: WebResourceRequest,
-                ): WebResourceResponse? {
-                    val requestUrl = request.url.toString()
-                    return when {
-                        requestUrl.isByseMasterPlaylist() && masterPlaylist == null -> {
-                            masterPlaylist = ResolvedPlaylist(requestUrl, frameUrl)
-                            latch.countDown()
-                            super.shouldInterceptRequest(view, request)
-                        }
-                        requestUrl.sameUrlIgnoringQuery(pageUrl) -> patchHtmlDocument(request)
-                            ?: super.shouldInterceptRequest(view, request)
-                        requestUrl.isByseEmbedDocument(embedHost, id) -> {
-                            frameUrl = requestUrl
-                            patchHtmlDocument(request) ?: super.shouldInterceptRequest(view, request)
-                        }
-                        else -> super.shouldInterceptRequest(view, request)
-                    }
-                }
-            }
-
-            currentWebView.loadUrl(pageUrl, loadHeaders)
+        if (embedUrl.isBlank()) {
+            return emptyList()
         }
 
-        latch.await(TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        val playbackUrl = "https://${embedUrl.toHttpUrl().host}/api/videos/$id/embed/playback"
+        val playbackHeader = headers.newBuilder().apply {
+            set("Referer", embedUrl)
+            set("X-Embed-Origin", baseUrl.toHttpUrl().host)
+            set("X-Embed-Parent", url.encodeUrlPath())
+            set("X-Embed-Referer", baseUrl)
+            set("Accept", "*/*")
+            set("Accept-Language", "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7")
+            set("Cache-Control", "no-cache")
+            set("Pragma", "no-cache")
+            set("Priority", "u=1, i")
+            set("Sec-Fetch-Dest", "empty")
+            set("Sec-Fetch-Mode", "cors")
+            set("Sec-Fetch-Site", "same-origin")
+            set("Sec-Fetch-Storage-Access", "active")
+        }.build()
 
-        handler.post {
-            webView?.stopLoading()
-            webView?.destroy()
-            webView = null
-        }
+        return client.newCall(GET(playbackUrl, playbackHeader)).awaitSuccess()
+            .parseAs<PlaybackResponseDto>()
+            .let { decrypt(it.playback) }
+            .substringAfter("sources")
+            .substringAfter("[")
+            .substringBefore("]")
+            .split("},")
+            .flatMapCatching { entry ->
+                val videoUrl = entry.substringAfter("\"url\":\"", "")
+                    .substringBefore('"')
+                    .takeIf(String::isNotBlank)
+                    ?.replace("\\u0026", "&")
+                    ?: return@flatMapCatching emptyList()
 
-        return masterPlaylist
-    }
-
-    private fun patchHtmlDocument(request: WebResourceRequest): WebResourceResponse? {
-        val response = client.newCall(GET(request.url.toString(), request.requestHeaders.toOkHttpHeaders())).execute()
-        response.use {
-            if (!it.isSuccessful) {
-                return null
+                playlistUtils.extractFromHls(
+                    videoUrl,
+                    videoNameGen = { "Byse - $it" },
+                )
             }
-
-            val patchedBody = it.bodyString().injectAutoClickScript()
-            return WebResourceResponse(
-                "text/html",
-                Charsets.UTF_8.name(),
-                it.code,
-                it.message.ifBlank { "OK" },
-                it.headers.toWebResourceHeaders(),
-                ByteArrayInputStream(patchedBody.toByteArray(Charsets.UTF_8)),
-            )
-        }
     }
 
-    private fun buildVideoHeaders(frameUrl: String): Headers = headers.newBuilder().apply {
-        set("Accept", "*/*")
-        headers["User-Agent"]?.let { set("User-Agent", it) }
-        headers["Accept-Language"]?.let { set("Accept-Language", it) }
-        set("Origin", frameUrl.origin())
-        set("Referer", frameUrl)
-    }.build()
+    private fun decrypt(input: PlaybackDto): String {
+        // Concatenate decoded key_parts (equivalent to pa(e.key_parts))
+        val keyBytes = input.key_parts
+            .map { decodeBase64Url(it) }
+            .fold(ByteArray(0)) { acc, bytes -> acc + bytes }
 
-    private data class ResolvedPlaylist(
-        val url: String,
-        val frameUrl: String?,
+        // Decode IV and payload from base64url (equivalent to Nt(e.iv) and Nt(e.payload))
+        val ivBytes = decodeBase64Url(input.iv)
+        val payloadBytes = decodeBase64Url(input.payload)
+
+        // Import key and decrypt using AES-GCM
+        val secretKey = SecretKeySpec(keyBytes, "AES")
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        val gcmSpec = GCMParameterSpec(128, ivBytes) // 128 bits = 16 bytes for GCM tag
+        cipher.init(Cipher.DECRYPT_MODE, secretKey, gcmSpec)
+
+        val decryptedBytes = cipher.doFinal(payloadBytes)
+        return String(decryptedBytes, Charsets.UTF_8)
+    }
+
+    private fun decodeBase64Url(input: String): ByteArray {
+        // Base64URL uses '-' and '_' instead of '+' and '/'
+        val base64 = input
+            .replace('-', '+')
+            .replace('_', '/')
+        // Add padding if necessary
+        val padding = when (base64.length % 4) {
+            2 -> "=="
+            3 -> "="
+            else -> ""
+        }
+        return Base64.decode(base64 + padding, Base64.DEFAULT)
+    }
+
+    @Serializable
+    private data class PlaybackResponseDto(
+        val playback: PlaybackDto,
     )
 
-    private fun Headers.toWebViewHeaders(): MutableMap<String, String> = names()
-        .associateWith { get(it).orEmpty() }
-        .filterKeys { it.isSafeHeaderName() }
-        .filterValues { it.isNotBlank() }
-        .toMutableMap()
+    @Serializable
+    private data class PlaybackDto(
+        val algorithm: String,
+        val iv: String,
+        val payload: String,
+        val key_parts: List<String>,
+        val expires_at: String,
+        val decrypt_keys: DecryptKeysDto,
+        val iv2: String,
+        val payload2: String,
+    )
 
-    private fun Map<String, String>.toOkHttpHeaders(): Headers = headers.newBuilder().apply {
-        forEach { (name, value) ->
-            if (name.isSafeHeaderName() && value.isNotBlank()) {
-                set(name, value)
+    @Serializable
+    private data class DecryptKeysDto(
+        val edge_1: String,
+        val edge_2: String,
+        val legacy_fallback: String,
+    )
+}
+
+fun String.encodeUrlPath(): String {
+    val uri = URI(this)
+
+    val encodedPath = uri.rawPath
+        .split("/")
+        .joinToString("/") { segment ->
+            if (segment.isEmpty()) {
+                ""
+            } else {
+                URLEncoder.encode(segment, StandardCharsets.UTF_8.toString())
+                    .replace("+", "%20")
             }
         }
-    }.build()
 
-    private fun Headers.toWebResourceHeaders(): Map<String, String> = names()
-        .filter { it.isSafeResponseHeaderName() }
-        .associateWith { values(it).joinToString(", ") }
-
-    private fun String.isSafeHeaderName(): Boolean = isNotBlank() && lowercase() !in UNSAFE_REQUEST_HEADERS
-
-    private fun String.isSafeResponseHeaderName(): Boolean = isNotBlank() && lowercase() !in UNSAFE_RESPONSE_HEADERS
-
-    private fun String.origin(): String {
-        val httpUrl = toHttpUrl()
-        return "${httpUrl.scheme}://${httpUrl.host}"
-    }
-
-    private fun String.sameUrlIgnoringQuery(other: String): Boolean = substringBefore("?").trimEnd('/') == other.substringBefore("?").trimEnd('/')
-
-    private fun String.isByseEmbedDocument(embedHost: String, id: String): Boolean {
-        val url = toHttpUrlOrNull() ?: return false
-        return url.host == embedHost && url.pathSegments.lastOrNull() == id
-    }
-
-    private fun String.isByseMasterPlaylist(): Boolean = substringBefore("?").endsWith("/master.m3u8", ignoreCase = true)
-
-    private fun String.injectAutoClickScript(): String {
-        val script = "<script>$AUTO_CLICK_SCRIPT</script>"
-        return if (contains("</body>", ignoreCase = true)) {
-            replace(Regex("</body>", RegexOption.IGNORE_CASE), "$script</body>")
-        } else {
-            this + script
-        }
-    }
-
-    companion object {
-        private const val TIMEOUT_SECONDS = 35L
-
-        private val UNSAFE_REQUEST_HEADERS = setOf(
-            "accept-encoding",
-            "connection",
-            "content-length",
-            "host",
-            "te",
-            "transfer-encoding",
-        )
-
-        private val UNSAFE_RESPONSE_HEADERS = setOf(
-            "content-security-policy",
-            "content-security-policy-report-only",
-            "content-encoding",
-            "content-length",
-            "transfer-encoding",
-        )
-
-        private val AUTO_CLICK_SCRIPT = """
-            (function () {
-              if (window.__aniyomiByseAutoClick) return;
-              window.__aniyomiByseAutoClick = true;
-              var tick = function () {
-                var button = document.querySelector('button.captcha-gate__play');
-                if (button) button.click();
-                try {
-                  if (typeof jwplayer === 'function') {
-                    var player = jwplayer(0);
-                    if (player && typeof player.play === 'function') player.play();
-                  }
-                } catch (e) {}
-                var video = document.querySelector('video');
-                if (video && video.paused && typeof video.play === 'function') {
-                  video.play().catch(function () {});
-                }
-              };
-              tick();
-              setInterval(tick, 500);
-            })();
-        """.trimIndent()
-    }
+    return URI(
+        uri.scheme,
+        uri.rawAuthority,
+        encodedPath,
+        uri.rawQuery,
+        uri.rawFragment,
+    ).toString()
 }

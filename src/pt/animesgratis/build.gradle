@@ -1,10 +1,9 @@
 ext {
-    extName = 'Top Animes'
-    extClass = '.TopAnimes'
+    extName = 'Q1N'
+    extClass = '.Q1N'
     themePkg = 'dooplay'
-    baseUrl = 'https://topanimes.net'
-    overrideVersionCode = 34
-    isNsfw = false
+    baseUrl = 'https://q1n.net'
+    overrideVersionCode = 33
 }
 
 apply plugin: "kei.plugins.extension.legacy"
@@ -12,7 +11,6 @@ apply plugin: "kei.plugins.extension.legacy"
 dependencies {
     implementation(project(":lib:bloggerextractor"))
     implementation(project(":lib:filemoonextractor"))
-    implementation(project(":lib:m3u8server"))
     implementation(project(":lib:mixdropextractor"))
     implementation(project(":lib:playlistutils"))
     implementation(project(":lib:streamtapeextractor"))
