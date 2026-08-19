@@ -1,20 +1,22 @@
-name: Sync Upstream
+name: Sync Upstream (Yuzono)
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "0 23 * * *"  # 20:00 BRT diariamente
 
 permissions: {}
 
 jobs:
   sync:
-    name: Sync upstream
+    name: Sync Yuzono upstream (Nox-wins)
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:
       - name: Checkout main branch
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
           fetch-depth: 0
@@ -26,5 +28,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Sync upstream
+      - name: Sync upstream (Nox-wins)
         run: python .github/scripts/sync-upstream.py --push

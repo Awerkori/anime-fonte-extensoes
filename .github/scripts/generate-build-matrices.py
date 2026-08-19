@@ -160,7 +160,7 @@ def get_module_list(ref: str) -> tuple[list[str], list[str]]:
             if Path("lib", lib).is_dir():
                 libs.add(lib)
 
-    if core_files_changed:
+    if os.getenv("REBUILD_ALL") == "true" or core_files_changed:
         (all_modules, all_deleted) = get_all_modules()
 
         # update existing set so we include deleted extensions

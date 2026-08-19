@@ -10,8 +10,13 @@ on:
       - '!.github/**'
       - '.github/scripts/**'
       - '.github/workflows/build_push.yml'
-  # Manual trigger
   workflow_dispatch:
+    inputs:
+      rebuild_all:
+        description: 'Forçar build de todas as extensões (Bootstrap inicial)'
+        required: false
+        type: boolean
+        default: false
 
 permissions: {}
 
@@ -22,6 +27,7 @@ concurrency:
 env:
   CI_CHUNK_SIZE: 15
   IS_PR_CHECK: false
+  REBUILD_ALL: ${{ github.event.inputs.rebuild_all || 'false' }}
 
 jobs:
   prepare:
@@ -58,16 +64,12 @@ jobs:
           files_separator: " "
           safe_output: false
 
-        # This step is going to commit, but this will not trigger another workflow.
-        # If any changes to lib/ caused on main branch, bump the extensions that uses the modified lib.
-        # If any changes caused by the merge commit, skip this step because versions should already pumped with that merge.
-        # But that should be avoided because our own extensions may not be bumped.
+        # If any changes to lib/ caused on main branch, bump the extensions that use the modified lib.
       - name: Bump extensions that use a modified lib
-        if: steps.modified-libs.outputs.any_changed == 'true' && github.repository == 'felipegfa/anime-fonte-extensoes'
+        if: steps.modified-libs.outputs.any_changed == 'true' && github.repository == 'Awerkori/anime-fonte-extensoes'
         env:
           COMMIT_MESSAGE: ${{ steps.set-env.outputs.LATEST_COMMIT_MESSAGE }}
         run: |
-          latest_commit_author=$(git log -1 --pretty=%an)
           git config --local user.name "github-actions[bot]"
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           chmod +x ./.github/scripts/bump-versions.py
@@ -132,7 +134,7 @@ jobs:
 
       - name: Upload APKs (${{ matrix.chunk.number }})
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: github.repository == 'felipegfa/anime-fonte-extensoes'
+        if: github.repository == 'Awerkori/anime-fonte-extensoes'
         with:
           name: "individual-apks-${{ matrix.chunk.number }}"
           path: "**/*.apk"
@@ -144,7 +146,7 @@ jobs:
   publish:
     name: Publish extension repo
     needs: [prepare, build]
-    if: github.repository == 'felipegfa/anime-fonte-extensoes'
+    if: github.repository == 'Awerkori/anime-fonte-extensoes'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -179,24 +181,43 @@ jobs:
       - name: Checkout repo branch
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          repository: felipegfa/anime-extensoes
+          repository: Awerkori/anime-extensoes
           token: ${{ secrets.BOT_PAT }}
           ref: repo
           path: repo
           fetch-depth: 0
           persist-credentials: true
 
+      - name: Validate Bootstrap Guard
+        id: bootstrap-guard
+        run: |
+          NOX_FINGERPRINT="144f44e865cbfae6bde110489ef7ec142f0b1681f627a093a218650e21db5dad"
+          CURRENT_FINGERPRINT="$(jq -r '.meta.signingKeyFingerprint // empty' repo/repo.json 2>/dev/null || echo '')"
+          echo "Current repo fingerprint: $CURRENT_FINGERPRINT"
+          echo "Nox official fingerprint: $NOX_FINGERPRINT"
+          echo "Rebuild all parameter:    ${{ env.REBUILD_ALL }}"
+
+          if [ "$CURRENT_FINGERPRINT" != "$NOX_FINGERPRINT" ] && [ "${{ env.REBUILD_ALL }}" != "true" ]; then
+            echo "::warning::[BOOTSTRAP GUARD] O repositório público ainda possui assinatura anterior/Felipe. A publicação incremental está bloqueada para evitar repositório misto. Execute o workflow manualmente via workflow_dispatch com rebuild_all=true para realizar o bootstrap completo inicial."
+            echo "skip_deploy=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip_deploy=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Merge repo
+        if: steps.bootstrap-guard.outputs.skip_deploy != 'true'
         env:
           DELETE: ${{ needs.prepare.outputs.delete }}
         run: |
+          cp "${{ github.ref_name }}/.github/repo.json.nox" repo/repo.json
           cd repo
           python ../${{ github.ref_name }}/.github/scripts/merge-repo.py "$DELETE" '${{ github.ref_name }}/repo'
 
       - name: Deploy repo
+        if: steps.bootstrap-guard.outputs.skip_deploy != 'true'
         uses: EndBug/add-and-commit@290ea2c423ad77ca9c62ae0f5b224379612c0321 # v10.0.0
         with:
           message: "${{ needs.prepare.outputs.latestCommitMessage }}"
           cwd: "./repo"
-          # committer_name: github-actions[bot]
-          # committer_email: github-actions[bot]@users.noreply.github.com
+
+

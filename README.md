@@ -1,82 +1,92 @@
-<div align="center">
+# Project Nox Anime
 
-| Install on Aniyomi | Install on Anikku | Build | Discord |
-|:------------------:|:-----------------:|:-----:|:-------:|
-| [![Install](https://img.shields.io/badge/Click%20here%20to%20install%20repo-gray?style=flat&labelColor=red)](https://intradeus.github.io/http-protocol-redirector/?r=aniyomi://add-repo?url=https://raw.githubusercontent.com/yuzono/anime-repo/repo/index.min.json) | [![Install](https://img.shields.io/badge/Click%20here%20to%20install%20repo-gray?style=flat&labelColor=red)](https://intradeus.github.io/http-protocol-redirector/?r=anikku://add-repo?url=https://raw.githubusercontent.com/yuzono/anime-repo/repo/index.min.json) | ![CI](https://github.com/yuzono/anime-extensions/actions/workflows/build_push.yml/badge.svg) | [![Discord](https://img.shields.io/discord/1377136877491982366.svg?label=&labelColor=6A7EC2&color=7389D8&logo=discord&logoColor=FFFFFF)](https://discord.gg/85MZhUX688) |
+Repositório de extensões anime mantidas pelo **Project Nox** para Aniyomi, Anikku e forks compatíveis.
 
-[![Sponsor me on GitHub](https://custom-icon-badges.demolab.com/badge/-Sponsor-ea4aaa?style=for-the-badge&logo=heart&logoColor=white)](https://github.com/sponsors/cuong-tran "Sponsor me on GitHub")
+O projeto acompanha o ecossistema do **Yūzōnō**, mantendo suas atualizações sempre que possível, além de oferecer correções, adaptações e extensões próprias.
 
-![Visitor Count](https://count.getloli.com/get/@yuzono?theme=capoo-2)
-</div>
+---
 
-# ![app icon](./.github/readme-images/app-icon.png)Anikku/Aniyomi Extensions
-Anikku/Aniyomi is a free and open source anime player for Android 6.0 and above.
+## Links
 
-This repository contains the available extension catalogues for the [Anikku](https://github.com/komikku-app/anikku) or [Aniyomi](https://github.com/aniyomiorg/aniyomi) forks.
+- **Repositório para Aniyomi/Anikku (`index.min.json`):**
+  ```
+  https://raw.githubusercontent.com/Awerkori/anime-extensoes/repo/index.min.json
+  ```
 
-## Recommend App
+- **Código-fonte:**
+  https://github.com/Awerkori/anime-fonte-extensoes
 
-### [Anikku](https://github.com/komikku-app/anikku)
+- **Repositório de publicação:**
+  https://github.com/Awerkori/anime-extensoes
 
-### [Aniyomi](https://github.com/aniyomiorg/aniyomi)
+- **Discord:**
+  https://discord.gg/QpyjwsWENq
 
-## How to add the repo
+- **Fluxer:**
+  https://fluxer.gg/q456UCVt
 
-**If you are new to repository/extensions, please read the [Yūzōnō Getting Started guide](https://yuzono.github.io/docs/guides/getting-started#adding-the-extension-repo) first.**
+> Para adicionar o **Project Nox Anime** ao Aniyomi ou Anikku, copie a URL acima e adicione-a como repositório de extensões.
 
-* You can add our repo by visiting the [Yūzōnō Website](https://yuzono.github.io/add-repo-ani)
-* Otherwise, copy & paste the following URL:
+---
 
-```html
-https://raw.githubusercontent.com/yuzono/anime-repo/repo/index.min.json
-```
+## Pedidos de extensões e correções
 
-### Manual downloads
+Entre na comunidade do **Project Nox** e faça o pedido pelo:
 
-If you prefer to directly download the APK files, they are available via [website](https://yuzono.github.io/extensions-aniyomi/) or directly in this GitHub repository in the [`repo` branch](https://github.com/yuzono/anime-repo/tree/repo/apk).
+- **Discord:** https://discord.gg/QpyjwsWENq
+- **Fluxer:** https://fluxer.gg/q456UCVt
 
-## Requests
+---
 
-To request a new source or bug fix, [create an issue](https://github.com/yuzono/aniyomi-extensions/issues/new/choose).
+## Sobre o Project Nox Anime
 
-Please note that creating an issue does not mean that the source will be added or fixed in a timely
-fashion, because the work is volunteer-based. Some sources may also be impossible to do or prohibitively
-difficult to maintain.
+O **Project Nox Anime** mantém extensões próprias e também acompanha atualizações vindas do ecossistema Yūzōnō.
 
-If you would like to see a request fulfilled and have the necessary skills to do so, consider contributing!
-Issues are up-for-grabs for any developer if there is no assigned user already.
+O upstream definitivo é o [yuzono/anime-extensions](https://github.com/yuzono/anime-extensions).
 
-## Contributing
+---
 
-Contributions are welcome!
+## Créditos
 
-Check out the repo's [issue backlog](https://github.com/yuzono/anime-extensions/issues) for source requests and bug reports.
+O Project Nox utiliza e adapta trabalhos desenvolvidos pela comunidade de extensões do Aniyomi/Tachiyomi.
 
-To get started with development, see [CONTRIBUTING.md](./CONTRIBUTING.md).
+### Yūzōnō
 
-It might also be good to read our [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md).
+Grande parte das extensões e da base técnica vem do projeto:
 
-## License
+https://github.com/yuzono/anime-extensions
 
-    Copyright 2015 Javier Tomás
+### FelipeGFA
 
-    Licensed under the Apache License, Version 2.0 (the "License");
-    you may not use this file except in compliance with the License.
-    You may obtain a copy of the License at
+A infraestrutura inicial foi baseada no trabalho de:
 
-    http://www.apache.org/licenses/LICENSE-2.0
+https://github.com/FelipeGFA/anime-fonte-extensoes
 
-    Unless required by applicable law or agreed to in writing, software
-    distributed under the License is distributed on an "AS IS" BASIS,
-    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-    See the License for the specific language governing permissions and
-    limitations under the License.
+Agradecimentos ao **FelipeGFA** pela base que ajudou na construção da infraestrutura atual.
 
-## Disclaimer
+### Comunidade
 
-This project does not have any affiliation with the content providers available.
+Agradecimentos a todos os desenvolvedores do ecossistema **Tachiyomi, Aniyomi, Anikku e Keiyoushi**.
 
-This project is not affiliated with Anikku/Aniyomi. Don't ask for help about these extensions at the
-official support means of Anikku/Aniyomi. All credits to the codebase goes to the original contributors.
+---
 
-The developer of this application does not have any affiliation with the content providers available.
+## Contribuindo
+
+Contribuições técnicas são bem-vindas.
+
+Antes de criar ou modificar uma extensão, consulte o `CONTRIBUTING.md`.
+
+---
+
+## Aviso
+
+O **Project Nox** não possui afiliação com os sites e provedores de conteúdo suportados pelas extensões.
+
+O projeto também não possui afiliação oficial com **Aniyomi, Anikku ou Yūzōnō**.
+
+---
+
+<p align="center">
+  <b>Project Nox</b><br>
+  Extensões, correções e comunidade.
+</p>
