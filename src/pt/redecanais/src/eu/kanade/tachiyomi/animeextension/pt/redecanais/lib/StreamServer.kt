@@ -1,13 +1,8 @@
 package eu.kanade.tachiyomi.animeextension.pt.redecanais.lib
 
+import fi.iki.elonen.NanoHTTPD
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import org.nanohttpd.protocols.http.IHTTPSession
-import org.nanohttpd.protocols.http.NanoHTTPD
-import org.nanohttpd.protocols.http.response.Response
-import org.nanohttpd.protocols.http.response.Response.newChunkedResponse
-import org.nanohttpd.protocols.http.response.Response.newFixedLengthResponse
-import org.nanohttpd.protocols.http.response.Status
 import java.io.FilterInputStream
 import java.io.InputStream
 import java.net.URLEncoder
@@ -30,9 +25,9 @@ internal class StreamServer(
 
     fun isRunning(): Boolean = running
 
-    override fun handle(session: IHTTPSession): Response = when {
+    override fun serve(session: IHTTPSession): Response = when {
         session.uri.startsWith(STREAM_PATH) -> handleStream(session)
-        else -> newFixedLengthResponse(Status.NOT_FOUND, MIME_PLAINTEXT, "")
+        else -> newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "")
     }
 
     fun createStreamUrl(streamUrl: String): String {
@@ -41,8 +36,8 @@ internal class StreamServer(
     }
 
     private fun handleStream(session: IHTTPSession): Response {
-        val url = session.parameters[URL_PARAM]?.firstOrNull()
-            ?: return newFixedLengthResponse(Status.BAD_REQUEST, MIME_PLAINTEXT, "")
+        val url = session.parms[URL_PARAM]
+            ?: return newFixedLengthResponse(Response.Status.BAD_REQUEST, MIME_PLAINTEXT, "")
 
         val request = Request.Builder()
             .url(url)
@@ -51,7 +46,7 @@ internal class StreamServer(
 
         val upstream = client.newCall(request).execute()
         if (!upstream.isSuccessful) {
-            val status = Status.lookup(upstream.code) ?: Status.INTERNAL_ERROR
+            val status = Response.Status.lookup(upstream.code) ?: Response.Status.INTERNAL_ERROR
             upstream.close()
             return newFixedLengthResponse(status, MIME_PLAINTEXT, "")
         }
@@ -62,7 +57,7 @@ internal class StreamServer(
             ?.takeUnless { isMp4 && it.equals("application/octet-stream", ignoreCase = true) }
             ?: if (isMp4) "video/mp4" else "application/octet-stream"
         val contentLength = upstream.header("Content-Length")?.toLongOrNull() ?: -1L
-        val status = if (upstream.code == 206) Status.PARTIAL_CONTENT else Status.OK
+        val status = if (upstream.code == 206) Response.Status.PARTIAL_CONTENT else Response.Status.OK
         val response = if (contentLength >= 0) {
             newFixedLengthResponse(status, mimeType, stream, contentLength)
         } else {
@@ -71,7 +66,7 @@ internal class StreamServer(
 
         upstream.header("Content-Range")?.let { response.addHeader("Content-Range", it) }
         upstream.header("Accept-Ranges")?.let { response.addHeader("Accept-Ranges", it) }
-        response.setUseGzip(false)
+        response.setGzipEncoding(false)
         return response
     }
 
