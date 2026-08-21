@@ -3,7 +3,7 @@ ext {
     extClass = '.Anikyuu'
     themePkg = 'animestream'
     baseUrl = 'https://anikyuu.to'
-    overrideVersionCode = 3
+    overrideVersionCode = 4
 }
 
 apply plugin: "kei.plugins.extension.legacy"

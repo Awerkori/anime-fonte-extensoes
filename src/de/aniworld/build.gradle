@@ -1,7 +1,7 @@
 ext {
     extName = 'AniWorld'
     extClass = '.AniWorld'
-    extVersionCode = 41
+    extVersionCode = 42
 }
 
 apply plugin: "kei.plugins.extension.legacy"
