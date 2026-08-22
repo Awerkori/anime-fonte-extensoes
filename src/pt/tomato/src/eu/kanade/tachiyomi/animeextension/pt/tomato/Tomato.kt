@@ -32,6 +32,7 @@ import eu.kanade.tachiyomi.network.awaitSuccess
 import eu.kanade.tachiyomi.network.interceptor.rateLimit
 import keiyoushi.utils.getPreferencesLazy
 import keiyoushi.utils.parseAs
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonObjectBuilder
@@ -360,6 +361,20 @@ class Tomato :
             }
         }
         Log.d(TAG, "TOMATO_DEBUG EPISODES animeId=$animeId detailsSource=${if (cachedDetails == null) "network" else "memory-cache"}")
+        return loadEpisodesBySeasons(details)
+    }
+
+    override fun fetchEpisodeList(anime: SAnime): Observable<List<SEpisode>> = Observable.fromCallable { runBlocking { getEpisodeList(anime) } }
+
+    public override fun episodeListParse(response: Response): List<SEpisode> {
+        val details = response.parseAs<AnimeResultDto>()
+        val animeId = details.animeDetails.animeId
+        detailsSnapshot = DetailsSnapshot(animeId, SystemClock.elapsedRealtime(), details)
+        Log.d(TAG, "TOMATO_DEBUG EPISODES animeId=$animeId detailsSource=legacy-response")
+        return runBlocking { loadEpisodesBySeasons(details) }
+    }
+
+    private suspend fun loadEpisodesBySeasons(details: AnimeResultDto): List<SEpisode> {
         val merged = linkedMapOf<Pair<Int, Float>, SEpisode>()
         details.animeSeasons.sortedBy { it.seasonNumber }.forEach { season ->
             var page = 0
@@ -400,8 +415,6 @@ class Tomato :
         return merged.values.sortedBy { it.episode_number }
     }
 
-    override fun episodeListParse(response: Response): List<SEpisode> = error("Tomato loads episodes by season")
-
     override suspend fun getVideoList(episode: SEpisode): List<Video> {
         Log.d(TAG, "TOMATO_DEBUG VIDEO entry")
         val primaryId = episodeIdFromUrl(episode.url)
@@ -441,6 +454,15 @@ class Tomato :
             )
         }
         return videos
+    }
+
+    override fun fetchVideoList(episode: SEpisode): Observable<List<Video>> = Observable.fromCallable { runBlocking { getVideoList(episode) } }
+
+    public override fun videoListParse(response: Response): List<Video> {
+        Log.d(TAG, "TOMATO_DEBUG VIDEO source=legacy-response")
+        val info = response.parseAs<EpisodeInfoDto>()
+        return info.streams.toVideos(preferredLanguage())
+            .sortedWith(compareByDescending<Video> { qualityNumber(it.quality) })
     }
 
     override fun getFilterList() = TomatoFilters.FILTER_LIST
