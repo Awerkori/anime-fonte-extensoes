@@ -1,11 +1,19 @@
 ext {
     extName = 'Tomato'
     extClass = '.Tomato'
-    extVersionCode = 6
+    extVersionCode = 7
     isNsfw = false
 }
 
 apply plugin: "kei.plugins.extension.legacy"
+
+android {
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+}
 
 dependencies {
     implementation("com.github.hCaptcha.hcaptcha-android-sdk:sdk:5.0.1") {

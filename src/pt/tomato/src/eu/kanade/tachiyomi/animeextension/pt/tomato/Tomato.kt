@@ -32,35 +32,76 @@ import eu.kanade.tachiyomi.network.awaitSuccess
 import eu.kanade.tachiyomi.network.interceptor.rateLimit
 import keiyoushi.utils.getPreferencesLazy
 import keiyoushi.utils.parseAs
-import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonObjectBuilder
-import kotlinx.serialization.json.add
-import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.put
-import kotlinx.serialization.json.putJsonArray
-import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.Protocol
 import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.RequestBody
 import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
+import okio.BufferedSink
+import org.json.JSONArray
+import org.json.JSONObject
 import rx.Observable
-import uy.kohesive.injekt.injectLazy
 import java.io.ByteArrayOutputStream
+import java.nio.charset.StandardCharsets
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 import java.util.zip.GZIPInputStream
 import java.util.zip.InflaterInputStream
 import kotlin.time.Duration.Companion.seconds
+
+private const val TAG = "Tomato"
+private const val APP_USER_AGENT = "tomato-android"
+private const val OFFICIAL_OKHTTP_USER_AGENT = "okhttp/4.11.0"
+private const val OFFICIAL_APP_VERSION = "1.4.3"
+private const val AXIOS_ACCEPT = "application/json, text/plain, */*"
+private const val AXIOS_ACCEPT_ENCODING = "gzip, deflate"
+private const val AXIOS_CONNECT_TIMEOUT_MS = 8_000
+private const val LOGIN_REQUIRED_URL = "/tomato-login-required"
+private const val FEED_PATH = "/v2/animes/feed"
+private const val LATEST_SECTION_TYPE = 7
+private const val EMPTY_FEED_ANIME_ID = 1062
+private const val PAGE_SIZE = 25
+private const val POPULAR_VALIDATION_COUNT = 15
+private const val LATEST_VALIDATION_COUNT = 10
+private const val FEED_CACHE_TTL_MS = 3_000L
+private const val DETAILS_CACHE_TTL_MS = 30_000L
+private const val MAX_ERROR_LOG_BYTES = 512L
+private const val MAX_POST_INSPECTION_BYTES = 256L * 1024L
+private const val MAX_ERROR_MESSAGE_LENGTH = 120
+internal const val PREF_TOKEN = "tomato_official_session_token_v1"
+private const val PREF_LANGUAGE = "preferred_language"
+private const val PREF_ACCOUNT_ACTION = "tomato_account_action_v2"
+private const val PREF_LOGOUT_ACTION = "tomato_logout_action_v2"
+private const val LEGACY_LOGIN_ACTION = "tomato_login"
+private const val LEGACY_LOGOUT_ACTION = "tomato_logout"
+private const val LEGACY_MANUAL_TOKEN = "tomato_session_token"
+private const val LEGACY_LANGUAGE = "pref_language"
+private const val LEGACY_QUALITY = "preferred_quality"
+private const val EXTENSION_PACKAGE = "eu.kanade.tachiyomi.animeextension.pt.tomato"
+private val LEGACY_EPISODE_ID_REGEX = Regex(
+    "(?:[?&])episode(?:%5B|\\[)([01])(?:%5D|\\])=(\\d+)",
+    RegexOption.IGNORE_CASE,
+)
+
+private class Utf8JsonRequestBody(json: String) : RequestBody() {
+    private val bytes = json.toByteArray(StandardCharsets.UTF_8)
+
+    override fun contentType(): okhttp3.MediaType? = null
+    override fun contentLength() = bytes.size.toLong()
+    override fun writeTo(sink: BufferedSink) {
+        sink.write(bytes)
+    }
+}
+
+private enum class PostEnvelope { SEARCH, EPISODES }
 
 /** API mapped from com.tomatos.clientapp in the official tomato.apk. */
 class Tomato :
@@ -81,7 +122,6 @@ class Tomato :
 
     private val preferences: SharedPreferences by getPreferencesLazy()
     private val serverBootstrap by lazy { TomatoServerBootstrap(preferences) }
-    private val json: Json by injectLazy()
     private var loginResultReceiver: ResultReceiver? = null
     private val requestSequence = AtomicLong(0)
     private val feedCacheLock = Any()
@@ -175,10 +215,7 @@ class Tomato :
                         "retryAfter=${response.header("Retry-After") ?: "none"} message=${response.safeErrorMessage()}",
                 )
                 if (response.code == 401 || response.code == 403) {
-                    preferences.edit().remove(PREF_TOKEN).apply()
-                    feedSnapshot = null
-                    detailsSnapshot = null
-                    Log.d(TAG, "TOMATO_DEBUG AUTH session_invalid=true HTTP=${response.code}")
+                    Log.d(TAG, "TOMATO_DEBUG AUTH rejected=true HTTP=${response.code} tokenPreserved=true")
                 }
                 if (request.url.encodedPath == FEED_PATH) {
                     Log.d(TAG, "TOMATO_DEBUG FEED method=${request.method} HTTP=${response.code}")
@@ -318,11 +355,13 @@ class Tomato :
             put("search", query)
             put("content_type", "anime")
             put("page", page - 1)
-            if (params.genres.isNotEmpty()) putJsonArray("tags") { params.genres.forEach(::add) }
+            if (params.genres.isNotEmpty()) put("tags", JSONArray(params.genres))
         }
     }
 
-    override fun searchAnimeParse(response: Response) = response.parseAs<SearchResultDto>()
+    override fun searchAnimeParse(response: Response) = response
+        .normalizePostEnvelope(PostEnvelope.SEARCH)
+        .parseAs<SearchResultDto>()
         .result
         .map { it.toSAnime() }
         .validatedPage("search")
@@ -361,20 +400,6 @@ class Tomato :
             }
         }
         Log.d(TAG, "TOMATO_DEBUG EPISODES animeId=$animeId detailsSource=${if (cachedDetails == null) "network" else "memory-cache"}")
-        return loadEpisodesBySeasons(details)
-    }
-
-    override fun fetchEpisodeList(anime: SAnime): Observable<List<SEpisode>> = Observable.fromCallable { runBlocking { getEpisodeList(anime) } }
-
-    public override fun episodeListParse(response: Response): List<SEpisode> {
-        val details = response.parseAs<AnimeResultDto>()
-        val animeId = details.animeDetails.animeId
-        detailsSnapshot = DetailsSnapshot(animeId, SystemClock.elapsedRealtime(), details)
-        Log.d(TAG, "TOMATO_DEBUG EPISODES animeId=$animeId detailsSource=legacy-response")
-        return runBlocking { loadEpisodesBySeasons(details) }
-    }
-
-    private suspend fun loadEpisodesBySeasons(details: AnimeResultDto): List<SEpisode> {
         val merged = linkedMapOf<Pair<Int, Float>, SEpisode>()
         details.animeSeasons.sortedBy { it.seasonNumber }.forEach { season ->
             var page = 0
@@ -386,7 +411,9 @@ class Tomato :
                         put("page", page)
                         put("order", "ASC")
                     },
-                ).awaitSuccess().use { it.parseAs<EpisodesResultDto>() }
+                ).awaitSuccess().use {
+                    it.normalizePostEnvelope(PostEnvelope.EPISODES).parseAs<EpisodesResultDto>()
+                }
                 result.data.forEach { item ->
                     val key = season.seasonNumber to item.epNumber
                     val existing = merged[key]
@@ -414,6 +441,8 @@ class Tomato :
         }
         return merged.values.sortedBy { it.episode_number }
     }
+
+    override fun episodeListParse(response: Response): List<SEpisode> = error("Tomato loads episodes by season")
 
     override suspend fun getVideoList(episode: SEpisode): List<Video> {
         Log.d(TAG, "TOMATO_DEBUG VIDEO entry")
@@ -454,15 +483,6 @@ class Tomato :
             )
         }
         return videos
-    }
-
-    override fun fetchVideoList(episode: SEpisode): Observable<List<Video>> = Observable.fromCallable { runBlocking { getVideoList(episode) } }
-
-    public override fun videoListParse(response: Response): List<Video> {
-        Log.d(TAG, "TOMATO_DEBUG VIDEO source=legacy-response")
-        val info = response.parseAs<EpisodeInfoDto>()
-        return info.streams.toVideos(preferredLanguage())
-            .sortedWith(compareByDescending<Video> { qualityNumber(it.quality) })
     }
 
     override fun getFilterList() = TomatoFilters.FILTER_LIST
@@ -643,16 +663,134 @@ class Tomato :
     // Matches the first direct official-extension implementation: same authenticated
     // GET builder used by the original ep_id -> /stream path, with no extra headers.
     private fun streamRequest(episodeId: Int): Request = authenticatedGet("/v2/anime/episode/$episodeId/stream")
-    private fun authenticatedPost(path: String, build: JsonObjectBuilder.() -> Unit): Request = POST(
-        "${selectedApiBaseUrl()}$path",
-        requestHeaders(),
-        json.encodeToString(JsonObject.serializer(), buildJsonObject(build)).toRequestBody(JSON_MEDIA_TYPE),
-    )
+    private fun authenticatedPost(path: String, build: JSONObject.() -> Unit): Request {
+        val token = requireToken()
+        val payload = JSONObject().apply(build)
+        val keys = if (path == "/v2/content/search") {
+            if (payload.has("tags")) "token,search,content_type,page,tags" else "token,search,content_type,page"
+        } else {
+            "token,page,order"
+        }
+        Log.d(TAG, "TOMATO_DEBUG POST path=$path keys=$keys tokenPresent=true tokenLength=${token.length}")
+        val headers = requestHeaders().newBuilder()
+            .set("Content-Type", "application/json; charset=utf-8")
+            .build()
+        return POST("${selectedApiBaseUrl()}$path", headers, Utf8JsonRequestBody(payload.toString()))
+    }
+    private fun Response.normalizePostEnvelope(source: PostEnvelope): Response {
+        val root = runCatching { JSONObject(peekBody(MAX_POST_INSPECTION_BYTES).string()) }
+            .getOrElse {
+                Log.d(TAG, "TOMATO_DEBUG $source responseKind=invalid-json")
+                return this
+            }
+        val rootKeys = buildList {
+            val iterator = root.keys()
+            while (iterator.hasNext()) add(iterator.next())
+        }.sorted()
+        val objects = root.possibleEnvelopes()
+        val statusCode = objects.firstString("status_code")
+        val message = objects.firstString("message", "error", "detail")
+        val list = when (source) {
+            PostEnvelope.SEARCH -> objects.firstArray("result")
+                ?: objects.firstArrayWithObjectKey("data", "id")
+            PostEnvelope.EPISODES -> objects.firstArray("data")
+                ?: objects.firstArrayWithObjectKey("episodes", "ep_id")
+                ?: objects.firstArrayWithObjectKey("result", "ep_id")
+        }
+        val count = list?.length() ?: 0
+        val tokenPresent = sessionToken() != null
+        if (source == PostEnvelope.SEARCH) {
+            Log.d(
+                TAG,
+                "TOMATO_DEBUG SEARCH HTTP=$code tokenPresent=$tokenPresent rootKeys=${rootKeys.joinToString(",")} " +
+                    "statusCode=${statusCode ?: "none"} " +
+                    "resultPresent=${list != null} resultCount=$count message=${message.safeLogicalMessage() ?: "none"}",
+            )
+        } else {
+            val episodes = objects.firstInt("episodes")
+            Log.d(
+                TAG,
+                "TOMATO_DEBUG EPISODES HTTP=$code tokenPresent=$tokenPresent rootKeys=${rootKeys.joinToString(",")} " +
+                    "statusCode=${statusCode ?: "none"} dataPresent=${list != null} dataCount=$count " +
+                    "episodes=${episodes ?: "none"} " +
+                    "message=${message.safeLogicalMessage() ?: "none"}",
+            )
+        }
+        check(list != null) {
+            "Resposta Tomato inesperada em $source" +
+                (message.safeLogicalMessage()?.let { ": $it" } ?: ".")
+        }
+        val normalized = when (source) {
+            PostEnvelope.SEARCH -> JSONObject().put("result", list)
+            PostEnvelope.EPISODES -> JSONObject()
+                .put("episodes", objects.firstInt("episodes") ?: 0)
+                .put("data", list)
+        }
+        return newBuilder()
+            .body(normalized.toString().toResponseBody(body.contentType()))
+            .build()
+    }
+    private fun JSONObject.possibleEnvelopes(): List<JSONObject> = buildList {
+        fun addDistinct(value: JSONObject?) {
+            if (value != null && none { it === value }) add(value)
+        }
+
+        addDistinct(this@possibleEnvelopes)
+        listOf("data", "result", "response", "payload").forEach { addDistinct(optJSONObject(it)) }
+        toList().forEach { envelope ->
+            listOf("data", "result", "response", "payload").forEach { addDistinct(envelope.optJSONObject(it)) }
+        }
+    }
+    private fun JSONObject.stringValue(key: String) = opt(key)
+        ?.takeUnless { it === JSONObject.NULL }
+        ?.toString()
+        ?.trim()
+        ?.takeIf(String::isNotEmpty)
+    private fun JSONObject.intValue(key: String) = opt(key)
+        ?.takeUnless { it === JSONObject.NULL }
+        ?.toString()
+        ?.toIntOrNull()
+    private fun List<JSONObject>.firstString(vararg keys: String): String? {
+        for (envelope in this) {
+            for (key in keys) envelope.stringValue(key)?.let { return it }
+        }
+        return null
+    }
+    private fun List<JSONObject>.firstInt(key: String): Int? {
+        for (envelope in this) envelope.intValue(key)?.let { return it }
+        return null
+    }
+    private fun List<JSONObject>.firstArray(key: String): JSONArray? {
+        for (envelope in this) envelope.optJSONArray(key)?.let { return it }
+        return null
+    }
+    private fun List<JSONObject>.firstArrayWithObjectKey(key: String, objectKey: String): JSONArray? {
+        for (envelope in this) {
+            envelope.optJSONArray(key)?.takeIf { it.hasObjectKey(objectKey) }?.let { return it }
+        }
+        return null
+    }
+    private fun JSONArray.hasObjectKey(key: String) = length() == 0 || optJSONObject(0)?.has(key) == true
+    private fun String?.safeLogicalMessage() = this
+        ?.replace(Regex("[\\r\\n]+"), " ")
+        ?.take(MAX_ERROR_MESSAGE_LENGTH)
     private fun EpisodeStreamDto.toVideos(language: String) = listOfNotNull(
-        shd?.let { Video(it, "$language - 480p", videoUrl = it) },
-        mhd?.let { Video(it, "$language - 720p", videoUrl = it) },
-        fhd?.let { Video(it, "$language - 1080p", videoUrl = it) },
+        shd?.let { it.toVideo("$language - 480p") },
+        mhd?.let { it.toVideo("$language - 720p") },
+        fhd?.let { it.toVideo("$language - 1080p") },
     )
+    private fun String.toVideo(quality: String) = if (isR2Mp4()) {
+        // A null Video.headers makes compatible hosts inherit the source's Bearer header.
+        // R2 presigned URLs already carry their authorization in the query string.
+        Video(this, quality, videoUrl = this, headers = okhttp3.Headers.Builder().build())
+    } else {
+        Video(this, quality, videoUrl = this)
+    }
+    private fun String.isR2Mp4(): Boolean {
+        val host = substringAfter("://", "").substringBefore('/').substringBefore(':')
+        return host.endsWith(".r2.cloudflarestorage.com", ignoreCase = true) &&
+            substringBefore('?').endsWith(".mp4", ignoreCase = true)
+    }
     private fun requestHeaders() = headersBuilder().build()
     private fun selectedApiBaseUrl() = serverBootstrap.selectedHost()
     private fun String.serverLabel() = when (this) {
@@ -728,42 +866,6 @@ class Tomato :
         if (stored[PREF_TOKEN] != null && stored[PREF_TOKEN] !is String) remove(PREF_TOKEN)
 
         if (changed) editor.apply()
-    }
-
-    companion object {
-        private const val TAG = "Tomato"
-        private const val APP_USER_AGENT = "tomato-android"
-        private const val OFFICIAL_OKHTTP_USER_AGENT = "okhttp/4.11.0"
-        private const val OFFICIAL_APP_VERSION = "1.4.3"
-        private const val AXIOS_ACCEPT = "application/json, text/plain, */*"
-        private const val AXIOS_ACCEPT_ENCODING = "gzip, deflate"
-        private const val AXIOS_CONNECT_TIMEOUT_MS = 8_000
-        private const val LOGIN_REQUIRED_URL = "/tomato-login-required"
-        private const val FEED_PATH = "/v2/animes/feed"
-        private const val LATEST_SECTION_TYPE = 7
-        private const val EMPTY_FEED_ANIME_ID = 1062
-        private const val PAGE_SIZE = 25
-        private const val POPULAR_VALIDATION_COUNT = 15
-        private const val LATEST_VALIDATION_COUNT = 10
-        private const val FEED_CACHE_TTL_MS = 3_000L
-        private const val DETAILS_CACHE_TTL_MS = 30_000L
-        private const val MAX_ERROR_LOG_BYTES = 512L
-        private const val MAX_ERROR_MESSAGE_LENGTH = 120
-        internal const val PREF_TOKEN = "tomato_official_session_token_v1"
-        private const val PREF_LANGUAGE = "preferred_language"
-        private const val PREF_ACCOUNT_ACTION = "tomato_account_action_v2"
-        private const val PREF_LOGOUT_ACTION = "tomato_logout_action_v2"
-        private const val LEGACY_LOGIN_ACTION = "tomato_login"
-        private const val LEGACY_LOGOUT_ACTION = "tomato_logout"
-        private const val LEGACY_MANUAL_TOKEN = "tomato_session_token"
-        private const val LEGACY_LANGUAGE = "pref_language"
-        private const val LEGACY_QUALITY = "preferred_quality"
-        private const val EXTENSION_PACKAGE = "eu.kanade.tachiyomi.animeextension.pt.tomato"
-        private val LEGACY_EPISODE_ID_REGEX = Regex(
-            "(?:[?&])episode(?:%5B|\\[)([01])(?:%5D|\\])=(\\d+)",
-            RegexOption.IGNORE_CASE,
-        )
-        private val JSON_MEDIA_TYPE = "application/json".toMediaType()
     }
 
     private data class FeedSnapshot(
