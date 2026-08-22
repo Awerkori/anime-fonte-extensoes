@@ -4,5 +4,4 @@ plugins {
 
 dependencies {
     implementation(project(":lib:playlistutils"))
-    implementation(project(":lib:unpacker"))
 }
