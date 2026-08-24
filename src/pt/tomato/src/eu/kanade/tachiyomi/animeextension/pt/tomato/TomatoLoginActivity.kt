@@ -4,7 +4,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.ResultReceiver
 import android.text.InputType
-import android.util.Log
+import android.util.Patterns
 import android.view.Gravity
 import android.widget.Button
 import android.widget.EditText
@@ -16,7 +16,10 @@ import com.hcaptcha.sdk.HCaptchaConfig
 import com.hcaptcha.sdk.HCaptchaTheme
 import org.json.JSONObject
 import java.io.IOException
+import java.net.ConnectException
+import java.net.SocketTimeoutException
 import java.net.URL
+import java.net.UnknownHostException
 import java.util.concurrent.Executors
 import javax.net.ssl.HttpsURLConnection
 
@@ -101,12 +104,15 @@ class TomatoLoginActivity : FragmentActivity() {
             HCaptchaConfig.builder().siteKey(HCAPTCHA_SITE_KEY).theme(HCaptchaTheme.DARK).build(),
         ).addOnSuccessListener { response ->
             val verification = response.tokenResult
-            Log.d(TAG, "TOMATO_DEBUG AUTH human_challenge=completed")
+            if (verification.isBlank()) {
+                action.isEnabled = true
+                status.text = "O hCaptcha não retornou um token válido. Tente novamente."
+                return@addOnSuccessListener
+            }
             login(enteredEmail, enteredPassword, verification)
         }.addOnFailureListener { error ->
-            Log.d(TAG, "TOMATO_DEBUG AUTH human_challenge=failure type=${error.javaClass.simpleName}")
             action.isEnabled = true
-            status.text = "Não foi possível concluir o hCaptcha."
+            status.text = error.hCaptchaMessage()
         }
     }
 
@@ -127,12 +133,12 @@ class TomatoLoginActivity : FragmentActivity() {
                 status.text = "O nome de usuário deve ter entre 3 e 24 caracteres."
                 return
             }
-            enteredEmail.isEmpty() -> {
-                status.text = "Informe o e-mail."
+            !Patterns.EMAIL_ADDRESS.matcher(enteredEmail).matches() -> {
+                status.text = "Informe um e-mail válido."
                 return
             }
-            enteredPassword.length !in 5..127 -> {
-                status.text = "A senha deve ter entre 5 e 127 caracteres."
+            enteredPassword.length !in 6..127 -> {
+                status.text = "A senha deve ter entre 6 e 127 caracteres."
                 return
             }
         }
@@ -142,12 +148,15 @@ class TomatoLoginActivity : FragmentActivity() {
             HCaptchaConfig.builder().siteKey(HCAPTCHA_SITE_KEY).theme(HCaptchaTheme.DARK).build(),
         ).addOnSuccessListener { response ->
             val verification = response.tokenResult
-            Log.d(TAG, "TOMATO_DEBUG SIGNUP human_challenge=completed")
+            if (verification.isBlank()) {
+                action.isEnabled = true
+                status.text = "O hCaptcha não retornou um token válido. Tente novamente."
+                return@addOnSuccessListener
+            }
             signUp(enteredUsername, enteredEmail, enteredPassword, verification)
         }.addOnFailureListener { error ->
-            Log.d(TAG, "TOMATO_DEBUG SIGNUP human_challenge=failure type=${error.javaClass.simpleName}")
             action.isEnabled = true
-            status.text = "Não foi possível concluir o hCaptcha."
+            status.text = error.hCaptchaMessage()
         }
     }
 
@@ -162,15 +171,12 @@ class TomatoLoginActivity : FragmentActivity() {
                     // "fingerprint" key (not "model").
                     put("fingerprint", deviceFingerprint)
                 }.toString()
-                Log.d(
-                    TAG,
-                    "TOMATO_DEBUG AUTH request=start method=POST path=/login/ contentType=application/json fingerprint=$deviceFingerprint",
-                )
                 val connection = (URL(loginEndpoint).openConnection() as HttpsURLConnection).apply {
                     requestMethod = "POST"
                     connectTimeout = HTTP_TIMEOUT_MS
                     readTimeout = HTTP_TIMEOUT_MS
                     doOutput = true
+                    setRequestProperty("Accept", "application/json")
                     setRequestProperty("Content-Type", "application/json; charset=utf-8")
                 }
                 try {
@@ -180,18 +186,8 @@ class TomatoLoginActivity : FragmentActivity() {
                         ?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
                     val body = runCatching { JSONObject(rawBody) }.getOrNull()
                     val apiStatus = body?.optString("status_code")?.toIntOrNull()
-                    val message = body?.optString("message")?.safeLogMessage()
+                    val message = body?.apiMessage()
                     val token = body?.optString("token")?.trim()?.takeIf(String::isNotBlank)
-                    val contentType = connection.contentType?.substringBefore(';') ?: "none"
-                    val responseId = connection.getHeaderField("x-request-id")
-                        ?: connection.getHeaderField("x-amzn-requestid")
-                        ?: "none"
-                    val bodyKind = if (body != null) "json" else "non-json"
-                    val safeBody = message ?: rawBody.safeHttpErrorSummary()
-                    Log.d(
-                        TAG,
-                        "TOMATO_DEBUG AUTH login HTTP=$httpStatus apiStatus=$apiStatus contentType=$contentType bodyLength=${rawBody.length} bodyKind=$bodyKind responseId=$responseId message=${safeBody ?: "none"} tokenPresent=${token != null}",
-                    )
                     if (httpStatus !in 200..299 || apiStatus != 4) throw LoginException(apiStatus, message, httpStatus)
                     token ?: throw LoginException(apiStatus, "Resposta de login sem sessão", httpStatus)
                 } finally {
@@ -210,17 +206,14 @@ class TomatoLoginActivity : FragmentActivity() {
                         RESULT_LOGIN_SUCCESS,
                         Bundle().apply { putString(EXTRA_SESSION_TOKEN, token) },
                     )
-                    Log.d(TAG, "TOMATO_DEBUG AUTH session_received=true")
                     status.text = "Conectado"
                     this.password.text?.clear()
                     setResult(RESULT_OK)
                     finish()
                 }.onFailure { error ->
-                    Log.e(TAG, "TOMATO_DEBUG AUTH login failure type=${error.javaClass.simpleName} message=${error.message.safeLogMessage() ?: "none"}")
                     status.text = when (error) {
                         is LoginException -> error.userMessage()
-                        is IOException -> "Falha de conexão ao entrar. Tente novamente."
-                        else -> "Falha interna ao iniciar o login. Consulte TOMATO_DEBUG."
+                        else -> error.connectionMessage()
                     }
                 }
             }
@@ -228,7 +221,12 @@ class TomatoLoginActivity : FragmentActivity() {
     }
 
     /** Native counterpart of TomatoSignUp.registerRequest. */
-    private fun signUp(username: String, email: String, password: String, verification: String) {
+    private fun signUp(
+        username: String,
+        email: String,
+        password: String,
+        verification: String,
+    ) {
         Executors.newSingleThreadExecutor().execute {
             val result = runCatching {
                 val payload = JSONObject().apply {
@@ -238,15 +236,12 @@ class TomatoLoginActivity : FragmentActivity() {
                     put("verification", verification)
                     put("fingerprint", deviceFingerprint)
                 }.toString()
-                Log.d(
-                    TAG,
-                    "TOMATO_DEBUG SIGNUP request=start method=POST path=/register/ contentType=application/json fingerprint=$deviceFingerprint",
-                )
                 val connection = (URL(signUpEndpoint).openConnection() as HttpsURLConnection).apply {
                     requestMethod = "POST"
                     connectTimeout = HTTP_TIMEOUT_MS
                     readTimeout = HTTP_TIMEOUT_MS
                     doOutput = true
+                    setRequestProperty("Accept", "application/json")
                     setRequestProperty("Content-Type", "application/json; charset=utf-8")
                 }
                 try {
@@ -256,9 +251,8 @@ class TomatoLoginActivity : FragmentActivity() {
                         ?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
                     val body = runCatching { JSONObject(rawBody) }.getOrNull()
                     val apiStatus = body?.optString("status_code")?.toIntOrNull()
-                    val message = body?.optString("message")?.safeLogMessage()
+                    val message = body?.apiMessage()
                     val token = body?.optString("token")?.trim()?.takeIf(String::isNotBlank)
-                    Log.d(TAG, "TOMATO_DEBUG SIGNUP HTTP=$httpStatus apiStatus=$apiStatus message=${message ?: "none"} tokenPresent=${token != null}")
                     if (httpStatus !in 200..299 || apiStatus != 4) throw SignUpException(apiStatus, message, httpStatus)
                     token ?: throw SignUpException(apiStatus, "Resposta de cadastro sem sessão", httpStatus)
                 } finally {
@@ -277,61 +271,81 @@ class TomatoLoginActivity : FragmentActivity() {
                         RESULT_LOGIN_SUCCESS,
                         Bundle().apply { putString(EXTRA_SESSION_TOKEN, token) },
                     )
-                    Log.d(TAG, "TOMATO_DEBUG SIGNUP session_received=true")
                     this@TomatoLoginActivity.password.text?.clear()
                     status.text = "Conta criada e conectada"
                     setResult(RESULT_OK)
                     finish()
                 }.onFailure { error ->
-                    Log.e(TAG, "TOMATO_DEBUG SIGNUP failure type=${error.javaClass.simpleName} message=${error.message.safeLogMessage() ?: "none"}")
                     status.text = when (error) {
                         is SignUpException -> error.userMessage()
-                        is IOException -> "Falha de conexão ao criar a conta. Tente novamente."
-                        else -> "Falha interna ao iniciar o cadastro. Consulte TOMATO_DEBUG."
+                        else -> error.connectionMessage()
                     }
                 }
             }
         }
     }
 
-    private class LoginException(
+    private inner class LoginException(
         private val apiStatus: Int?,
         message: String?,
         private val httpStatus: Int,
     ) : IOException(message) {
-        fun userMessage() = when (apiStatus) {
-            1 -> "Credenciais inválidas."
-            30 -> "hCaptcha inválido ou expirado."
-            null -> if (httpStatus >= 500) "Erro temporário da API Tomato (HTTP $httpStatus). Tente novamente." else message?.takeIf(String::isNotBlank) ?: "Erro da API Tomato (HTTP $httpStatus)."
-            else -> message?.takeIf(String::isNotBlank) ?: "Erro da API Tomato (HTTP $httpStatus)."
+        fun userMessage() = when {
+            apiStatus == 31 || httpStatus == 429 -> RATE_LIMIT_MESSAGE
+            message.isMaintenanceMessage() -> MAINTENANCE_MESSAGE
+            httpStatus in 500..599 -> SERVER_UNAVAILABLE_MESSAGE
+            apiStatus == 1 || httpStatus == 401 || httpStatus == 403 -> "E-mail ou senha inválidos."
+            apiStatus == 30 -> "hCaptcha inválido ou expirado."
+            else -> message.usefulApiMessage() ?: UNEXPECTED_ERROR_MESSAGE
         }
     }
 
-    private class SignUpException(
+    private inner class SignUpException(
         private val apiStatus: Int?,
         message: String?,
         private val httpStatus: Int,
     ) : IOException(message) {
-        fun userMessage() = when (apiStatus) {
-            8 -> "Não foi possível criar a conta."
-            9 -> "Já existe uma conta com esses dados."
-            10 -> "Dados de cadastro inválidos."
-            11, 12 -> "Nome de usuário inválido."
-            30 -> "hCaptcha inválido ou expirado."
-            else -> message?.takeIf(String::isNotBlank) ?: "Erro da API Tomato (HTTP $httpStatus)."
+        fun userMessage() = when {
+            apiStatus == 31 || httpStatus == 429 -> RATE_LIMIT_MESSAGE
+            message.isMaintenanceMessage() -> MAINTENANCE_MESSAGE
+            httpStatus in 500..599 -> SERVER_UNAVAILABLE_MESSAGE
+            apiStatus == 5 -> message.usefulApiMessage() ?: "A senha deve ter entre 6 e 127 caracteres."
+            apiStatus == 9 -> "Já existe uma conta com esses dados."
+            apiStatus == 10 -> "Dados de cadastro inválidos."
+            apiStatus == 11 || apiStatus == 12 -> "Nome de usuário inválido."
+            apiStatus == 30 -> "hCaptcha inválido ou expirado."
+            else -> message.usefulApiMessage() ?: UNEXPECTED_ERROR_MESSAGE
         }
     }
 
-    private fun String?.safeLogMessage() = this
+    private fun String?.cleanApiMessage() = this
         ?.replace(Regex("[\\r\\n]+"), " ")
-        ?.take(200)
+        ?.trim()
+        ?.take(300)
 
-    private fun String.safeHttpErrorSummary(): String? = Regex("<title[^>]*>(.*?)</title>", RegexOption.IGNORE_CASE)
-        .find(this)
-        ?.groupValues
-        ?.getOrNull(1)
-        ?.replace(Regex("\\s+"), " ")
-        ?.take(120)
+    private fun JSONObject.apiMessage(): String? = sequenceOf("message", "status", "error", "detail")
+        .mapNotNull { opt(it) as? String }
+        .mapNotNull { it.cleanApiMessage()?.takeIf(String::isNotBlank) }
+        .firstOrNull()
+
+    private fun String?.usefulApiMessage(): String? = cleanApiMessage()
+        ?.takeUnless { it.equals("Unable to complete registration.", ignoreCase = true) }
+
+    private fun String?.isMaintenanceMessage(): Boolean = this?.let {
+        it.contains("maintenance", ignoreCase = true) || it.contains("manuten", ignoreCase = true)
+    } == true
+
+    private fun Throwable.connectionMessage() = when (this) {
+        is SocketTimeoutException, is ConnectException -> SERVER_UNAVAILABLE_MESSAGE
+        is UnknownHostException, is IOException -> CONNECTION_ERROR_MESSAGE
+        else -> UNEXPECTED_ERROR_MESSAGE
+    }
+
+    private fun com.hcaptcha.sdk.HCaptchaException.hCaptchaMessage() = when (statusCode) {
+        15 -> "O hCaptcha expirou. Tente novamente."
+        31 -> RATE_LIMIT_MESSAGE
+        else -> "Não foi possível concluir o hCaptcha. Tente novamente."
+    }
 
     private val loginEndpoint get() = "$apiHost/login/"
     private val signUpEndpoint get() = "$apiHost/register/"
@@ -344,8 +358,15 @@ class TomatoLoginActivity : FragmentActivity() {
         private const val PROD_API_HOST = "https://prod-api.tomatoanimes.com"
         private const val EDGE_API_HOST = "https://edge.betomato.com"
         private const val HCAPTCHA_SITE_KEY = "d0706611-1d89-4b8c-af79-3caf0f14feba"
-        private const val TAG = "TomatoLogin"
         private const val HTTP_TIMEOUT_MS = 10_000
+        private const val SERVER_UNAVAILABLE_MESSAGE =
+            "O servidor da Tomato está indisponível no momento. Tente novamente mais tarde."
+        private const val CONNECTION_ERROR_MESSAGE =
+            "Não foi possível conectar ao servidor da Tomato. Verifique sua internet ou tente novamente mais tarde."
+        private const val RATE_LIMIT_MESSAGE =
+            "A Tomato bloqueou temporariamente novas tentativas neste dispositivo/IP. Aguarde um tempo antes de tentar novamente."
+        private const val MAINTENANCE_MESSAGE = "A Tomato está em manutenção. Tente novamente mais tarde."
+        private const val UNEXPECTED_ERROR_MESSAGE = "A Tomato retornou um erro inesperado. Tente novamente mais tarde."
         private val deviceFingerprint get() = "${Build.VERSION.RELEASE}/${Build.MANUFACTURER}/${Build.MODEL}".replace(Regex("\\s"), "-")
     }
 }

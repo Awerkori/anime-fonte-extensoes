@@ -8,7 +8,6 @@ import android.os.Handler
 import android.os.Looper
 import android.os.ResultReceiver
 import android.os.SystemClock
-import android.util.Log
 import android.widget.Toast
 import androidx.preference.EditTextPreference
 import androidx.preference.ListPreference
@@ -49,15 +48,17 @@ import org.json.JSONArray
 import org.json.JSONObject
 import rx.Observable
 import java.io.ByteArrayOutputStream
+import java.io.IOException
+import java.net.ConnectException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicLong
 import java.util.zip.GZIPInputStream
 import java.util.zip.InflaterInputStream
 import kotlin.time.Duration.Companion.seconds
 
-private const val TAG = "Tomato"
 private const val APP_USER_AGENT = "tomato-android"
 private const val OFFICIAL_OKHTTP_USER_AGENT = "okhttp/4.11.0"
 private const val OFFICIAL_APP_VERSION = "1.4.3"
@@ -69,13 +70,19 @@ private const val FEED_PATH = "/v2/animes/feed"
 private const val LATEST_SECTION_TYPE = 7
 private const val EMPTY_FEED_ANIME_ID = 1062
 private const val PAGE_SIZE = 25
-private const val POPULAR_VALIDATION_COUNT = 15
-private const val LATEST_VALIDATION_COUNT = 10
 private const val FEED_CACHE_TTL_MS = 3_000L
 private const val DETAILS_CACHE_TTL_MS = 30_000L
-private const val MAX_ERROR_LOG_BYTES = 512L
 private const val MAX_POST_INSPECTION_BYTES = 256L * 1024L
 private const val MAX_ERROR_MESSAGE_LENGTH = 120
+private const val SERVER_UNAVAILABLE_MESSAGE =
+    "O servidor da Tomato está indisponível no momento. Tente novamente mais tarde."
+private const val CONNECTION_ERROR_MESSAGE =
+    "Não foi possível conectar ao servidor da Tomato. Verifique sua internet ou tente novamente mais tarde."
+private const val RATE_LIMIT_MESSAGE =
+    "A Tomato bloqueou temporariamente novas tentativas neste dispositivo/IP. Aguarde um tempo antes de tentar novamente."
+private const val SESSION_EXPIRED_MESSAGE = "Sua sessão da Tomato expirou ou não é mais válida. Entre novamente."
+private const val MAINTENANCE_MESSAGE = "A Tomato está em manutenção. Tente novamente mais tarde."
+private const val UNEXPECTED_ERROR_MESSAGE = "A Tomato retornou um erro inesperado. Tente novamente mais tarde."
 internal const val PREF_TOKEN = "tomato_official_session_token_v1"
 private const val PREF_LANGUAGE = "preferred_language"
 private const val PREF_ACCOUNT_ACTION = "tomato_account_action_v2"
@@ -123,7 +130,6 @@ class Tomato :
     private val preferences: SharedPreferences by getPreferencesLazy()
     private val serverBootstrap by lazy { TomatoServerBootstrap(preferences) }
     private var loginResultReceiver: ResultReceiver? = null
-    private val requestSequence = AtomicLong(0)
     private val feedCacheLock = Any()
     private val popularTitleCache = ConcurrentHashMap<Int, String>()
 
@@ -134,9 +140,10 @@ class Tomato :
     private var detailsSnapshot: DetailsSnapshot? = null
 
     override fun headersBuilder() = super.headersBuilder().apply {
-        set("Accept", "application/json")
+        // Keep source-level headers safe for media clients. Some hosts merge these
+        // into Video.headers even when the Video supplies its own headers.
+        set("Accept", "*/*")
         set("User-Agent", APP_USER_AGENT)
-        sessionToken()?.let { set("Authorization", "Bearer $it") }
     }
 
     override val client by lazy {
@@ -180,7 +187,6 @@ class Tomato :
                     feedSnapshot
                         ?.takeIf { it.key == key && now - it.storedAtMs <= FEED_CACHE_TTL_MS }
                         ?.let {
-                            Log.d(TAG, "TOMATO_DEBUG REQUEST path=$FEED_PATH source=memory-cache")
                             return@synchronized it.toResponse(request)
                         }
 
@@ -200,31 +206,29 @@ class Tomato :
                     response.newBuilder().body(bytes.toResponseBody(contentType)).build()
                 }
             }
+            // These requests target only the Tomato API. Media URLs are handed to
+            // the host through Video and never pass through this error mapper.
             .addInterceptor { chain ->
-                val request = chain.request()
-                val sequence = requestSequence.incrementAndGet()
-                Log.d(
-                    TAG,
-                    "TOMATO_DEBUG REQUEST seq=$sequence host=${request.url.host.serverLabel()} " +
-                        "method=${request.method} path=${request.url.encodedPath}",
-                )
-                val response = chain.proceed(request)
-                Log.d(
-                    TAG,
-                    "TOMATO_DEBUG RESPONSE seq=$sequence HTTP=${response.code} contentType=${response.body.contentType()} " +
-                        "retryAfter=${response.header("Retry-After") ?: "none"} message=${response.safeErrorMessage()}",
-                )
-                if (response.code == 401 || response.code == 403) {
-                    Log.d(TAG, "TOMATO_DEBUG AUTH rejected=true HTTP=${response.code} tokenPreserved=true")
+                val response = try {
+                    chain.proceed(chain.request())
+                } catch (error: UnknownHostException) {
+                    throw IOException(CONNECTION_ERROR_MESSAGE, error)
+                } catch (error: SocketTimeoutException) {
+                    throw IOException(SERVER_UNAVAILABLE_MESSAGE, error)
+                } catch (error: ConnectException) {
+                    throw IOException(SERVER_UNAVAILABLE_MESSAGE, error)
                 }
-                if (request.url.encodedPath == FEED_PATH) {
-                    Log.d(TAG, "TOMATO_DEBUG FEED method=${request.method} HTTP=${response.code}")
+                if (response.isSuccessful) {
+                    response
+                } else {
+                    val message = response.tomatoApiErrorMessage()
+                    response.close()
+                    throw IOException(message)
                 }
-                response
             }
             // Axios explicitly supplies Accept-Encoding, so OkHttp does not perform
-            // its transparent decompression. Decode the two encodings requested by
-            // the official client before the JSON parsers see the response.
+            // its transparent decompression. Decode before the outer error mapper or
+            // JSON parsers inspect a response body.
             .addInterceptor { chain -> chain.proceed(chain.request()).decodeContentEncoding() }
             .build()
     }
@@ -253,48 +257,19 @@ class Tomato :
         }
         val cards = shelf?.jsonObject?.get("data")?.jsonArray.orEmpty()
         val titleByAnimeId = feed.animeTitles()
-        var feedTitles = 0
-        var cachedTitles = 0
-        var hydratedTitles = 0
-        val animes = cards.mapIndexedNotNull { index, element ->
+        val animes = cards.mapNotNull { element ->
             val card = element.jsonObject
-            val id = card.intOrNull("anime_id")?.takeIf { it > 0 } ?: return@mapIndexedNotNull null
-            if (id == EMPTY_FEED_ANIME_ID) return@mapIndexedNotNull null
-            val thumbnail = card.stringOrNull("thumbnail") ?: return@mapIndexedNotNull null
-            val feedTitle = titleByAnimeId[id]
-            val cachedTitle = popularTitleCache[id]
-            val title = feedTitle ?: cachedTitle ?: hydratePopularTitle(id)
-            when {
-                feedTitle != null -> feedTitles++
-                cachedTitle != null -> cachedTitles++
-                title != null -> hydratedTitles++
-            }
+            val id = card.intOrNull("anime_id")?.takeIf { it > 0 } ?: return@mapNotNull null
+            if (id == EMPTY_FEED_ANIME_ID) return@mapNotNull null
+            val thumbnail = card.stringOrNull("thumbnail") ?: return@mapNotNull null
+            val title = titleByAnimeId[id] ?: popularTitleCache[id] ?: hydratePopularTitle(id)
             val valid = !title.isNullOrBlank() && thumbnail.isNotBlank()
-            if (index < POPULAR_VALIDATION_COUNT) {
-                Log.d(
-                    TAG,
-                    "TOMATO_DEBUG POPULAR index=$index animeId=$id titlePresent=${!title.isNullOrBlank()} " +
-                        "coverPresent=${thumbnail.isNotBlank()} source=${when {
-                            feedTitle != null -> "feed"
-                            cachedTitle != null -> "cache"
-                            title != null -> "details"
-                            else -> "missing"
-                        }} valid=$valid",
-                )
-            }
-            if (!valid) return@mapIndexedNotNull null
+            if (!valid) return@mapNotNull null
             requiredSAnime("/v2/anime/$id", requireNotNull(title)) {
                 thumbnail_url = thumbnail
             }
         }
-        Log.d(
-            TAG,
-            "TOMATO_DEBUG FEED section=popular raw=${cards.size} valid=${animes.size} skipped=${cards.size - animes.size} " +
-                "titlesFeed=$feedTitles titlesCache=$cachedTitles titlesDetails=$hydratedTitles " +
-                "firstId=${cards.firstOrNull()?.jsonObject?.get("anime_id")?.jsonPrimitive?.content ?: "none"} " +
-                "firstKeys=${cards.firstOrNull()?.jsonObject?.keys?.sorted()?.joinToString(",") ?: "none"}",
-        )
-        return animes.validatedPage("popular")
+        return animes.validatedPage()
     }
 
     override fun latestUpdatesRequest(page: Int) = authenticatedGet(FEED_PATH)
@@ -311,7 +286,7 @@ class Tomato :
         // SectionNewEpisodes/ItemNewEpisodes in the official APK renders these
         // fields directly. It performs no Details hydration, deduplication or local
         // sorting; the server response is already the official new-episode order.
-        val animes = cards.mapIndexedNotNull { index, element ->
+        val animes = cards.mapNotNull { element ->
             val card = element.jsonObject
             val animeId = card.intOrNull("ep_anime_id")
             val episodeId = card.intOrNull("ep_id")
@@ -320,32 +295,13 @@ class Tomato :
             val thumbnail = card.stringOrNull("thumbnail")
             val valid = animeId != null && animeId > 0 && episodeId != null && episodeId > 0 &&
                 !title.isNullOrBlank() && !thumbnail.isNullOrBlank()
-            if (index < LATEST_VALIDATION_COUNT) {
-                Log.d(
-                    TAG,
-                    "TOMATO_DEBUG LATEST index=$index animeId=${animeId ?: "none"} " +
-                        "episodeId=${episodeId ?: "none"} titlePresent=${!title.isNullOrBlank()} " +
-                        "coverPresent=${!thumbnail.isNullOrBlank()} valid=$valid",
-                )
-            }
-            if (!valid) return@mapIndexedNotNull null
+            if (!valid) return@mapNotNull null
             requiredSAnime("/v2/anime/$animeId", title) {
                 thumbnail_url = thumbnail
                 description = episodeName?.let { "Último episódio: $it" }
             }
         }
-        animes.take(LATEST_VALIDATION_COUNT).forEachIndexed { index, anime ->
-            Log.d(
-                TAG,
-                "TOMATO_DEBUG LATEST mappedIndex=$index animeId=${anime.url.substringAfterLast('/')} source=feed",
-            )
-        }
-        Log.d(
-            TAG,
-            "TOMATO_DEBUG FEED section=$LATEST_SECTION_TYPE meaning=new-episodes raw=${cards.size} " +
-                "valid=${animes.size} skipped=${cards.size - animes.size} order=server",
-        )
-        return animes.validatedPage("latest")
+        return animes.validatedPage()
     }
 
     override fun searchAnimeRequest(page: Int, query: String, filters: AnimeFilterList): Request {
@@ -364,7 +320,7 @@ class Tomato :
         .parseAs<SearchResultDto>()
         .result
         .map { it.toSAnime() }
-        .validatedPage("search")
+        .validatedPage()
 
     // Tomato does not expose a related-anime API compatible with Aniyomi. Explicitly
     // returning an empty list prevents the host fallback from issuing several searches
@@ -374,11 +330,9 @@ class Tomato :
     override fun animeDetailsRequest(anime: SAnime): Request {
         val animeId = anime.url.substringAfterLast('/').toIntOrNull()
             ?: error("ID de anime Tomato inválido")
-        Log.d(TAG, "TOMATO_DEBUG DETAILS animeId=$animeId")
         return authenticatedGet("/v2/anime/$animeId")
     }
     override fun animeDetailsParse(response: Response): SAnime {
-        Log.d(TAG, "TOMATO_DEBUG DETAILS HTTP=${response.code}")
         val details = response.parseAs<AnimeResultDto>()
         detailsSnapshot = DetailsSnapshot(details.animeDetails.animeId, SystemClock.elapsedRealtime(), details)
         return details.toSAnime()
@@ -399,12 +353,10 @@ class Tomato :
                 detailsSnapshot = DetailsSnapshot(animeId, SystemClock.elapsedRealtime(), parsed)
             }
         }
-        Log.d(TAG, "TOMATO_DEBUG EPISODES animeId=$animeId detailsSource=${if (cachedDetails == null) "network" else "memory-cache"}")
         val merged = linkedMapOf<Pair<Int, Float>, SEpisode>()
         details.animeSeasons.sortedBy { it.seasonNumber }.forEach { season ->
             var page = 0
             while (true) {
-                Log.d(TAG, "TOMATO_DEBUG EPISODES seasonId=${season.seasonId} page=$page")
                 val result = client.newCall(
                     authenticatedPost("/season/${season.seasonId}/episodes") {
                         put("token", requireToken())
@@ -419,10 +371,6 @@ class Tomato :
                     val existing = merged[key]
                     if (existing == null) {
                         val episodeUrl = episodeUrl(item.epId)
-                        Log.d(
-                            TAG,
-                            "TOMATO_DEBUG EPISODE epId=${item.epId} number=${item.epNumber} urlShape=/v2/anime/episode/{ep_id}/stream",
-                        )
                         merged[key] = SEpisode.create().apply {
                             episode_number = season.seasonNumber + item.epNumber / 1000f
                             name = "T${season.seasonNumber}E${formatEpisode(item.epNumber)} - ${item.epName}"
@@ -445,7 +393,6 @@ class Tomato :
     override fun episodeListParse(response: Response): List<SEpisode> = error("Tomato loads episodes by season")
 
     override suspend fun getVideoList(episode: SEpisode): List<Video> {
-        Log.d(TAG, "TOMATO_DEBUG VIDEO entry")
         val primaryId = episodeIdFromUrl(episode.url)
         val alternateId = episode.url.substringAfter("alternate=", "").toIntOrNull()
         val legacyIds = legacyEpisodeIds(episode.url)
@@ -457,32 +404,11 @@ class Tomato :
                 alternateId?.let { add("Dublado" to it) }
             }
         }
-        Log.d(
-            TAG,
-            "TOMATO_DEBUG VIDEO parsed primary=${primaryId ?: "invalid"} alternate=${alternateId ?: "none"} " +
-                "legacy=${legacyIds.isNotEmpty()}",
-        )
-        val videos = streams.flatMap { (language, episodeId) ->
-            Log.d(TAG, "TOMATO_DEBUG VIDEO episodeId=$episodeId")
-            Log.d(TAG, "TOMATO_DEBUG DOWNLOAD episodeId=$episodeId episodeNumber=${episode.episode_number}")
+        return streams.flatMap { (language, episodeId) ->
             val info = client.newCall(streamRequest(episodeId)).awaitSuccess().use { it.parseAs<EpisodeInfoDto>() }
-            Log.d(TAG, "TOMATO_DEBUG VIDEO streams shd=${!info.streams.shd.isNullOrBlank()} mhd=${!info.streams.mhd.isNullOrBlank()} fhd=${!info.streams.fhd.isNullOrBlank()}")
-            Log.d(
-                TAG,
-                "TOMATO_DEBUG DOWNLOAD qualities shd=${!info.streams.shd.isNullOrBlank()} " +
-                    "mhd=${!info.streams.mhd.isNullOrBlank()} fhd=${!info.streams.fhd.isNullOrBlank()}",
-            )
             info.streams.toVideos(language)
         }
             .sortedWith(compareByDescending<Video> { it.quality.contains(preferredLanguage(), true) }.thenByDescending { qualityNumber(it.quality) })
-        videos.firstOrNull()?.let {
-            Log.d(
-                TAG,
-                "TOMATO_DEBUG DOWNLOAD selectedQuality=${it.quality} streamType=${it.videoUrl?.streamType() ?: "OTHER"} " +
-                    "headers authPresent=${requestHeaders()["Authorization"] != null}",
-            )
-        }
-        return videos
     }
 
     override fun getFilterList() = TomatoFilters.FILTER_LIST
@@ -505,11 +431,9 @@ class Tomato :
                     ?.trim()
                     ?.takeIf(String::isNotEmpty)
                     ?: return
-                Log.d(TAG, "TOMATO_DEBUG AUTH session_received=true")
                 preferences.edit().putString(PREF_TOKEN, token).apply()
                 feedSnapshot = null
                 detailsSnapshot = null
-                Log.d(TAG, "TOMATO_DEBUG AUTH session_saved=true")
                 refreshAccountState()
             }
         }
@@ -524,8 +448,12 @@ class Tomato :
                 Thread {
                     val host = runCatching(::selectedApiBaseUrl)
                     Handler(Looper.getMainLooper()).post {
-                        host.onFailure {
-                            Toast.makeText(context, "Servidor Tomato temporariamente indisponível.", Toast.LENGTH_LONG).show()
+                        host.onFailure { error ->
+                            val message = when (error) {
+                                is UnknownHostException -> CONNECTION_ERROR_MESSAGE
+                                else -> SERVER_UNAVAILABLE_MESSAGE
+                            }
+                            Toast.makeText(context, message, Toast.LENGTH_LONG).show()
                             return@post
                         }
                         context.startActivity(
@@ -550,7 +478,6 @@ class Tomato :
                 preferences.edit().remove(PREF_TOKEN).apply()
                 feedSnapshot = null
                 detailsSnapshot = null
-                Log.d(TAG, "TOMATO_DEBUG AUTH logout")
                 refreshAccountState()
                 true
             }
@@ -567,7 +494,7 @@ class Tomato :
         }.also(screen::addPreference)
     }
 
-    private fun loginRequiredPage() = listOf(loginRequiredAnime()).validatedPage("login-required")
+    private fun loginRequiredPage() = listOf(loginRequiredAnime()).validatedPage()
     private fun loginRequiredAnime() = requiredSAnime(LOGIN_REQUIRED_URL, "Login necessário") {
         description = "Abra as configurações da extensão Tomato e entre com sua conta."
     }
@@ -621,12 +548,7 @@ class Tomato :
     // Validation is structural: every item reaching this helper was built through
     // requiredSAnime, whose non-null parameters and assignments initialize both
     // lateinit fields. Do not read either property here on compatibility hosts.
-    private fun List<SAnime>.validatedPage(source: String): AnimesPage {
-        forEachIndexed { index, _ ->
-            Log.d(TAG, "TOMATO_DEBUG SANIME source=$source index=$index titleSet=true urlSet=true")
-        }
-        return AnimesPage(this, false)
-    }
+    private fun List<SAnime>.validatedPage() = AnimesPage(this, false)
 
     // This is the URL format emitted by SESSION-BRIDGE-FIX. Keep producer and
     // consumer together: its final path segment is "stream", not the episode ID.
@@ -646,15 +568,6 @@ class Tomato :
         }
         .toList()
 
-    private fun String.streamType(): String {
-        val path = substringBefore('?').lowercase()
-        return when {
-            path.endsWith(".m3u8") -> "HLS"
-            path.endsWith(".mp4") -> "MP4"
-            else -> "OTHER"
-        }
-    }
-
     private fun authenticatedGet(path: String): Request {
         requireToken()
         return GET("${selectedApiBaseUrl()}${path.takeIf { it.startsWith('/') } ?: "/$path"}", requestHeaders())
@@ -664,14 +577,8 @@ class Tomato :
     // GET builder used by the original ep_id -> /stream path, with no extra headers.
     private fun streamRequest(episodeId: Int): Request = authenticatedGet("/v2/anime/episode/$episodeId/stream")
     private fun authenticatedPost(path: String, build: JSONObject.() -> Unit): Request {
-        val token = requireToken()
+        requireToken()
         val payload = JSONObject().apply(build)
-        val keys = if (path == "/v2/content/search") {
-            if (payload.has("tags")) "token,search,content_type,page,tags" else "token,search,content_type,page"
-        } else {
-            "token,page,order"
-        }
-        Log.d(TAG, "TOMATO_DEBUG POST path=$path keys=$keys tokenPresent=true tokenLength=${token.length}")
         val headers = requestHeaders().newBuilder()
             .set("Content-Type", "application/json; charset=utf-8")
             .build()
@@ -679,42 +586,17 @@ class Tomato :
     }
     private fun Response.normalizePostEnvelope(source: PostEnvelope): Response {
         val root = runCatching { JSONObject(peekBody(MAX_POST_INSPECTION_BYTES).string()) }
-            .getOrElse {
-                Log.d(TAG, "TOMATO_DEBUG $source responseKind=invalid-json")
-                return this
-            }
-        val rootKeys = buildList {
-            val iterator = root.keys()
-            while (iterator.hasNext()) add(iterator.next())
-        }.sorted()
+            .getOrElse { return this }
         val objects = root.possibleEnvelopes()
         val statusCode = objects.firstString("status_code")
         val message = objects.firstString("message", "error", "detail")
+        if (statusCode == "31") throw IOException(RATE_LIMIT_MESSAGE)
         val list = when (source) {
             PostEnvelope.SEARCH -> objects.firstArray("result")
                 ?: objects.firstArrayWithObjectKey("data", "id")
             PostEnvelope.EPISODES -> objects.firstArray("data")
                 ?: objects.firstArrayWithObjectKey("episodes", "ep_id")
                 ?: objects.firstArrayWithObjectKey("result", "ep_id")
-        }
-        val count = list?.length() ?: 0
-        val tokenPresent = sessionToken() != null
-        if (source == PostEnvelope.SEARCH) {
-            Log.d(
-                TAG,
-                "TOMATO_DEBUG SEARCH HTTP=$code tokenPresent=$tokenPresent rootKeys=${rootKeys.joinToString(",")} " +
-                    "statusCode=${statusCode ?: "none"} " +
-                    "resultPresent=${list != null} resultCount=$count message=${message.safeLogicalMessage() ?: "none"}",
-            )
-        } else {
-            val episodes = objects.firstInt("episodes")
-            Log.d(
-                TAG,
-                "TOMATO_DEBUG EPISODES HTTP=$code tokenPresent=$tokenPresent rootKeys=${rootKeys.joinToString(",")} " +
-                    "statusCode=${statusCode ?: "none"} dataPresent=${list != null} dataCount=$count " +
-                    "episodes=${episodes ?: "none"} " +
-                    "message=${message.safeLogicalMessage() ?: "none"}",
-            )
         }
         check(list != null) {
             "Resposta Tomato inesperada em $source" +
@@ -779,25 +661,16 @@ class Tomato :
         mhd?.let { it.toVideo("$language - 720p") },
         fhd?.let { it.toVideo("$language - 1080p") },
     )
-    private fun String.toVideo(quality: String) = if (isR2Mp4()) {
-        // A null Video.headers makes compatible hosts inherit the source's Bearer header.
-        // R2 presigned URLs already carry their authorization in the query string.
-        Video(this, quality, videoUrl = this, headers = okhttp3.Headers.Builder().build())
-    } else {
-        Video(this, quality, videoUrl = this)
-    }
-    private fun String.isR2Mp4(): Boolean {
-        val host = substringAfter("://", "").substringBefore('/').substringBefore(':')
-        return host.endsWith(".r2.cloudflarestorage.com", ignoreCase = true) &&
-            substringBefore('?').endsWith(".mp4", ignoreCase = true)
-    }
-    private fun requestHeaders() = headersBuilder().build()
+
+    // Stream URLs are already authorized by their query parameters. Explicit media
+    // headers prevent hosts and FFmpeg from inheriting the API's Bearer token, while
+    // applying the same safe headers to HLS playlists, segments and redirected URLs.
+    private fun String.toVideo(quality: String) = Video(this, quality, videoUrl = this, headers = headers)
+    private fun requestHeaders() = headers.newBuilder()
+        .set("Accept", "application/json")
+        .apply { sessionToken()?.let { set("Authorization", "Bearer $it") } }
+        .build()
     private fun selectedApiBaseUrl() = serverBootstrap.selectedHost()
-    private fun String.serverLabel() = when (this) {
-        "prod-api.tomatoanimes.com" -> "prod"
-        "edge.betomato.com" -> "edge"
-        else -> "other"
-    }
     private fun sessionToken() = preferences.getString(PREF_TOKEN, null)?.trim()?.removePrefix("Bearer ")?.takeIf(String::isNotEmpty)
     private fun requireToken() = sessionToken() ?: error("Login necessário. Abra as configurações da extensão Tomato e entre com sua conta.")
     private fun preferredLanguage() = preferences.getString(PREF_LANGUAGE, "Dublado") ?: "Dublado"
@@ -825,14 +698,27 @@ class Tomato :
             .body(decoded.toResponseBody(contentType))
             .build()
     }
-    private fun Response.safeErrorMessage(): String {
-        if (isSuccessful) return "none"
-        return runCatching { peekBody(MAX_ERROR_LOG_BYTES).string() }
-            .getOrDefault("")
-            .replace(Regex("\\s+"), " ")
-            .take(MAX_ERROR_MESSAGE_LENGTH)
-            .ifBlank { "none" }
+    private fun Response.tomatoApiErrorMessage(): String {
+        val apiMessage = runCatching {
+            val body = JSONObject(peekBody(MAX_POST_INSPECTION_BYTES).string())
+            sequenceOf("message", "status", "error", "detail")
+                .mapNotNull { body.opt(it) as? String }
+                .map(String::trim)
+                .firstOrNull(String::isNotEmpty)
+        }.getOrNull()
+        return when {
+            code == 429 -> RATE_LIMIT_MESSAGE
+            code == 401 || code == 403 -> SESSION_EXPIRED_MESSAGE
+            apiMessage.isMaintenanceMessage() -> MAINTENANCE_MESSAGE
+            code in 500..599 -> SERVER_UNAVAILABLE_MESSAGE
+            !apiMessage.isNullOrBlank() -> apiMessage.replace(Regex("[\\r\\n]+"), " ").take(300)
+            else -> UNEXPECTED_ERROR_MESSAGE
+        }
     }
+
+    private fun String?.isMaintenanceMessage(): Boolean = this?.let {
+        it.contains("maintenance", ignoreCase = true) || it.contains("manuten", ignoreCase = true)
+    } == true
 
     private fun migratePreferences() {
         val stored = preferences.all

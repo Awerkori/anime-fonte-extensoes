@@ -1,13 +1,13 @@
 package eu.kanade.tachiyomi.animeextension.pt.tomato
 
 import android.content.SharedPreferences
-import android.util.Log
 import org.json.JSONObject
 import java.io.IOException
 import java.net.ConnectException
 import java.net.HttpURLConnection
 import java.net.SocketTimeoutException
 import java.net.URL
+import java.net.UnknownHostException
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import javax.net.ssl.HttpsURLConnection
@@ -31,7 +31,13 @@ internal class TomatoServerBootstrap(
             if (completed) return persistedHost()
             val (prod, edge, connectivity) = probeServers()
             if (!prod.available && !edge.available && !connectivity.available) {
-                throw IOException("Nenhum servidor Tomato está acessível")
+                val failures = listOfNotNull(prod.failure, edge.failure, connectivity.failure)
+                if (connectivity.failure is UnknownHostException ||
+                    failures.count { it is UnknownHostException } >= 2
+                ) {
+                    throw UnknownHostException("Não foi possível resolver os servidores Tomato")
+                }
+                throw IOException("Nenhum servidor Tomato está acessível", failures.firstOrNull())
             }
 
             // Literal SplashActivity rule: prod wins ties, edge is selected when
@@ -44,8 +50,6 @@ internal class TomatoServerBootstrap(
             } else {
                 EDGE_HOST
             }
-            Log.d(TAG, "TOMATO_DEBUG SERVER selected=${selected.label()}")
-
             // SplashActivity persists API_BASE_URL before POST /checkupdate/.
             preferences.edit().putString(PREF_SELECTED_API_HOST, selected).apply()
             checkUpdate(selected)
@@ -59,9 +63,9 @@ internal class TomatoServerBootstrap(
         // waits up to ten seconds total, rather than serially delaying startup.
         val executor = Executors.newFixedThreadPool(3)
         try {
-            val prod = executor.submit<ProbeResult> { probe(PROD_HOST, "prod") }
-            val edge = executor.submit<ProbeResult> { probe(EDGE_HOST, "edge") }
-            val connectivity = executor.submit<ProbeResult> { probe(CONNECTIVITY_HOST, "connectivity") }
+            val prod = executor.submit<ProbeResult> { probe(PROD_HOST) }
+            val edge = executor.submit<ProbeResult> { probe(EDGE_HOST) }
+            val connectivity = executor.submit<ProbeResult> { probe(CONNECTIVITY_HOST) }
             executor.shutdown()
             executor.awaitTermination(PROBE_WAIT_TIMEOUT_MS.toLong(), TimeUnit.MILLISECONDS)
             return Triple(
@@ -78,7 +82,7 @@ internal class TomatoServerBootstrap(
         ?.takeIf { it == PROD_HOST || it == EDGE_HOST }
         ?: PROD_HOST
 
-    private fun probe(host: String, label: String): ProbeResult {
+    private fun probe(host: String): ProbeResult {
         val startedAt = System.currentTimeMillis()
         return try {
             val connection = (URL(host).openConnection() as HttpsURLConnection).apply {
@@ -90,15 +94,12 @@ internal class TomatoServerBootstrap(
                 // therefore remains a valid latency result and can win selection.
                 connection.connect()
                 val latency = System.currentTimeMillis() - startedAt
-                Log.d(TAG, "TOMATO_DEBUG SERVER probe=$label connected=true latencyMs=$latency status=not-read")
                 ProbeResult(latency, true)
             } finally {
                 connection.disconnect()
             }
-        } catch (_: Exception) {
-            val latency = System.currentTimeMillis() - startedAt
-            Log.d(TAG, "TOMATO_DEBUG SERVER probe=$label connected=false latencyMs=$latency status=not-read")
-            ProbeResult(Long.MAX_VALUE, false)
+        } catch (error: Exception) {
+            ProbeResult(Long.MAX_VALUE, false, error as? IOException ?: IOException(error))
         }
     }
 
@@ -111,7 +112,6 @@ internal class TomatoServerBootstrap(
             } catch (error: IOException) {
                 val retryable = error is SocketTimeoutException || error is ConnectException
                 if (!retryable || attempt == CHECK_UPDATE_MAX_ATTEMPTS - 1) throw error
-                Log.d(TAG, "TOMATO_DEBUG BOOTSTRAP retry=${attempt + 1} reason=network-timeout")
                 timeoutMs *= 2
             }
         }
@@ -139,12 +139,6 @@ internal class TomatoServerBootstrap(
             val checkCountry = body?.optBoolean("check_country", false) ?: false
             val requireCaptcha = body?.optBoolean("require_captcha", false) ?: false
             val syncPlayheads = body?.optBoolean("sync_playheads", false) ?: false
-            Log.d(
-                TAG,
-                "TOMATO_DEBUG BOOTSTRAP host=${host.label()} HTTP=$httpStatus apiStatus=${statusCode ?: "none"} " +
-                    "serverVersion=${serverVersion ?: "none"} appVersion=${remoteAppVersion ?: "none"} " +
-                    "checkCountry=$checkCountry syncPlayheads=$syncPlayheads",
-            )
             if (httpStatus !in 200..299 || statusCode != SUCCESS_STATUS_CODE) {
                 throw IOException("Bootstrap Tomato indisponível (HTTP $httpStatus)")
             }
@@ -186,28 +180,28 @@ internal class TomatoServerBootstrap(
             if (country != null && country !in ALLOWED_COUNTRIES) {
                 throw IOException("País não autorizado pelo Tomato")
             }
-            Log.d(TAG, "TOMATO_DEBUG BOOTSTRAP countryCheck=${if (country == null) "unavailable" else "allowed"}")
         } catch (error: IOException) {
             // The official error callback continues startup when ip-api is unavailable,
             // but it stops when a successful response reports a disallowed country.
             if (error.message == "País não autorizado pelo Tomato") throw error
-            Log.d(TAG, "TOMATO_DEBUG BOOTSTRAP countryCheck=unavailable")
         } finally {
             connection.disconnect()
         }
     }
 
-    private data class ProbeResult(val latencyMs: Long, val available: Boolean) {
+    private data class ProbeResult(
+        val latencyMs: Long,
+        val available: Boolean,
+        val failure: IOException? = null,
+    ) {
         companion object {
             fun unavailable() = ProbeResult(Long.MAX_VALUE, false)
         }
     }
 
-    private fun String.label() = if (this == PROD_HOST) "prod" else "edge"
     private fun String.versionNumber() = filter(Char::isDigit).toIntOrNull() ?: 0
 
     companion object {
-        private const val TAG = "Tomato"
         private const val PROD_HOST = "https://prod-api.tomatoanimes.com"
         private const val EDGE_HOST = "https://edge.betomato.com"
         private const val CONNECTIVITY_HOST = "https://connectivitycheck.gstatic.com"
