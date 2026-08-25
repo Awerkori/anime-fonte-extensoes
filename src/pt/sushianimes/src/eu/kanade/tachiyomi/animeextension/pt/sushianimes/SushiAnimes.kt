@@ -28,6 +28,7 @@ import okhttp3.Response
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
+import org.jsoup.nodes.Entities
 import org.jsoup.select.Elements
 
 class SushiAnimes :
@@ -67,18 +68,64 @@ class SushiAnimes :
     // =============================== Latest ===============================
     override fun latestUpdatesRequest(page: Int): Request = GET("$baseUrl/episodios?page=$page", headers)
 
-    override fun latestUpdatesParse(response: Response): AnimesPage {
-        val document = response.useAsJsoup()
-        val anime = document.select(".episode-grid a.list-movie:not(:has(.hentai-list-media))").map { element ->
-            SAnime.create().apply {
-                setUrlWithoutDomain(element.absUrl("href"))
-                title = element.selectFirst(".list-caption")!!.text()
-                thumbnail_url = element.selectFirst(".media-episode")?.attr("data-src")
+    override suspend fun getLatestUpdates(page: Int): AnimesPage {
+        val siteStart = (page - 1) * LATEST_SITE_PAGES + 1
+        val groups = LinkedHashMap<String, String>()
+        var fetchedPages = 0
+        var previousPageSignature: String? = null
+
+        while (fetchedPages < LATEST_SITE_PAGES) {
+            val sitePage = siteStart + fetchedPages
+            val response = try {
+                client.newCall(latestUpdatesRequest(sitePage)).awaitSuccess()
+            } catch (e: Exception) {
+                Log.w("SushiAnimes", "Failed to fetch recent site page $sitePage: ${e.message}")
+                break
             }
+            val document = response.useAsJsoup()
+            val cards = document.select(".episode-grid a.list-movie:not(:has(.hentai-list-media))")
+            val hrefs = cards.map { it.absUrl("href") }
+            val signature = hrefs.joinToString("\n")
+            val repeatedPage = signature == previousPageSignature
+            if (cards.isEmpty() || repeatedPage) break
+            cards.forEach { card ->
+                val href = card.absUrl("href")
+                val title = card.selectFirst(".list-caption")?.text().orEmpty()
+                if (href.isNotBlank()) {
+                    val key = title.baseRecentTitle()
+                    if (!groups.containsKey(key)) groups[key] = href
+                }
+            }
+            previousPageSignature = signature
+            fetchedPages++
+            if (groups.size >= LATEST_TARGET_ANIMES) break
         }
-        val hasNextPage = document.selectFirst("a.btn.btn-theme.ml-2") != null
-        return AnimesPage(anime, hasNextPage)
+
+        val animes = groups.values.mapNotNull { episodeUrl ->
+            resolveRecentAnime(episodeUrl)
+        }.distinctBy { it.url }
+
+        return AnimesPage(animes.take(LATEST_TARGET_ANIMES), fetchedPages == LATEST_SITE_PAGES)
     }
+
+    private suspend fun resolveRecentAnime(episodeUrl: String): SAnime? = try {
+        val episodeResponse = client.newCall(GET(episodeUrl, headers)).awaitSuccess()
+        val episodeDocument = episodeResponse.useAsJsoup()
+        val parentUrl = episodeDocument.selectFirst(".episode-nav .home-list a")?.absUrl("href")
+            ?: return null
+        val parentDocument = resolveRealDoc(episodeDocument)
+        parseAnimeDetails(parentDocument).apply {
+            setUrlWithoutDomain(parentUrl)
+            initialized = true
+        }
+    } catch (e: Exception) {
+        Log.w("SushiAnimes", "Failed to resolve recent anime: ${e.message}")
+        null
+    }
+
+    override fun latestUpdatesParse(response: Response): AnimesPage = throw UnsupportedOperationException()
+
+    private fun String.baseRecentTitle(): String = replace(RECENT_EPISODE_SUFFIX_REGEX, "").trim().replace(Regex("\\s+"), " ")
 
     // =============================== Search ===============================
     override suspend fun getSearchAnime(
@@ -219,7 +266,7 @@ class SushiAnimes :
         val response = client.newCall(videoListRequest(episode)).awaitSuccess()
         val document = response.useAsJsoup()
 
-        val embeds = document.select("[data-embed]")
+        val embeds = document.select("[data-embed]").distinctBy { it.attr("data-embed") }
         if (embeds.isEmpty()) return emptyList()
 
         // The site requires a CSRF token (meta[name="csrf-token"] / var _TOKEN) on
@@ -247,8 +294,8 @@ class SushiAnimes :
                 return@parallelCatchingFlatMapBlocking emptyList()
             }
             val body = response.bodyString()
-
-            parseEmbedVideos(body)
+            val videos = parseEmbedVideos(body)
+            videos
         }.sort()
     }
 
@@ -261,14 +308,21 @@ class SushiAnimes :
      *    `var playerName = "<label>"` (e.g. "FullHD / HLS").
      */
     private suspend fun parseEmbedVideos(body: String): List<Video> {
-        val doc = Jsoup.parse(body, baseUrl)
+        val decodedBody = decodeHtmlEntities(body)
+        val doc = Jsoup.parse(decodedBody, baseUrl)
         val iframes = doc.select("iframe[src]")
+        return (parseIframeVideos(iframes) + parseScriptVideos(decodedBody))
+            .distinctBy { it.videoUrl }
+    }
 
-        return if (iframes.isNotEmpty()) {
-            parseIframeVideos(iframes)
-        } else {
-            parseScriptVideos(body)
+    private fun decodeHtmlEntities(value: String): String {
+        var decoded = value
+        repeat(2) {
+            val next = Entities.unescape(decoded)
+            if (next == decoded) return decoded
+            decoded = next
         }
+        return decoded
     }
 
     private suspend fun parseIframeVideos(iframes: Elements): List<Video> {
@@ -288,11 +342,11 @@ class SushiAnimes :
         return videos
     }
 
-    private fun parseScriptVideos(body: String): List<Video> {
+    private suspend fun parseScriptVideos(body: String): List<Video> {
         // Script-based response: extract the direct URL and quality label.
-        val rawUrl = PLAYER_EMBED_REGEX.find(body)?.groupValues?.get(1) ?: return emptyList()
+        val rawUrl = PLAYER_EMBED_REGEX.find(body)?.groupValues?.get(1)
         // The site escapes slashes (e.g. "https:\/\/..."); normalize before use.
-        val directUrl = rawUrl.replace("\\/", "/")
+        val directUrl = rawUrl?.let(::decodeHtmlEntities)?.replace("\\/", "/")?.trim()
 
         val quality = PLAYER_NAME_REGEX.find(body)?.groupValues?.get(1)
             ?.let(::qualityFromLabel)
@@ -300,7 +354,23 @@ class SushiAnimes :
 
         val label = if (quality.isBlank()) "Sushi Animes" else "Sushi Animes - $quality"
 
-        return listOf(Video(directUrl, label, directUrl))
+        val urls = buildList {
+            directUrl?.let(::add)
+            FILE_REGEX.find(body)?.groupValues?.get(1)?.replace("\\/", "/")?.let(::add)
+            DIRECT_MEDIA_REGEX.findAll(body).forEach { add(it.groupValues[1].replace("\\/", "/")) }
+        }.distinct()
+        val videos = urls.mapNotNull { url ->
+            val parsed = url.toHttpUrlOrNull()
+            if (parsed != null && isMediaUrl(url)) Video(url, label, url) else null
+        }
+        if (videos.isNotEmpty()) return videos
+
+        directUrl?.let { value ->
+            val fragment = Jsoup.parseBodyFragment(value, baseUrl)
+            val fragmentIframes = fragment.select("iframe[src]")
+            if (fragmentIframes.isNotEmpty()) return parseIframeVideos(fragmentIframes)
+        }
+        return emptyList()
     }
 
     /**
@@ -391,6 +461,8 @@ class SushiAnimes :
     }
 
     companion object {
+        private const val LATEST_SITE_PAGES = 5
+        private const val LATEST_TARGET_ANIMES = 20
         const val PREFIX_SEARCH = "path:"
 
         val JSON = Json {
@@ -404,11 +476,17 @@ class SushiAnimes :
 
         private val QUALITY_REGEX = Regex("(\\d+)p")
 
-        private val PLAYER_EMBED_REGEX = Regex("""var playerEmbed\s*=\s*["']([^"']+)["']""")
+        private val PLAYER_EMBED_REGEX = Regex("""(?:var|let|const)\s+playerEmbed\s*=\s*["']([^"']+)["']""")
         private val PLAYER_NAME_REGEX = Regex("""var playerName\s*=\s*["']([^"']+)["']""")
+        private val FILE_REGEX = Regex("""["']file["']\s*:\s*["']([^"']+)["']""")
+        private val DIRECT_MEDIA_REGEX = Regex("""(https?:\\/\\/[^"'\s<>]+\.(?:m3u8|mp4)(?:\?[^"'\s<>]*)?)""", RegexOption.IGNORE_CASE)
         private val CSRF_TOKEN_REGEX = Regex("""_TOKEN\s*=\s*["']([^"']+)["']""")
 
         private val NAME_VALUE_REGEX = Regex("\"name\"\\s*:\\s*\"(.*?)\",")
         private val UNESCAPED_QUOTE_REGEX = Regex("(?<!\\\\)\"")
+        private val RECENT_EPISODE_SUFFIX_REGEX = Regex("\\s*\\|\\s*\\d+º?\\s*Episódio.*$", RegexOption.IGNORE_CASE)
+
+        private fun isMediaUrl(url: String): Boolean = url.substringBefore('?').endsWith(".m3u8", ignoreCase = true) ||
+            url.substringBefore('?').endsWith(".mp4", ignoreCase = true)
     }
 }
