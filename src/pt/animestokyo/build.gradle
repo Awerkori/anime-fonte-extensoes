@@ -1,0 +1,12 @@
+ext {
+    extName = 'Animes Tokyo'
+    extClass = '.AnimesTokyo'
+    extVersionCode = 1
+}
+
+apply plugin: "kei.plugins.extension.legacy"
+
+dependencies {
+    implementation(project(':lib:bloggerextractor'))
+    implementation(project(':lib:universalextractor'))
+}

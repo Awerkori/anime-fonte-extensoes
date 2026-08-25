@@ -1,23 +1,14 @@
 package eu.kanade.tachiyomi.animeextension.pt.tomato
 
-import android.content.ComponentName
-import android.content.Intent
-import android.content.SharedPreferences
-import android.os.Bundle
+import android.content.Context
 import android.os.Handler
 import android.os.Looper
-import android.os.ResultReceiver
 import android.os.SystemClock
 import android.widget.Toast
 import androidx.preference.EditTextPreference
 import androidx.preference.ListPreference
 import androidx.preference.PreferenceScreen
-import eu.kanade.tachiyomi.animeextension.pt.tomato.dto.AnimeResultDto
-import eu.kanade.tachiyomi.animeextension.pt.tomato.dto.EpisodeInfoDto
-import eu.kanade.tachiyomi.animeextension.pt.tomato.dto.EpisodeStreamDto
-import eu.kanade.tachiyomi.animeextension.pt.tomato.dto.EpisodesResultDto
-import eu.kanade.tachiyomi.animeextension.pt.tomato.dto.SearchAnimeItemDto
-import eu.kanade.tachiyomi.animeextension.pt.tomato.dto.SearchResultDto
+import aniyomi.lib.playlistutils.PlaylistUtils
 import eu.kanade.tachiyomi.animesource.ConfigurableAnimeSource
 import eu.kanade.tachiyomi.animesource.model.AnimeFilterList
 import eu.kanade.tachiyomi.animesource.model.AnimesPage
@@ -31,751 +22,775 @@ import eu.kanade.tachiyomi.network.awaitSuccess
 import eu.kanade.tachiyomi.network.interceptor.rateLimit
 import keiyoushi.utils.getPreferencesLazy
 import keiyoushi.utils.parseAs
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
-import okhttp3.MediaType.Companion.toMediaTypeOrNull
-import okhttp3.Protocol
+import keiyoushi.utils.toJsonRequestBody
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.Request
-import okhttp3.RequestBody
 import okhttp3.Response
-import okhttp3.ResponseBody.Companion.toResponseBody
-import okio.BufferedSink
-import org.json.JSONArray
-import org.json.JSONObject
-import rx.Observable
-import java.io.ByteArrayOutputStream
 import java.io.IOException
-import java.net.ConnectException
-import java.net.SocketTimeoutException
-import java.net.UnknownHostException
-import java.nio.charset.StandardCharsets
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
-import java.util.zip.GZIPInputStream
-import java.util.zip.InflaterInputStream
 import kotlin.time.Duration.Companion.seconds
 
-private const val APP_USER_AGENT = "tomato-android"
-private const val OFFICIAL_OKHTTP_USER_AGENT = "okhttp/4.11.0"
-private const val OFFICIAL_APP_VERSION = "1.4.3"
-private const val AXIOS_ACCEPT = "application/json, text/plain, */*"
-private const val AXIOS_ACCEPT_ENCODING = "gzip, deflate"
-private const val AXIOS_CONNECT_TIMEOUT_MS = 8_000
-private const val LOGIN_REQUIRED_URL = "/tomato-login-required"
-private const val FEED_PATH = "/v2/animes/feed"
-private const val LATEST_SECTION_TYPE = 7
-private const val EMPTY_FEED_ANIME_ID = 1062
-private const val PAGE_SIZE = 25
-private const val FEED_CACHE_TTL_MS = 3_000L
-private const val DETAILS_CACHE_TTL_MS = 30_000L
-private const val MAX_POST_INSPECTION_BYTES = 256L * 1024L
-private const val MAX_ERROR_MESSAGE_LENGTH = 120
-private const val SERVER_UNAVAILABLE_MESSAGE =
-    "O servidor da Tomato está indisponível no momento. Tente novamente mais tarde."
-private const val CONNECTION_ERROR_MESSAGE =
-    "Não foi possível conectar ao servidor da Tomato. Verifique sua internet ou tente novamente mais tarde."
-private const val RATE_LIMIT_MESSAGE =
-    "A Tomato bloqueou temporariamente novas tentativas neste dispositivo/IP. Aguarde um tempo antes de tentar novamente."
-private const val SESSION_EXPIRED_MESSAGE = "Sua sessão da Tomato expirou ou não é mais válida. Entre novamente."
-private const val MAINTENANCE_MESSAGE = "A Tomato está em manutenção. Tente novamente mais tarde."
-private const val UNEXPECTED_ERROR_MESSAGE = "A Tomato retornou um erro inesperado. Tente novamente mais tarde."
-internal const val PREF_TOKEN = "tomato_official_session_token_v1"
-private const val PREF_LANGUAGE = "preferred_language"
-private const val PREF_ACCOUNT_ACTION = "tomato_account_action_v2"
-private const val PREF_LOGOUT_ACTION = "tomato_logout_action_v2"
-private const val LEGACY_LOGIN_ACTION = "tomato_login"
-private const val LEGACY_LOGOUT_ACTION = "tomato_logout"
-private const val LEGACY_MANUAL_TOKEN = "tomato_session_token"
-private const val LEGACY_LANGUAGE = "pref_language"
-private const val LEGACY_QUALITY = "preferred_quality"
-private const val EXTENSION_PACKAGE = "eu.kanade.tachiyomi.animeextension.pt.tomato"
-private val LEGACY_EPISODE_ID_REGEX = Regex(
-    "(?:[?&])episode(?:%5B|\\[)([01])(?:%5D|\\])=(\\d+)",
-    RegexOption.IGNORE_CASE,
-)
-
-private class Utf8JsonRequestBody(json: String) : RequestBody() {
-    private val bytes = json.toByteArray(StandardCharsets.UTF_8)
-
-    override fun contentType(): okhttp3.MediaType? = null
-    override fun contentLength() = bytes.size.toLong()
-    override fun writeTo(sink: BufferedSink) {
-        sink.write(bytes)
-    }
-}
-
-private enum class PostEnvelope { SEARCH, EPISODES }
-
-/** API mapped from com.tomatos.clientapp in the official tomato.apk. */
 class Tomato :
     AnimeHttpSource(),
     ConfigurableAnimeSource {
+
     override val name = "Tomato"
 
-    // The official SplashActivity selects the API host before normal requests.
-    // This getter is side-effect free; authenticated builders perform bootstrap.
-    override val baseUrl get() = serverBootstrap.persistedHost()
+    override val baseUrl = PROD_API_URL
+
     override val lang = "pt-BR"
+
     override val supportsLatest = true
 
-    // Tomato's official client exposes no related/recommendations endpoint. Without this,
-    // AnimeHttpSource falls back to the Popular request for Anikku's Suggestions block.
     override val supportsRelatedAnimes = false
+
     override val disableRelatedAnimesBySearch = true
-
-    private val preferences: SharedPreferences by getPreferencesLazy()
-    private val serverBootstrap by lazy { TomatoServerBootstrap(preferences) }
-    private var loginResultReceiver: ResultReceiver? = null
-    private val feedCacheLock = Any()
-    private val popularTitleCache = ConcurrentHashMap<Int, String>()
-
-    @Volatile
-    private var feedSnapshot: FeedSnapshot? = null
-
-    @Volatile
-    private var detailsSnapshot: DetailsSnapshot? = null
-
-    override fun headersBuilder() = super.headersBuilder().apply {
-        // Keep source-level headers safe for media clients. Some hosts merge these
-        // into Video.headers even when the Video supplies its own headers.
-        set("Accept", "*/*")
-        set("User-Agent", APP_USER_AGENT)
-    }
 
     override val client by lazy {
         network.client.newBuilder()
-            .rateLimit(5, 1.seconds)
-            // The React-Native Axios client used by the official application has a
-            // different request contract from its native Volley Player. Keep the
-            // already validated stream request untouched and apply Axios headers only
-            // to the API endpoints implemented by React Native.
+            .rateLimit(3, 1.seconds)
             .addInterceptor { chain ->
-                val original = chain.request()
-                if (original.url.encodedPath.endsWith("/stream")) {
-                    return@addInterceptor chain.proceed(original)
-                }
-                val request = original.newBuilder()
-                    .header("Accept", AXIOS_ACCEPT)
-                    .header("Accept-Encoding", AXIOS_ACCEPT_ENCODING)
-                    .header("User-Agent", OFFICIAL_OKHTTP_USER_AGENT)
-                    .header("request-time", System.currentTimeMillis().toString())
-                    .apply {
-                        if (original.url.encodedPath == FEED_PATH) {
-                            header("x-app", OFFICIAL_APP_VERSION)
-                        } else {
-                            removeHeader("x-app")
-                        }
-                    }
-                    .build()
-                chain.withConnectTimeout(AXIOS_CONNECT_TIMEOUT_MS, TimeUnit.MILLISECONDS).proceed(request)
-            }
-            // Popular and Recentes consume the same response with independent
-            // parsers. A very short, session-scoped snapshot removes the duplicate
-            // simultaneous GET without changing either mapping.
-            .addInterceptor { chain ->
-                val request = chain.request()
-                if (request.method != "GET" || request.url.encodedPath != FEED_PATH) {
-                    return@addInterceptor chain.proceed(request)
-                }
-                synchronized(feedCacheLock) {
-                    val now = SystemClock.elapsedRealtime()
-                    val key = request.feedCacheKey()
-                    feedSnapshot
-                        ?.takeIf { it.key == key && now - it.storedAtMs <= FEED_CACHE_TTL_MS }
-                        ?.let {
-                            return@synchronized it.toResponse(request)
-                        }
-
-                    val response = chain.proceed(request)
-                    if (!response.isSuccessful) return@synchronized response
-                    val contentType = response.body.contentType()
-                    val bytes = response.body.bytes()
-                    feedSnapshot = FeedSnapshot(
-                        key = key,
-                        storedAtMs = SystemClock.elapsedRealtime(),
-                        code = response.code,
-                        message = response.message,
-                        protocol = response.protocol,
-                        headers = response.headers,
-                        body = bytes,
-                    )
-                    response.newBuilder().body(bytes.toResponseBody(contentType)).build()
-                }
-            }
-            // These requests target only the Tomato API. Media URLs are handed to
-            // the host through Video and never pass through this error mapper.
-            .addInterceptor { chain ->
-                val response = try {
-                    chain.proceed(chain.request())
-                } catch (error: UnknownHostException) {
-                    throw IOException(CONNECTION_ERROR_MESSAGE, error)
-                } catch (error: SocketTimeoutException) {
-                    throw IOException(SERVER_UNAVAILABLE_MESSAGE, error)
-                } catch (error: ConnectException) {
-                    throw IOException(SERVER_UNAVAILABLE_MESSAGE, error)
-                }
-                if (response.isSuccessful) {
-                    response
+                val officialRequest = chain.request().withOfficialClientHeaders(officialAppVersion)
+                val requestChain = if (officialRequest.usesOfficialClientContract()) {
+                    chain.withConnectTimeout(OFFICIAL_CONNECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
                 } else {
-                    val message = response.tomatoApiErrorMessage()
-                    response.close()
-                    throw IOException(message)
+                    chain
                 }
+                val fallbackRequest = officialRequest.fallbackRequest()
+                val response = try {
+                    requestChain.proceed(officialRequest)
+                } catch (error: IOException) {
+                    if (!error.isConnectionFailure() || fallbackRequest == null) throw error
+                    return@addInterceptor requestChain.proceed(fallbackRequest)
+                }
+
+                if (response.code in 500..599 && fallbackRequest != null) {
+                    response.close()
+                    return@addInterceptor requestChain.proceed(fallbackRequest)
+                }
+
+                response
             }
-            // Axios explicitly supplies Accept-Encoding, so OkHttp does not perform
-            // its transparent decompression. Decode before the outer error mapper or
-            // JSON parsers inspect a response body.
-            .addInterceptor { chain -> chain.proceed(chain.request()).decodeContentEncoding() }
+            .addInterceptor { chain ->
+                chain.proceed(chain.request()).decodeContentEncoding()
+            }
             .build()
     }
 
-    // Preserve each screen's independent parser. The short response snapshot above
-    // only prevents two consumers from downloading the identical Feed concurrently.
-    override suspend fun getPopularAnime(page: Int): AnimesPage = if (sessionToken() == null) loginRequiredPage() else super.getPopularAnime(page)
+    override fun headersBuilder() = super.headersBuilder()
+        .set("User-Agent", "tomato-android")
+        .set("Accept", "*/*")
 
-    override suspend fun getLatestUpdates(page: Int): AnimesPage = if (sessionToken() == null) loginRequiredPage() else super.getLatestUpdates(page)
+    private val preferences by getPreferencesLazy()
 
-    override suspend fun getSearchAnime(page: Int, query: String, filters: AnimeFilterList): AnimesPage = if (sessionToken() == null) loginRequiredPage() else super.getSearchAnime(page, query, filters)
+    private val preferencesReady by lazy { migratePreferences() }
 
-    override fun fetchPopularAnime(page: Int): Observable<AnimesPage> = if (sessionToken() == null) Observable.just(loginRequiredPage()) else super.fetchPopularAnime(page)
-
-    override fun fetchLatestUpdates(page: Int): Observable<AnimesPage> = if (sessionToken() == null) Observable.just(loginRequiredPage()) else super.fetchLatestUpdates(page)
-
-    override fun fetchSearchAnime(page: Int, query: String, filters: AnimeFilterList): Observable<AnimesPage> = if (sessionToken() == null) Observable.just(loginRequiredPage()) else super.fetchSearchAnime(page, query, filters)
-
-    override fun popularAnimeRequest(page: Int) = authenticatedGet("/v2/animes/feed")
-
-    override fun popularAnimeParse(response: Response) = popularPage(response.parseAs())
-
-    private fun popularPage(feed: JsonObject): AnimesPage {
-        val shelf = feed["data"]?.jsonArray.orEmpty().firstOrNull {
-            it.jsonObject["title"]?.jsonPrimitive?.content.orEmpty().contains("curtidos", true)
+    private val userToken: String?
+        get() {
+            preferencesReady
+            return preferences.getString(PREF_TOKEN, null)
+                ?.trim()
+                ?.removePrefix("Bearer ")
+                ?.takeIf(String::isNotEmpty)
         }
-        val cards = shelf?.jsonObject?.get("data")?.jsonArray.orEmpty()
-        val titleByAnimeId = feed.animeTitles()
-        val animes = cards.mapNotNull { element ->
-            val card = element.jsonObject
-            val id = card.intOrNull("anime_id")?.takeIf { it > 0 } ?: return@mapNotNull null
-            if (id == EMPTY_FEED_ANIME_ID) return@mapNotNull null
-            val thumbnail = card.stringOrNull("thumbnail") ?: return@mapNotNull null
-            val title = titleByAnimeId[id] ?: popularTitleCache[id] ?: hydratePopularTitle(id)
-            val valid = !title.isNullOrBlank() && thumbnail.isNotBlank()
-            if (!valid) return@mapNotNull null
-            requiredSAnime("/v2/anime/$id", requireNotNull(title)) {
-                thumbnail_url = thumbnail
+
+    private val userName: String?
+        get() {
+            preferencesReady
+            return preferences.getString(PREF_USER_NAME, null)?.trim()?.takeIf { it.isNotEmpty() }
+        }
+
+    private val handler by lazy { Handler(Looper.getMainLooper()) }
+
+    private val titleCache = ConcurrentHashMap<Int, String>()
+
+    private val playlistUtils by lazy { PlaylistUtils(client, headers) }
+
+    private val serverConfigLock = Any()
+
+    private val sessionLock = Any()
+
+    @Volatile
+    private var configuredApiUrl = PROD_API_URL
+
+    @Volatile
+    private var officialAppVersion = COMPATIBLE_APP_VERSION
+
+    @Volatile
+    private var captchaRequired = true
+
+    @Volatile
+    private var serverConfigLoaded = false
+
+    @Volatile
+    private var validatedToken: String? = null
+
+    private var cachedDetails: AnimeDetailsContainerDto? = null
+
+    private var detailsCachedAt = 0L
+
+    private fun apiHeaders(token: String = requireValidToken()) = headers.withBearer(token)
+
+    private fun requireValidToken(): String {
+        val token = userToken
+            ?: error("Login necessário. Abra as configurações da extensão Tomato e entre com sua conta.")
+        if (validatedToken == token) return token
+
+        return synchronized(sessionLock) {
+            if (validatedToken != token) {
+                check(validateSession(token)) {
+                    "Sua sessão da Tomato expirou. Entre novamente."
+                }
+                validatedToken = token
             }
+            token
         }
-        return animes.validatedPage()
     }
 
-    override fun latestUpdatesRequest(page: Int) = authenticatedGet(FEED_PATH)
+    private fun markSessionValid(token: String) {
+        validatedToken = token.trim().removePrefix("Bearer ").takeIf(String::isNotEmpty)
+    }
 
-    override fun latestUpdatesParse(response: Response) = latestPage(response.parseAs())
+    private fun migratePreferences() {
+        val currentToken = preferences.getString(PREF_TOKEN, null)?.trim()?.takeIf(String::isNotEmpty)
+        val legacyToken = preferences.getString(LEGACY_TOKEN, null)
+            ?.trim()
+            ?.removePrefix("Bearer ")
+            ?.takeIf(String::isNotEmpty)
 
-    private fun latestPage(feed: JsonObject): AnimesPage {
-        val cards = feed["data"]?.jsonArray.orEmpty()
-            .firstOrNull { it.jsonObject["type"]?.jsonPrimitive?.content?.toIntOrNull() == LATEST_SECTION_TYPE }
-            ?.jsonObject
-            ?.get("data")
-            ?.jsonArray
-            .orEmpty()
-        // SectionNewEpisodes/ItemNewEpisodes in the official APK renders these
-        // fields directly. It performs no Details hydration, deduplication or local
-        // sorting; the server response is already the official new-episode order.
-        val animes = cards.mapNotNull { element ->
-            val card = element.jsonObject
-            val animeId = card.intOrNull("ep_anime_id")
-            val episodeId = card.intOrNull("ep_id")
-            val title = card.stringOrNull("anime_name")
-            val episodeName = card.stringOrNull("ep_name")
-            val thumbnail = card.stringOrNull("thumbnail")
-            val valid = animeId != null && animeId > 0 && episodeId != null && episodeId > 0 &&
-                !title.isNullOrBlank() && !thumbnail.isNullOrBlank()
-            if (!valid) return@mapNotNull null
-            requiredSAnime("/v2/anime/$animeId", title) {
-                thumbnail_url = thumbnail
-                description = episodeName?.let { "Último episódio: $it" }
+        preferences.edit().apply {
+            if (currentToken == null && legacyToken != null) putString(PREF_TOKEN, legacyToken)
+            remove(LEGACY_TOKEN)
+            remove(SAVED_EMAIL)
+            remove(SAVED_PASSWORD)
+            remove(SAVED_USERNAME)
+            apply()
+        }
+    }
+
+    private fun cacheDetails(details: AnimeDetailsContainerDto) {
+        cachedDetails = details
+        detailsCachedAt = SystemClock.elapsedRealtime()
+    }
+
+    private fun cachedDetails(animeId: Int): AnimeDetailsContainerDto? = cachedDetails?.takeIf {
+        it.animeDetails.animeId == animeId && SystemClock.elapsedRealtime() - detailsCachedAt <= DETAILS_CACHE_TTL_MS
+    }
+
+    private fun refreshServerConfig() {
+        if (serverConfigLoaded) return
+
+        synchronized(serverConfigLock) {
+            if (serverConfigLoaded) return@synchronized
+
+            val payload = CheckUpdateRequestDto(COMPATIBLE_APP_VERSION)
+            val request = POST(
+                "$PROD_API_URL/checkupdate/",
+                headers.withNativeAuthHeaders(),
+                payload.toJsonRequestBody(),
+            )
+            val config = client.newCall(request).execute().use { response ->
+                response.requireSuccess()
+                val resolvedApiUrl = response.request.url.let { "${it.scheme}://${it.host}" }
+                resolvedApiUrl to response.parseAs<CheckUpdateResponseDto>()
+            }
+
+            val (resolvedApiUrl, response) = config
+            if (response.statusCode != 4) {
+                throw IOException("A Tomato não aceitou a configuração inicial.")
+            }
+
+            configuredApiUrl = resolvedApiUrl
+            officialAppVersion = response.serverVersion
+                ?.trim()
+                ?.takeIf(String::isNotEmpty)
+                ?: COMPATIBLE_APP_VERSION
+            captchaRequired = response.requireCaptcha ?: true
+            serverConfigLoaded = true
+        }
+    }
+
+    private fun validateSession(token: String): Boolean {
+        refreshServerConfig()
+        val payload = TokenLoginRequestDto(
+            token = token,
+            fingerprint = Auth.deviceFingerprint,
+        )
+        val request = POST(
+            "$configuredApiUrl/tokenlogin/",
+            headers.withNativeAuthHeaders(),
+            payload.toJsonRequestBody(),
+        )
+
+        val authRes = client.newCall(request).execute().use { response ->
+            if (response.code == 401 || response.code == 403) {
+                null
+            } else {
+                response.requireSuccess().parseAs<TokenLoginResponseDto>()
             }
         }
-        return animes.validatedPage()
+        if (authRes?.statusCode != 4) {
+            clearSession()
+            return false
+        }
+
+        authRes.userName?.takeIf(String::isNotBlank)?.let { name ->
+            preferences.edit().putString(PREF_USER_NAME, name).apply()
+        }
+        return true
     }
+
+    private fun clearSession() {
+        validatedToken = null
+        preferences.edit()
+            .remove(PREF_TOKEN)
+            .remove(PREF_USER_NAME)
+            .apply()
+    }
+
+    // ============================== Popular ===============================
+
+    override fun popularAnimeRequest(page: Int): Request {
+        val token = requireValidToken()
+        return GET("$baseUrl/v2/animes/feed", apiHeaders(token))
+    }
+
+    override fun popularAnimeParse(response: Response): AnimesPage {
+        val feed = response.requireSuccess().parseAs<FeedResponseDto>()
+
+        // Mapeia previamente todos os títulos disponíveis nas outras seções do mesmo feed
+        for (section in feed.data) {
+            for (item in section.data) {
+                val id = item.animeId ?: item.epAnimeId
+                val name = item.animeName ?: item.name ?: item.title
+                if (id != null && !name.isNullOrBlank()) {
+                    titleCache[id] = name
+                }
+            }
+        }
+
+        // Filtra estritamente a seção "Em alta" (type: 3)
+        val emAltaSection = feed.data.firstOrNull { it.type == 3 || it.title.equals("Em alta", ignoreCase = true) }
+            ?: return AnimesPage(emptyList(), false)
+
+        val animeList = emAltaSection.data.mapNotNull { item ->
+            val id = item.animeId ?: item.epAnimeId ?: return@mapNotNull null
+            val title = titleCache[id] ?: item.animeName ?: item.name ?: item.title ?: "Anime #$id"
+            SAnime.create().apply {
+                this.title = title
+                thumbnail_url = item.thumbnail ?: item.image ?: item.cover ?: item.banner
+                url = "/v2/anime/$id"
+            }
+        }
+
+        return AnimesPage(animeList, hasNextPage = false)
+    }
+
+    // =============================== Latest ===============================
+
+    override fun latestUpdatesRequest(page: Int): Request {
+        val token = requireValidToken()
+        return GET("$baseUrl/v2/animes/feed", apiHeaders(token))
+    }
+
+    override fun latestUpdatesParse(response: Response): AnimesPage {
+        val feed = response.requireSuccess().parseAs<FeedResponseDto>()
+
+        // Filtra a seção "Novos episódios" (type: 7)
+        val latestSection = feed.data.firstOrNull { it.type == 7 || it.title.equals("Novos episódios", ignoreCase = true) }
+            ?: return AnimesPage(emptyList(), false)
+
+        val seenIds = mutableSetOf<Int>()
+        val animeList = mutableListOf<SAnime>()
+
+        for (item in latestSection.data) {
+            val id = item.epAnimeId ?: item.animeId ?: continue
+            if (seenIds.add(id)) {
+                animeList.add(
+                    SAnime.create().apply {
+                        title = item.animeName ?: "Anime #$id"
+                        thumbnail_url = item.thumbnail
+                        url = "/v2/anime/$id"
+                    },
+                )
+            }
+        }
+
+        return AnimesPage(animeList, hasNextPage = false)
+    }
+
+    // =============================== Search ===============================
+
+    override fun getFilterList() = Filters.FILTER_LIST
 
     override fun searchAnimeRequest(page: Int, query: String, filters: AnimeFilterList): Request {
-        val params = TomatoFilters.getSearchParameters(filters)
-        return authenticatedPost("/v2/content/search") {
-            put("token", requireToken())
-            put("search", query)
-            put("content_type", "anime")
-            put("page", page - 1)
-            if (params.genres.isNotEmpty()) put("tags", JSONArray(params.genres))
-        }
+        val token = requireValidToken()
+        val genres = Filters.selectedGenres(filters)
+        val requestDto = SearchRequestDto(
+            token = token,
+            search = query.trim(),
+            contentType = "anime",
+            page = page - 1,
+            tags = genres,
+        )
+        return POST("$baseUrl/v2/content/search", apiHeaders(token), requestDto.toJsonRequestBody())
     }
 
-    override fun searchAnimeParse(response: Response) = response
-        .normalizePostEnvelope(PostEnvelope.SEARCH)
-        .parseAs<SearchResultDto>()
-        .result
-        .map { it.toSAnime() }
-        .validatedPage()
+    override fun searchAnimeParse(response: Response): AnimesPage {
+        val searchDto = response.requireSuccess().parseAs<SearchResponseDto>()
+        val animeList = searchDto.result.map { it.toSAnime() }
+        val hasNextPage = searchDto.result.size >= 50
+        return AnimesPage(animeList, hasNextPage = hasNextPage)
+    }
 
-    // Tomato does not expose a related-anime API compatible with Aniyomi. Explicitly
-    // returning an empty list prevents the host fallback from issuing several searches
-    // every time a details page opens.
     override suspend fun fetchRelatedAnimeList(anime: SAnime): List<SAnime> = emptyList()
 
-    override fun animeDetailsRequest(anime: SAnime): Request {
-        val animeId = anime.url.substringAfterLast('/').toIntOrNull()
-            ?: error("ID de anime Tomato inválido")
-        return authenticatedGet("/v2/anime/$animeId")
-    }
+    // =========================== Anime Details ============================
+
+    override fun animeDetailsRequest(anime: SAnime): Request = GET("$baseUrl${anime.url}", apiHeaders())
+
     override fun animeDetailsParse(response: Response): SAnime {
-        val details = response.parseAs<AnimeResultDto>()
-        detailsSnapshot = DetailsSnapshot(details.animeDetails.animeId, SystemClock.elapsedRealtime(), details)
-        return details.toSAnime()
+        val detailsContainer = response.requireSuccess().parseAs<AnimeDetailsContainerDto>()
+        cacheDetails(detailsContainer)
+        val details = detailsContainer.animeDetails
+        titleCache[details.animeId] = details.animeName
+        return detailsContainer.toSAnime()
     }
 
-    override suspend fun getAnimeDetails(anime: SAnime): SAnime = if (anime.url == LOGIN_REQUIRED_URL) anime else super.getAnimeDetails(anime)
+    // ============================== Episodes ==============================
+
+    override fun episodeListRequest(anime: SAnime): Request = GET("$baseUrl${anime.url}", apiHeaders())
 
     override suspend fun getEpisodeList(anime: SAnime): List<SEpisode> {
-        if (anime.url == LOGIN_REQUIRED_URL) return emptyList()
         val animeId = anime.url.substringAfterLast('/').toIntOrNull()
-            ?: error("ID de anime Tomato inválido")
-        val now = SystemClock.elapsedRealtime()
-        val cachedDetails = detailsSnapshot?.takeIf {
-            it.animeId == animeId && now - it.storedAtMs <= DETAILS_CACHE_TTL_MS
+            ?: throw IllegalArgumentException("ID de anime Tomato inválido")
+        val details = cachedDetails(animeId) ?: client.newCall(episodeListRequest(anime)).awaitSuccess().use {
+            it.parseAs<AnimeDetailsContainerDto>().also(::cacheDetails)
         }
-        val details = cachedDetails?.details ?: client.newCall(animeDetailsRequest(anime)).awaitSuccess().use {
-            it.parseAs<AnimeResultDto>().also { parsed ->
-                detailsSnapshot = DetailsSnapshot(animeId, SystemClock.elapsedRealtime(), parsed)
-            }
-        }
-        val merged = linkedMapOf<Pair<Int, Float>, SEpisode>()
-        details.animeSeasons.sortedBy { it.seasonNumber }.forEach { season ->
+        return loadEpisodes(details)
+    }
+
+    override fun episodeListParse(response: Response): List<SEpisode> = loadEpisodes(response.requireSuccess().parseAs())
+
+    private fun loadEpisodes(animeDetails: AnimeDetailsContainerDto): List<SEpisode> {
+        val seasons = animeDetails.animeSeasons
+        val token = requireValidToken()
+        val episodesByNumber = linkedMapOf<Pair<Int, Float>, SEpisode>()
+
+        seasons.sortedBy { it.seasonNumber ?: 1 }.forEach { season ->
             var page = 0
             while (true) {
-                val result = client.newCall(
-                    authenticatedPost("/season/${season.seasonId}/episodes") {
-                        put("token", requireToken())
-                        put("page", page)
-                        put("order", "ASC")
-                    },
-                ).awaitSuccess().use {
-                    it.normalizePostEnvelope(PostEnvelope.EPISODES).parseAs<EpisodesResultDto>()
+                val requestDto = SeasonEpisodesRequestDto(
+                    token = token,
+                    page = page,
+                    order = "ASC",
+                )
+                val request = POST(
+                    "$baseUrl/season/${season.seasonId}/episodes",
+                    apiHeaders(token),
+                    requestDto.toJsonRequestBody(),
+                )
+
+                val episodesRes = client.newCall(request).execute().use {
+                    it.requireSuccess().parseAs<SeasonEpisodesResponseDto>()
                 }
-                result.data.forEach { item ->
-                    val key = season.seasonNumber to item.epNumber
-                    val existing = merged[key]
+                val episodes = episodesRes.data
+                if (episodes.isEmpty()) break
+
+                episodes.forEach { ep ->
+                    val seasonNumber = season.seasonNumber ?: 1
+                    val isDubbed = season.seasonDubbed == 1 || ep.dubbed == true
+                    val lang = if (isDubbed) "Dublado" else "Legendado"
+                    val key = seasonNumber to ep.epNumber
+                    val existing = episodesByNumber[key]
                     if (existing == null) {
-                        val episodeUrl = episodeUrl(item.epId)
-                        merged[key] = SEpisode.create().apply {
-                            episode_number = season.seasonNumber + item.epNumber / 1000f
-                            name = "T${season.seasonNumber}E${formatEpisode(item.epNumber)} - ${item.epName}"
-                            url = episodeUrl
-                            scanlator = if (season.seasonDubbed == 1) "Dublado" else "Legendado"
+                        episodesByNumber[key] = SEpisode.create().apply {
+                            name = "T${seasonNumber}E${formatEpisode(ep.epNumber)} - ${ep.epName}"
+                            episode_number = seasonNumber + ep.epNumber / 1000f
+                            url = "/v2/anime/episode/${ep.epId}/stream"
+                            scanlator = lang
                         }
-                    } else {
-                        existing.url += "?alternate=${item.epId}"
-                        existing.scanlator = "Legendado e Dublado"
+                    } else if (lang !in existing.scanlator.orEmpty()) {
+                        existing.url += "?alternate=${ep.epId}"
+                        existing.scanlator = "${existing.scanlator} e $lang"
                     }
                 }
-                val loaded = (page * PAGE_SIZE) + result.data.size
-                if (result.data.isEmpty() || result.data.size < PAGE_SIZE || (result.episodes > 0 && loaded >= result.episodes)) break
+
+                val totalCount = episodesRes.episodes ?: 0
+                val loadedCount = (page * 25) + episodes.size
+                if (episodes.size < 25 || (totalCount > 0 && loadedCount >= totalCount)) {
+                    break
+                }
                 page++
             }
         }
-        return merged.values.sortedBy { it.episode_number }
+
+        return episodesByNumber.values.sortedByDescending(SEpisode::episode_number)
     }
 
-    override fun episodeListParse(response: Response): List<SEpisode> = error("Tomato loads episodes by season")
+    // ============================ Video Links =============================
 
     override suspend fun getVideoList(episode: SEpisode): List<Video> {
-        val primaryId = episodeIdFromUrl(episode.url)
+        val primaryId = episode.url
+            .substringBefore('?')
+            .removeSuffix("/stream")
+            .substringAfterLast('/')
+            .toIntOrNull()
+            ?: throw IllegalArgumentException("ID de episódio Tomato inválido")
         val alternateId = episode.url.substringAfter("alternate=", "").toIntOrNull()
-        val legacyIds = legacyEpisodeIds(episode.url)
-        val streams = if (legacyIds.isNotEmpty()) {
-            legacyIds
-        } else {
-            buildList {
-                primaryId?.let { add(episode.scanlator.orEmpty().substringBefore(" e ") to it) }
-                alternateId?.let { add("Dublado" to it) }
+        val languages = episode.scanlator.orEmpty().split(" e ")
+        val streams = buildList {
+            add(primaryId to languages.firstOrNull())
+            alternateId?.let { add(it to languages.getOrNull(1)) }
+        }
+
+        return streams.flatMap { (episodeId, language) ->
+            val request = GET("$baseUrl/v2/anime/episode/$episodeId/stream", apiHeaders())
+            val info = client.newCall(request).awaitSuccess().use { it.parseAs<EpisodeInfoDto>() }
+            info.toVideos(language)
+        }.sort()
+    }
+
+    override fun videoListRequest(episode: SEpisode): Request = GET("$baseUrl${episode.url}", apiHeaders())
+
+    override fun videoListParse(response: Response): List<Video> {
+        val info = response.requireSuccess().parseAs<EpisodeInfoDto>()
+        return info.toVideos().sort()
+    }
+
+    private fun EpisodeInfoDto.toVideos(language: String? = null): List<Video> {
+        val videoList = mutableListOf<Video>()
+
+        val streams = listOfNotNull(
+            streams.fhd?.takeIf { it.isNotBlank() }?.let { it to "1080p" },
+            streams.mhd?.takeIf { it.isNotBlank() }?.let { it to "720p" },
+            streams.shd?.takeIf { it.isNotBlank() }?.let { it to "480p" },
+        )
+
+        for ((streamUrl, label) in streams) {
+            val isHls = streamUrl.contains(".m3u8", ignoreCase = true)
+            if (isHls) {
+                val hlsVideos = runCatching {
+                    playlistUtils.extractFromHls(
+                        playlistUrl = streamUrl,
+                        videoNameGen = { quality -> videoLabel(language, quality.ifBlank { label }) },
+                    )
+                }.getOrNull().orEmpty()
+
+                if (hlsVideos.isNotEmpty()) {
+                    videoList.addAll(hlsVideos)
+                } else {
+                    videoList.add(Video(streamUrl, videoLabel(language, label), streamUrl, headers = headers))
+                }
+            } else {
+                videoList.add(Video(streamUrl, videoLabel(language, label), streamUrl, headers = headers))
             }
         }
-        return streams.flatMap { (language, episodeId) ->
-            val info = client.newCall(streamRequest(episodeId)).awaitSuccess().use { it.parseAs<EpisodeInfoDto>() }
-            info.streams.toVideos(language)
-        }
-            .sortedWith(compareByDescending<Video> { it.quality.contains(preferredLanguage(), true) }.thenByDescending { qualityNumber(it.quality) })
+
+        return videoList
     }
 
-    override fun getFilterList() = TomatoFilters.FILTER_LIST
+    private fun videoLabel(language: String?, quality: String) = listOfNotNull(language?.takeIf(String::isNotBlank), quality).joinToString(" - ")
 
-    override fun setupPreferenceScreen(screen: PreferenceScreen) {
-        migratePreferences()
-        lateinit var accountPreference: EditTextPreference
-        lateinit var logoutPreference: EditTextPreference
+    override fun videoUrlParse(response: Response): String = throw UnsupportedOperationException("Not used")
 
-        fun refreshAccountState() {
-            val connected = sessionToken() != null
-            accountPreference.summary = if (connected) "Conectado" else "Não conectado — toque para entrar"
-            logoutPreference.setEnabled(connected)
-        }
-
-        val receiver = object : ResultReceiver(Handler(Looper.getMainLooper())) {
-            override fun onReceiveResult(resultCode: Int, resultData: Bundle?) {
-                if (resultCode != TomatoLoginActivity.RESULT_LOGIN_SUCCESS) return
-                val token = resultData?.getString(TomatoLoginActivity.EXTRA_SESSION_TOKEN)
-                    ?.trim()
-                    ?.takeIf(String::isNotEmpty)
-                    ?: return
-                preferences.edit().putString(PREF_TOKEN, token).apply()
-                feedSnapshot = null
-                detailsSnapshot = null
-                refreshAccountState()
-            }
-        }
-
-        accountPreference = EditTextPreference(screen.context).apply {
-            key = PREF_ACCOUNT_ACTION
-            title = "Conta Tomato"
-            setOnPreferenceClickListener {
-                // Keep this receiver alive until the extension Activity returns the session.
-                loginResultReceiver = receiver
-                val context = screen.context
-                Thread {
-                    val host = runCatching(::selectedApiBaseUrl)
-                    Handler(Looper.getMainLooper()).post {
-                        host.onFailure { error ->
-                            val message = when (error) {
-                                is UnknownHostException -> CONNECTION_ERROR_MESSAGE
-                                else -> SERVER_UNAVAILABLE_MESSAGE
-                            }
-                            Toast.makeText(context, message, Toast.LENGTH_LONG).show()
-                            return@post
-                        }
-                        context.startActivity(
-                            Intent().setComponent(
-                                ComponentName(EXTENSION_PACKAGE, TomatoLoginActivity::class.java.name),
-                            )
-                                .putExtra(TomatoLoginActivity.EXTRA_RESULT_RECEIVER, receiver)
-                                .putExtra(TomatoLoginActivity.EXTRA_API_HOST, host.getOrThrow())
-                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                        )
-                    }
-                }.start()
-                true
-            }
-        }
-        accountPreference.also(screen::addPreference)
-        logoutPreference = EditTextPreference(screen.context).apply {
-            key = PREF_LOGOUT_ACTION
-            title = "Sair"
-            summary = "Apagar sessão da conta Tomato"
-            setOnPreferenceClickListener {
-                preferences.edit().remove(PREF_TOKEN).apply()
-                feedSnapshot = null
-                detailsSnapshot = null
-                refreshAccountState()
-                true
-            }
-        }
-        logoutPreference.also(screen::addPreference)
-        refreshAccountState()
-        ListPreference(screen.context).apply {
-            key = PREF_LANGUAGE
-            title = "Idioma preferido"
-            entries = arrayOf("Dublado", "Legendado")
-            entryValues = entries
-            setDefaultValue("Dublado")
-            summary = "%s"
-        }.also(screen::addPreference)
+    override fun List<Video>.sort(): List<Video> {
+        val quality = preferences.getString(PREF_QUALITY, PREF_QUALITY_DEFAULT) ?: PREF_QUALITY_DEFAULT
+        return sortedWith(
+            compareByDescending { it.quality.contains(quality) },
+        )
     }
 
-    private fun loginRequiredPage() = listOf(loginRequiredAnime()).validatedPage()
-    private fun loginRequiredAnime() = requiredSAnime(LOGIN_REQUIRED_URL, "Login necessário") {
-        description = "Abra as configurações da extensão Tomato e entre com sua conta."
-    }
-    private fun AnimeResultDto.toSAnime() = SAnime.create().apply {
-        setUrlWithoutDomain("/v2/anime/${animeDetails.animeId}")
-        title = animeDetails.animeName
-        description = animeDetails.animeDescription
-        genre = animeDetails.animeGenre
-        thumbnail_url = animeDetails.animeCoverUrl
-    }
-    private fun SearchAnimeItemDto.toSAnime() = requiredSAnime("/v2/anime/$id", name) {
-        thumbnail_url = image
-        genre = tags
-    }
-
-    // Popular's shelf contains only anime_id and thumbnail. Names found in another
-    // Feed shelf are reused locally; only missing names are resolved once by Details.
-    private fun hydratePopularTitle(animeId: Int): String? {
-        val title = runCatching {
-            client.newCall(authenticatedGet("/v2/anime/$animeId")).execute().use { response ->
-                if (!response.isSuccessful) return@use null
-                response.parseAs<AnimeResultDto>().animeDetails.animeName.trim().takeIf(String::isNotEmpty)
-            }
-        }.getOrNull()
-        title?.let { popularTitleCache[animeId] = it }
-        return title
-    }
-
-    private fun JsonObject.animeTitles(): Map<Int, String> = buildMap {
-        fun add(card: JsonObject) {
-            val id = card.intOrNull("anime_id") ?: card.intOrNull("ep_anime_id") ?: return
-            val title = card.stringOrNull("anime_name") ?: card.stringOrNull("title") ?: return
-            put(id, title)
-        }
-
-        this@animeTitles["data"]?.jsonArray.orEmpty().forEach { sectionElement ->
-            val section = sectionElement.jsonObject
-            add(section)
-            runCatching { section["data"]?.jsonArray.orEmpty() }
-                .getOrDefault(emptyList())
-                .forEach { add(it.jsonObject) }
-        }
-    }
-
-    private inline fun requiredSAnime(url: String, title: String, configure: SAnime.() -> Unit = {}): SAnime = SAnime.create().apply {
-        setUrlWithoutDomain(url)
-        this.title = title
-        configure()
-    }
-
-    // Validation is structural: every item reaching this helper was built through
-    // requiredSAnime, whose non-null parameters and assignments initialize both
-    // lateinit fields. Do not read either property here on compatibility hosts.
-    private fun List<SAnime>.validatedPage() = AnimesPage(this, false)
-
-    // This is the URL format emitted by SESSION-BRIDGE-FIX. Keep producer and
-    // consumer together: its final path segment is "stream", not the episode ID.
-    private fun episodeUrl(episodeId: Int) = "/v2/anime/episode/$episodeId/stream"
-
-    private fun episodeIdFromUrl(url: String): Int? {
-        val path = url.substringBefore('?').trimEnd('/')
-        return path.substringBeforeLast("/stream").substringAfterLast('/').toIntOrNull()
-            ?: path.substringAfterLast('/').toIntOrNull()
-    }
-
-    private fun legacyEpisodeIds(url: String): List<Pair<String, Int>> = LEGACY_EPISODE_ID_REGEX
-        .findAll(url)
-        .mapNotNull { match ->
-            val language = if (match.groupValues[1] == "1") "Dublado" else "Legendado"
-            match.groupValues[2].toIntOrNull()?.let { language to it }
-        }
-        .toList()
-
-    private fun authenticatedGet(path: String): Request {
-        requireToken()
-        return GET("${selectedApiBaseUrl()}${path.takeIf { it.startsWith('/') } ?: "/$path"}", requestHeaders())
-    }
-
-    // Matches the first direct official-extension implementation: same authenticated
-    // GET builder used by the original ep_id -> /stream path, with no extra headers.
-    private fun streamRequest(episodeId: Int): Request = authenticatedGet("/v2/anime/episode/$episodeId/stream")
-    private fun authenticatedPost(path: String, build: JSONObject.() -> Unit): Request {
-        requireToken()
-        val payload = JSONObject().apply(build)
-        val headers = requestHeaders().newBuilder()
-            .set("Content-Type", "application/json; charset=utf-8")
-            .build()
-        return POST("${selectedApiBaseUrl()}$path", headers, Utf8JsonRequestBody(payload.toString()))
-    }
-    private fun Response.normalizePostEnvelope(source: PostEnvelope): Response {
-        val root = runCatching { JSONObject(peekBody(MAX_POST_INSPECTION_BYTES).string()) }
-            .getOrElse { return this }
-        val objects = root.possibleEnvelopes()
-        val statusCode = objects.firstString("status_code")
-        val message = objects.firstString("message", "error", "detail")
-        if (statusCode == "31") throw IOException(RATE_LIMIT_MESSAGE)
-        val list = when (source) {
-            PostEnvelope.SEARCH -> objects.firstArray("result")
-                ?: objects.firstArrayWithObjectKey("data", "id")
-            PostEnvelope.EPISODES -> objects.firstArray("data")
-                ?: objects.firstArrayWithObjectKey("episodes", "ep_id")
-                ?: objects.firstArrayWithObjectKey("result", "ep_id")
-        }
-        check(list != null) {
-            "Resposta Tomato inesperada em $source" +
-                (message.safeLogicalMessage()?.let { ": $it" } ?: ".")
-        }
-        val normalized = when (source) {
-            PostEnvelope.SEARCH -> JSONObject().put("result", list)
-            PostEnvelope.EPISODES -> JSONObject()
-                .put("episodes", objects.firstInt("episodes") ?: 0)
-                .put("data", list)
-        }
-        return newBuilder()
-            .body(normalized.toString().toResponseBody(body.contentType()))
-            .build()
-    }
-    private fun JSONObject.possibleEnvelopes(): List<JSONObject> = buildList {
-        fun addDistinct(value: JSONObject?) {
-            if (value != null && none { it === value }) add(value)
-        }
-
-        addDistinct(this@possibleEnvelopes)
-        listOf("data", "result", "response", "payload").forEach { addDistinct(optJSONObject(it)) }
-        toList().forEach { envelope ->
-            listOf("data", "result", "response", "payload").forEach { addDistinct(envelope.optJSONObject(it)) }
-        }
-    }
-    private fun JSONObject.stringValue(key: String) = opt(key)
-        ?.takeUnless { it === JSONObject.NULL }
-        ?.toString()
-        ?.trim()
-        ?.takeIf(String::isNotEmpty)
-    private fun JSONObject.intValue(key: String) = opt(key)
-        ?.takeUnless { it === JSONObject.NULL }
-        ?.toString()
-        ?.toIntOrNull()
-    private fun List<JSONObject>.firstString(vararg keys: String): String? {
-        for (envelope in this) {
-            for (key in keys) envelope.stringValue(key)?.let { return it }
-        }
-        return null
-    }
-    private fun List<JSONObject>.firstInt(key: String): Int? {
-        for (envelope in this) envelope.intValue(key)?.let { return it }
-        return null
-    }
-    private fun List<JSONObject>.firstArray(key: String): JSONArray? {
-        for (envelope in this) envelope.optJSONArray(key)?.let { return it }
-        return null
-    }
-    private fun List<JSONObject>.firstArrayWithObjectKey(key: String, objectKey: String): JSONArray? {
-        for (envelope in this) {
-            envelope.optJSONArray(key)?.takeIf { it.hasObjectKey(objectKey) }?.let { return it }
-        }
-        return null
-    }
-    private fun JSONArray.hasObjectKey(key: String) = length() == 0 || optJSONObject(0)?.has(key) == true
-    private fun String?.safeLogicalMessage() = this
-        ?.replace(Regex("[\\r\\n]+"), " ")
-        ?.take(MAX_ERROR_MESSAGE_LENGTH)
-    private fun EpisodeStreamDto.toVideos(language: String) = listOfNotNull(
-        shd?.let { it.toVideo("$language - 480p") },
-        mhd?.let { it.toVideo("$language - 720p") },
-        fhd?.let { it.toVideo("$language - 1080p") },
-    )
-
-    // Stream URLs are already authorized by their query parameters. Explicit media
-    // headers prevent hosts and FFmpeg from inheriting the API's Bearer token, while
-    // applying the same safe headers to HLS playlists, segments and redirected URLs.
-    private fun String.toVideo(quality: String) = Video(this, quality, videoUrl = this, headers = headers)
-    private fun requestHeaders() = headers.newBuilder()
-        .set("Accept", "application/json")
-        .apply { sessionToken()?.let { set("Authorization", "Bearer $it") } }
-        .build()
-    private fun selectedApiBaseUrl() = serverBootstrap.selectedHost()
-    private fun sessionToken() = preferences.getString(PREF_TOKEN, null)?.trim()?.removePrefix("Bearer ")?.takeIf(String::isNotEmpty)
-    private fun requireToken() = sessionToken() ?: error("Login necessário. Abra as configurações da extensão Tomato e entre com sua conta.")
-    private fun preferredLanguage() = preferences.getString(PREF_LANGUAGE, "Dublado") ?: "Dublado"
-    private fun qualityNumber(label: String) = Regex("(\\d+)p").find(label)?.groupValues?.get(1)?.toIntOrNull() ?: 0
     private fun formatEpisode(number: Float) = if (number % 1f == 0f) number.toInt().toString() else number.toString()
-    private fun JsonObject.stringOrNull(key: String) = this[key]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf(String::isNotBlank)
-    private fun JsonObject.intOrNull(key: String) = this[key]?.jsonPrimitive?.intOrNull
-    private fun Request.feedCacheKey() = "${url.scheme}://${url.host}:${url.port}:${header("Authorization").hashCode()}"
-    private fun Response.decodeContentEncoding(): Response {
-        val encoding = header("Content-Encoding")?.substringBefore(',')?.trim()?.lowercase() ?: return this
-        if (encoding != "gzip" && encoding != "deflate") return this
-        val contentType = body.contentType()
-        val decoded = body.byteStream().use { input ->
-            val decodedInput = if (encoding == "gzip") GZIPInputStream(input) else InflaterInputStream(input)
-            decodedInput.use { stream ->
-                ByteArrayOutputStream().use { output ->
-                    stream.copyTo(output)
-                    output.toByteArray()
+
+    // ============================= Auth Actions ===========================
+
+    private fun prepareAuthentication(
+        context: Context,
+        onReady: (Boolean) -> Unit,
+    ) {
+        Thread {
+            val result = runCatching {
+                refreshServerConfig()
+                captchaRequired
+            }
+            handler.post {
+                result
+                    .onSuccess(onReady)
+                    .onFailure { error ->
+                        Toast.makeText(
+                            context,
+                            "Não foi possível iniciar a autenticação: ${error.message}",
+                            Toast.LENGTH_LONG,
+                        ).show()
+                    }
+            }
+        }.start()
+    }
+
+    private fun performLogin(
+        email: String,
+        pass: String,
+        captchaToken: String,
+        context: Context,
+        accountStatusPref: EditTextPreference? = null,
+    ) {
+        val payload = LoginRequestDto(
+            email = email,
+            password = pass,
+            verification = captchaToken,
+            fingerprint = Auth.deviceFingerprint,
+        )
+
+        val request = POST(
+            "$configuredApiUrl/login/",
+            headers.withNativeAuthHeaders(),
+            payload.toJsonRequestBody(),
+        )
+
+        client.newCall(request).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                handler.post {
+                    Toast.makeText(context, "Erro de conexão ao entrar: ${e.message}", Toast.LENGTH_LONG).show()
                 }
             }
-        }
-        return newBuilder()
-            .removeHeader("Content-Encoding")
-            .removeHeader("Content-Length")
-            .body(decoded.toResponseBody(contentType))
-            .build()
-    }
-    private fun Response.tomatoApiErrorMessage(): String {
-        val apiMessage = runCatching {
-            val body = JSONObject(peekBody(MAX_POST_INSPECTION_BYTES).string())
-            sequenceOf("message", "status", "error", "detail")
-                .mapNotNull { body.opt(it) as? String }
-                .map(String::trim)
-                .firstOrNull(String::isNotEmpty)
-        }.getOrNull()
-        return when {
-            code == 429 -> RATE_LIMIT_MESSAGE
-            code == 401 || code == 403 -> SESSION_EXPIRED_MESSAGE
-            apiMessage.isMaintenanceMessage() -> MAINTENANCE_MESSAGE
-            code in 500..599 -> SERVER_UNAVAILABLE_MESSAGE
-            !apiMessage.isNullOrBlank() -> apiMessage.replace(Regex("[\\r\\n]+"), " ").take(300)
-            else -> UNEXPECTED_ERROR_MESSAGE
-        }
+
+            override fun onResponse(call: Call, response: Response) {
+                val bodyStr = response.body.string()
+                val authRes = runCatching { bodyStr.parseAs<AuthResponseDto>() }.getOrNull()
+                handler.post {
+                    if (authRes?.statusCode == 4 && !authRes.token.isNullOrBlank()) {
+                        val name = authRes.userName ?: "Usuário"
+                        preferences.edit()
+                            .putString(PREF_TOKEN, authRes.token)
+                            .putString(PREF_USER_NAME, name)
+                            .apply()
+                        markSessionValid(authRes.token)
+                        accountStatusPref?.summary = "Conectado como: $name"
+                        Toast.makeText(context, "Login realizado com sucesso! Bem-vindo(a), $name", Toast.LENGTH_LONG).show()
+                    } else {
+                        val msg = authRes?.message ?: "Falha na autenticação (Código: ${authRes?.statusCode})"
+                        Toast.makeText(context, "Erro no login: $msg", Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
+        })
     }
 
-    private fun String?.isMaintenanceMessage(): Boolean = this?.let {
-        it.contains("maintenance", ignoreCase = true) || it.contains("manuten", ignoreCase = true)
-    } == true
+    private fun performRegister(
+        username: String,
+        email: String,
+        pass: String,
+        captchaToken: String,
+        context: Context,
+        accountStatusPref: EditTextPreference? = null,
+    ) {
+        val payload = RegisterRequestDto(
+            username = username,
+            email = email,
+            password = pass,
+            verification = captchaToken,
+            fingerprint = Auth.deviceFingerprint,
+        )
 
-    private fun migratePreferences() {
-        val stored = preferences.all
-        val editor = preferences.edit()
-        var changed = false
+        val request = POST(
+            "$configuredApiUrl/register/",
+            headers.withNativeAuthHeaders(),
+            payload.toJsonRequestBody(),
+        )
 
-        fun remove(key: String) {
-            if (key in stored) {
-                editor.remove(key)
-                changed = true
+        client.newCall(request).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                handler.post {
+                    Toast.makeText(context, "Erro de conexão ao cadastrar: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                val bodyStr = response.body.string()
+                val authRes = runCatching { bodyStr.parseAs<AuthResponseDto>() }.getOrNull()
+                handler.post {
+                    if (authRes?.statusCode == 4 && !authRes.token.isNullOrBlank()) {
+                        preferences.edit()
+                            .putString(PREF_TOKEN, authRes.token)
+                            .putString(PREF_USER_NAME, username)
+                            .apply()
+                        markSessionValid(authRes.token)
+                        accountStatusPref?.summary = "Conectado como: $username"
+                        Toast.makeText(context, "Conta criada e conectada com sucesso!", Toast.LENGTH_LONG).show()
+                    } else {
+                        val msg = authRes?.message ?: "Falha ao criar conta (Código: ${authRes?.statusCode})"
+                        Toast.makeText(context, "Erro no cadastro: $msg", Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
+        })
+    }
+
+    private fun validateSavedSession(
+        context: Context,
+        accountStatusPref: EditTextPreference?,
+    ) {
+        val token = userToken ?: return
+        Thread {
+            val result = runCatching {
+                refreshServerConfig()
+                val payload = TokenLoginRequestDto(
+                    token = token,
+                    fingerprint = Auth.deviceFingerprint,
+                )
+                val request = POST(
+                    "$configuredApiUrl/tokenlogin/",
+                    headers.withNativeAuthHeaders(),
+                    payload.toJsonRequestBody(),
+                )
+
+                client.newCall(request).execute().use { response ->
+                    val sessionRejected = response.code == 401 || response.code == 403
+                    val bodyStr = response.body.string()
+                    val authRes = runCatching { bodyStr.parseAs<TokenLoginResponseDto>() }.getOrNull()
+                    sessionRejected to authRes
+                }
+            }
+
+            result.onSuccess { (sessionRejected, authRes) ->
+                handler.post {
+                    if (authRes?.statusCode == 4) {
+                        markSessionValid(token)
+                        val name = authRes.userName?.takeIf(String::isNotBlank) ?: userName ?: "Usuário"
+                        preferences.edit().putString(PREF_USER_NAME, name).apply()
+                        accountStatusPref?.summary = "Conectado como: $name"
+                    } else if (sessionRejected || authRes?.statusCode == 1) {
+                        clearSession()
+                        accountStatusPref?.summary = "Sessão expirada — faça login novamente"
+                    }
+                }
+            }
+        }.start()
+    }
+
+    // ============================= Preferences ============================
+
+    override fun setupPreferenceScreen(screen: PreferenceScreen) {
+        preferencesReady
+        val context = screen.context
+
+        // 0. Qualidade preferida
+        ListPreference(context).apply {
+            key = PREF_QUALITY
+            title = "Qualidade preferida"
+            entries = PREF_QUALITY_ENTRIES
+            entryValues = PREF_QUALITY_ENTRIES
+            setDefaultValue(PREF_QUALITY_DEFAULT)
+            summary = "%s"
+            setOnPreferenceChangeListener { _, newValue ->
+                val selected = newValue as String
+                preferences.edit().putString(key, selected).apply()
+                false
+            }
+        }.also(screen::addPreference)
+
+        // 1. Status da Conta (Apenas leitura)
+        val accountStatusPref = EditTextPreference(context).apply {
+            key = PREF_ACCOUNT_STATUS
+            title = "Status da Conta"
+            summary = if (!userToken.isNullOrBlank()) {
+                "Conectado como: ${userName ?: "Usuário"}"
+            } else {
+                "Não conectado — use a ação de login abaixo"
+            }
+            setEnabled(false)
+        }
+        screen.addPreference(accountStatusPref)
+
+        // 2. Token de Acesso Manual (Opcional / Recuperação direta)
+        val tokenPref = EditTextPreference(context).apply {
+            key = PREF_TOKEN
+            title = "Token de Autenticação (Manual)"
+            summary = preferences.getString(PREF_TOKEN, "")?.takeIf { it.isNotBlank() }?.let { "${it.take(15)}..." } ?: "Toque para colar um token Bearer diretamente"
+            setOnPreferenceChangeListener { _, newValue ->
+                val token = (newValue as? String)?.trim()?.removePrefix("Bearer ")?.takeIf { it.isNotBlank() }
+                validatedToken = null
+                if (token != null) {
+                    preferences.edit().putString(PREF_TOKEN, token).apply()
+                    summary = "${token.take(15)}..."
+                    validateSavedSession(context, accountStatusPref)
+                } else {
+                    clearSession()
+                    summary = "Toque para colar um token Bearer diretamente"
+                }
+                false
             }
         }
+        screen.addPreference(tokenPref)
 
-        // These were action controls, never user data. Older builds stored them as booleans.
-        remove(LEGACY_LOGIN_ACTION)
-        remove(LEGACY_LOGOUT_ACTION)
-
-        // The manual-session preference must not become the official login session.
-        remove(LEGACY_MANUAL_TOKEN)
-
-        // Preserve the old language choice only when its legacy value has the expected type.
-        (stored[LEGACY_LANGUAGE] as? String)?.takeIf { PREF_LANGUAGE !in stored }?.let {
-            editor.putString(PREF_LANGUAGE, it)
-            changed = true
+        if (!userToken.isNullOrBlank()) {
+            validateSavedSession(context, accountStatusPref)
         }
-        remove(LEGACY_LANGUAGE)
-        remove(LEGACY_QUALITY)
 
-        // Defensive cleanup for values written with an incompatible type by prior builds.
-        if (stored[PREF_LANGUAGE] != null && stored[PREF_LANGUAGE] !is String) remove(PREF_LANGUAGE)
-        if (stored[PREF_TOKEN] != null && stored[PREF_TOKEN] !is String) remove(PREF_TOKEN)
-
-        if (changed) editor.apply()
+        // 3. Menu de Ações (Login / Cadastro / Logout)
+        val actionPref = ListPreference(context).apply {
+            key = PREF_AUTH_ACTION
+            title = "Ação"
+            summary = "Toque para escolher uma ação"
+            entries = arrayOf("<Selecione uma Ação>", "Fazer Login", "Registrar nova Conta", "Sair da conta")
+            entryValues = arrayOf("none", "login", "register", "logout")
+            setDefaultValue("none")
+            setOnPreferenceChangeListener { _, newValue ->
+                when (newValue as? String) {
+                    "login" -> {
+                        Auth.showLoginInputDialog(context) { email, pass ->
+                            prepareAuthentication(context) { requireCaptcha ->
+                                if (requireCaptcha) {
+                                    Auth.showCaptchaDialog(context, handler) { captchaToken ->
+                                        performLogin(email, pass, captchaToken, context, accountStatusPref)
+                                    }
+                                } else {
+                                    performLogin(email, pass, "", context, accountStatusPref)
+                                }
+                            }
+                        }
+                    }
+                    "register" -> {
+                        Auth.showRegisterInputDialog(context) { username, email, pass ->
+                            prepareAuthentication(context) { requireCaptcha ->
+                                if (requireCaptcha) {
+                                    Auth.showCaptchaDialog(context, handler) { captchaToken ->
+                                        performRegister(username, email, pass, captchaToken, context, accountStatusPref)
+                                    }
+                                } else {
+                                    performRegister(username, email, pass, "", context, accountStatusPref)
+                                }
+                            }
+                        }
+                    }
+                    "logout" -> {
+                        clearSession()
+                        accountStatusPref.summary = "Não conectado — use a ação de login abaixo"
+                        Toast.makeText(context, "Desconectado com sucesso", Toast.LENGTH_SHORT).show()
+                    }
+                }
+                false
+            }
+        }
+        screen.addPreference(actionPref)
     }
 
-    private data class FeedSnapshot(
-        val key: String,
-        val storedAtMs: Long,
-        val code: Int,
-        val message: String,
-        val protocol: Protocol,
-        val headers: okhttp3.Headers,
-        val body: ByteArray,
-    ) {
-        fun toResponse(request: Request) = Response.Builder()
-            .request(request)
-            .protocol(protocol)
-            .code(code)
-            .message(message)
-            .headers(headers)
-            .body(body.toResponseBody(headers["Content-Type"]?.toMediaTypeOrNull()))
-            .build()
+    companion object {
+        private const val COMPATIBLE_APP_VERSION = "1.4.3"
+        private const val DETAILS_CACHE_TTL_MS = 30_000L
+        private const val PREF_TOKEN = "pref_user_token"
+        private const val PREF_USER_NAME = "pref_user_name"
+        private const val PREF_ACCOUNT_STATUS = "pref_account_status"
+        private const val PREF_AUTH_ACTION = "pref_auth_action"
+        private const val PREF_QUALITY = "preferred_quality"
+        private const val PREF_QUALITY_DEFAULT = "1080p"
+        private const val LEGACY_TOKEN = "tomato_official_session_token_v1"
+        private const val SAVED_EMAIL = "pref_saved_email"
+        private const val SAVED_PASSWORD = "pref_saved_password"
+        private const val SAVED_USERNAME = "pref_saved_username"
+        private val PREF_QUALITY_ENTRIES = arrayOf("1080p", "720p", "480p")
     }
-
-    private data class DetailsSnapshot(
-        val animeId: Int,
-        val storedAtMs: Long,
-        val details: AnimeResultDto,
-    )
 }

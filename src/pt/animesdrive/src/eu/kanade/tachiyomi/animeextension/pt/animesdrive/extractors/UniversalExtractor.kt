@@ -3,12 +3,11 @@ package eu.kanade.tachiyomi.animeextension.pt.animesdrive.extractors
 import android.annotation.SuppressLint
 import android.os.Handler
 import android.os.Looper
-import android.util.Log
+import android.webkit.CookieManager
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import aniyomi.lib.playlistutils.PlaylistUtils
 import eu.kanade.tachiyomi.animesource.model.Video
 import keiyoushi.utils.applicationContext
 import okhttp3.Headers
@@ -19,19 +18,18 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 class UniversalExtractor(private val client: OkHttpClient) {
-    private val tag by lazy { javaClass.simpleName }
     private val handler by lazy { Handler(Looper.getMainLooper()) }
 
     @SuppressLint("SetJavaScriptEnabled")
-    @Synchronized
     fun videosFromUrl(origRequestUrl: String, origRequestHeader: Headers, name: String?): List<Video> {
         val httpUrl = origRequestUrl.toHttpUrlOrNull() ?: return emptyList()
-        Log.d(tag, "Fetching videos from: $origRequestUrl")
         val host = httpUrl.host.removePrefix("www.").substringBefore(".").proper()
         val latch = CountDownLatch(1)
         var webView: WebView? = null
         var resultUrl = ""
-        val playlistUtils by lazy { PlaylistUtils(client, origRequestHeader) }
+        var resultHeaders = origRequestHeader
+        var masterRequest: ObservedRequest? = null
+        var variantRequest: ObservedRequest? = null
         val headers = origRequestHeader.toMultimap().mapValues { it.value.getOrNull(0) ?: "" }.toMutableMap()
 
         handler.post {
@@ -47,7 +45,6 @@ class UniversalExtractor(private val client: OkHttpClient) {
             }
             newView.webViewClient = object : WebViewClient() {
                 override fun onPageFinished(view: WebView?, url: String?) {
-                    Log.d(tag, "Page loaded, injecting script")
                     view?.evaluateJavascript(CHECK_SCRIPT) {}
                 }
 
@@ -56,10 +53,22 @@ class UniversalExtractor(private val client: OkHttpClient) {
                     request: WebResourceRequest,
                 ): WebResourceResponse? {
                     val url = request.url.toString()
-                    Log.d(tag, "Intercepted URL: $url")
                     if (VIDEO_REGEX.containsMatchIn(url)) {
-                        resultUrl = url
-                        latch.countDown()
+                        val observed = ObservedRequest(
+                            url = url,
+                            headers = request.toHeaders(origRequestHeader),
+                        )
+                        if (url.contains(".m3u8", ignoreCase = true) && masterRequest == null && url.contains("master", ignoreCase = true)) {
+                            masterRequest = observed
+                        } else {
+                            if (masterRequest != null && variantRequest == null && url != masterRequest?.url) {
+                                variantRequest = observed
+                            }
+                            val selected = variantRequest ?: observed
+                            resultUrl = selected.url
+                            resultHeaders = selected.headers
+                            latch.countDown()
+                        }
                     }
                     return super.shouldInterceptRequest(view, request)
                 }
@@ -69,27 +78,38 @@ class UniversalExtractor(private val client: OkHttpClient) {
             webView?.loadUrl(loadUrl, headers)
         }
 
-        latch.await(TIMEOUT_SEC, TimeUnit.SECONDS)
+        try {
+            latch.await(TIMEOUT_SEC, TimeUnit.SECONDS)
+        } finally {
+            handler.post {
+                webView?.stopLoading()
+                webView?.destroy()
+                webView = null
+            }
+        }
 
-        handler.post {
-            webView?.stopLoading()
-            webView?.destroy()
-            webView = null
+        if (resultUrl.isBlank()) {
+            masterRequest?.let { master ->
+                resultUrl = master.url
+                resultHeaders = master.headers
+            }
         }
 
         val prefix = name ?: host
-
         return when {
             "m3u8" in resultUrl -> {
-                Log.d(tag, "m3u8 URL: $resultUrl")
-                playlistUtils.extractFromHls(resultUrl, origRequestUrl, videoNameGen = { "$prefix: $it" })
+                Video(
+                    resultUrl,
+                    "$prefix: HLS",
+                    resultUrl,
+                    resultHeaders,
+                ).let(::listOf)
             }
             "mpd" in resultUrl -> {
-                Log.d(tag, "mpd URL: $resultUrl")
-                playlistUtils.extractFromDash(resultUrl, { it -> "$prefix: $it" }, referer = origRequestUrl)
+                aniyomi.lib.playlistutils.PlaylistUtils(client, resultHeaders)
+                    .extractFromDash(resultUrl, { it -> "$prefix: $it" }, referer = origRequestUrl)
             }
             "mp4" in resultUrl -> {
-                Log.d(tag, "mp4 URL: $resultUrl")
                 Video(
                     resultUrl,
                     "$prefix: MP4",
@@ -111,8 +131,18 @@ class UniversalExtractor(private val client: OkHttpClient) {
         }
     }
 
+    private fun WebResourceRequest.toHeaders(baseHeaders: Headers): Headers = baseHeaders.newBuilder().apply {
+        requestHeaders.forEach { (name, value) ->
+            if (name?.lowercase() in FORWARDED_HEADERS) set(name, value)
+        }
+        CookieManager.getInstance().getCookie(url.toString())?.takeIf(String::isNotBlank)?.let { set("Cookie", it) }
+    }.build()
+
+    private data class ObservedRequest(val url: String, val headers: Headers)
+
     companion object {
         const val TIMEOUT_SEC: Long = 10
+        private val FORWARDED_HEADERS = setOf("accept", "origin", "referer", "user-agent")
         private val VIDEO_REGEX by lazy { Regex(".*\\.(mp4|m3u8|mpd)(\\?.*)?$", RegexOption.IGNORE_CASE) }
         private val CHECK_SCRIPT by lazy {
             """
