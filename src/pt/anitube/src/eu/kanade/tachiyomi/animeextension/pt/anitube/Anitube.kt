@@ -1,5 +1,6 @@
 package eu.kanade.tachiyomi.animeextension.pt.anitube
 
+import android.util.Log
 import androidx.preference.EditTextPreference
 import androidx.preference.ListPreference
 import androidx.preference.PreferenceScreen
@@ -254,26 +255,58 @@ class Anitube :
     private val anitubeExtractor by lazy { AnitubeExtractor(headers, client, preferences) }
 
     override suspend fun getVideoList(episode: SEpisode): List<Video> {
-        val response = client.newCall(GET(baseUrl + episode.url, headers)).awaitSuccess()
+        val startedAt = System.currentTimeMillis()
+        Log.d(DEBUG_TAG, "getVideoList start episodeUrl=${episode.url}")
+        val episodeUrl = baseUrl + episode.url
+        Log.d(DEBUG_TAG, "episode page url=$episodeUrl")
+        val response = client.newCall(GET(episodeUrl, headers)).awaitSuccess()
         val document = response.useAsJsoup()
+        val episodeId = episode.url.substringAfterLast("/").takeIf { it.all(Char::isDigit) }
+        if (episodeId != null) {
+            val directStartedAt = System.currentTimeMillis()
+            val directVideos = anitubeExtractor.getDirectVideos(episodeId)
+            Log.d(DEBUG_TAG, "fastPath episodeId=$episodeId totalMs=${System.currentTimeMillis() - directStartedAt} fallbackUsed=${directVideos.isEmpty()}")
+            if (directVideos.isNotEmpty()) {
+                Log.d(DEBUG_TAG, "getVideoList complete total=${directVideos.size} totalMs=${System.currentTimeMillis() - startedAt} fallbackUsed=false")
+                return directVideos
+            }
+        }
 
         val videoElements = document
             .select("div.video_container > a, div.playerContainer > a")
             .take(3) // Limit to 3 links maximum
+        Log.d(DEBUG_TAG, "player links found=${videoElements.size}")
 
         // Always use three resolutions: 480p, 720p, 1080p (SD, HD, FHD)
         val qualities = listOf("480p", "720p", "1080p")
+        val resolvedAt = System.currentTimeMillis()
+        Log.d(DEBUG_TAG, "player resolved in ${resolvedAt - startedAt}ms")
 
-        return coroutineScope {
+        val session = anitubeExtractor.newSession()
+        val videos = coroutineScope {
             videoElements.mapIndexed { index, element ->
                 async {
                     val url = element.absUrl("href")
                     val quality = qualities.getOrElse(index) { "720p" }
-                    runCatching { anitubeExtractor.getVideosFromUrl(url, quality) }
+                    Log.d(DEBUG_TAG, "player[$index] href=$url quality=$quality")
+                    runCatching {
+                        anitubeExtractor.getVideosFromUrl(
+                            url,
+                            quality,
+                            session,
+                        )
+                    }
                         .getOrElse { emptyList() }
                 }
             }.awaitAll().flatten()
         }
+        val distinctVideos = videos.distinctBy { it.videoUrl }
+        Log.d(DEBUG_TAG, "token/media flows complete count=${distinctVideos.size} elapsed=${System.currentTimeMillis() - resolvedAt}ms")
+        Log.d(
+            DEBUG_TAG,
+            "getVideoList complete total=${distinctVideos.size} elapsed=${System.currentTimeMillis() - startedAt}ms",
+        )
+        return distinctVideos
     }
 
     override fun videoListParse(response: Response): List<Video> = throw UnsupportedOperationException()
@@ -353,6 +386,7 @@ class Anitube :
     }
 
     companion object {
+        private const val DEBUG_TAG = "ANITUBE_DEBUG"
         const val PREFIX_SEARCH = "id:"
         private val DATE_FORMATTER by lazy { SimpleDateFormat("dd/MM/yyyy", Locale.ROOT) }
 
