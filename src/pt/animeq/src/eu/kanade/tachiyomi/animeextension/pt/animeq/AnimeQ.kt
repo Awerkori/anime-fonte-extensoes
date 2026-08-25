@@ -9,12 +9,15 @@ import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.multisrc.dooplay.DooPlay
 import eu.kanade.tachiyomi.network.GET
+import eu.kanade.tachiyomi.network.POST
 import eu.kanade.tachiyomi.network.awaitSuccess
 import keiyoushi.utils.bodyString
 import keiyoushi.utils.parallelCatchingFlatMapBlocking
 import keiyoushi.utils.parseAs
 import keiyoushi.utils.useAsJsoup
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.Serializable
+import okhttp3.FormBody
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Request
 import okhttp3.Response
@@ -116,7 +119,35 @@ class AnimeQ :
     override fun videoListParse(response: Response): List<Video> {
         val document = response.useAsJsoup()
         val players = document.select("ul#playeroptionsul li")
-        return players.parallelCatchingFlatMapBlocking(::getPlayerVideos)
+        if (players.isNotEmpty()) {
+            return players.parallelCatchingFlatMapBlocking(::getPlayerVideos)
+        }
+
+        // The current AnimeQ player exposes its sources directly in the page.
+        return document.select("[data-animeq-player] [data-animeq-source]").flatMap { source ->
+            val sourceName = source.attr("data-source-name").ifEmpty { "Player" }
+            val videoUrl = source.selectFirst("source[src]")?.absUrl("src")
+            val iframeUrl = source.selectFirst("iframe[data-lazy-src], iframe[src]")?.let {
+                it.attr("data-lazy-src").ifEmpty { it.absUrl("src") }
+            }
+
+            when {
+                !videoUrl.isNullOrBlank() -> listOf(
+                    Video(
+                        videoUrl,
+                        sourceName,
+                        videoUrl,
+                        headers.newBuilder()
+                            .add("Accept", "*/*")
+                            .add("Referer", response.request.url.toString())
+                            .build(),
+                    ),
+                )
+                !iframeUrl.isNullOrBlank() && "blogger.com" in iframeUrl ->
+                    runBlocking { bloggerExtractor.videosFromUrl(iframeUrl, headers) }
+                else -> emptyList()
+            }
+        }
     }
 
     private val bloggerExtractor by lazy { BloggerExtractor(client) }
@@ -167,7 +198,14 @@ class AnimeQ :
         val type = player.attr("data-type")
         val id = player.attr("data-post")
         val num = player.attr("data-nume")
-        return client.newCall(GET("$baseUrl/wp-json/dooplayer/v2/$id/$type/$num"))
+        val body = FormBody.Builder()
+            .add("action", "doo_player_ajax")
+            .add("post", id)
+            .add("nume", num)
+            .add("type", type)
+            .build()
+
+        return client.newCall(POST("$baseUrl/wp-admin/admin-ajax.php", headers, body))
             .awaitSuccess().bodyString()
             .substringAfter("\"embed_url\":\"")
             .substringBefore("\",")
