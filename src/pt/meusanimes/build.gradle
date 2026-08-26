@@ -1,7 +1,7 @@
 ext {
     extName = 'Meus Animes'
     extClass = '.MeusAnimes'
-    extVersionCode = 1
+    extVersionCode = 2
     isNsfw = true
 }
 
@@ -9,4 +9,5 @@ apply plugin: "kei.plugins.extension.legacy"
 
 dependencies {
     implementation(project(':lib:bloggerextractor'))
+    implementation(project(':lib:universalextractor'))
 }
