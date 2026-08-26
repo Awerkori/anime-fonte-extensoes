@@ -4,17 +4,18 @@ import aniyomi.lib.bloggerextractor.BloggerExtractor
 import eu.kanade.tachiyomi.animeextension.pt.animesonlinecloud.extractors.UniversalExtractor
 import eu.kanade.tachiyomi.animesource.model.AnimeFilter
 import eu.kanade.tachiyomi.animesource.model.AnimeFilterList
+import eu.kanade.tachiyomi.animesource.model.AnimesPage
 import eu.kanade.tachiyomi.animesource.model.SAnime
+import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.multisrc.dooplay.DooPlay
 import eu.kanade.tachiyomi.network.GET
-import eu.kanade.tachiyomi.network.awaitSuccess
-import keiyoushi.utils.bodyString
 import keiyoushi.utils.parallelCatchingFlatMapBlocking
 import keiyoushi.utils.parseAs
 import keiyoushi.utils.useAsJsoup
 import kotlinx.serialization.Serializable
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Request
 import okhttp3.Response
 import org.jsoup.nodes.Document
@@ -31,6 +32,50 @@ class AnimesOnlineCloud :
 
     // =============================== Latest ===============================
     override fun latestUpdatesNextPageSelector() = "div.pagination > a.arrow_pag > i.fa-caret-right"
+
+    override fun latestUpdatesParse(response: Response): AnimesPage {
+        fetchGenresList()
+        val document = response.useAsJsoup()
+        val animes = document.select(latestUpdatesSelector()).mapNotNull(::latestAnimeFromElement)
+        val hasNextPage = document.selectFirst(latestUpdatesNextPageSelector()) != null
+        return AnimesPage(animes, hasNextPage)
+    }
+
+    private fun latestAnimeFromElement(element: Element): SAnime? {
+        val episodeUrl = element.selectFirst("a[href]")?.attr("abs:href")?.takeIf(String::isNotBlank)
+            ?: return null
+
+        return runCatching {
+            client.newCall(GET(episodeUrl, headers)).execute().use { episodeResponse ->
+                if (!episodeResponse.isSuccessful) return@use null
+                animeDetailsParse(episodeResponse.useAsJsoup()).apply {
+                    element.selectFirst("img")?.attr("abs:src")
+                        ?.takeIf(String::isNotBlank)
+                        ?.let { thumbnail_url = it }
+                }
+            }
+        }.getOrNull()
+    }
+
+    override fun getRealAnimeDoc(document: Document): Document {
+        val parentUrl = document.selectFirst("div.pag_episodes a[href*='/anime/']")
+            ?.attr("abs:href")
+            ?.takeIf(String::isNotBlank)
+            ?: document.location()
+                .takeIf { "/episodio/" in it }
+                ?.substringBeforeLast('/')
+                ?.substringAfterLast('/')
+                ?.substringBefore("-episodio-")
+                ?.takeIf(String::isNotBlank)
+                ?.let { "$baseUrl/anime/$it" }
+            ?: return document
+
+        return runCatching {
+            client.newCall(GET(parentUrl, headers)).execute().use { response ->
+                if (response.isSuccessful) response.useAsJsoup() else document
+            }
+        }.getOrElse { document }
+    }
 
     // =============================== Search ===============================
     override fun searchAnimeRequest(page: Int, query: String, filters: AnimeFilterList): Request {
@@ -62,6 +107,19 @@ class AnimesOnlineCloud :
     }
 
     // =========================== Anime Details ============================
+    override fun episodeListRequest(anime: SAnime): Request = GET(resolveAnimeUrl(anime), headers)
+
+    private fun resolveAnimeUrl(anime: SAnime): String {
+        val base = baseUrl.toHttpUrl()
+        val rawUrl = anime.url.trim()
+        val absoluteUrl = rawUrl.toHttpUrlOrNull()
+
+        return when {
+            absoluteUrl?.host == base.host -> absoluteUrl.toString()
+            else -> base.resolve(rawUrl)?.toString() ?: base.toString()
+        }
+    }
+
     override val additionalInfoSelector = "div.wp-content"
 
     override fun Document.getDescription(): String = select("$additionalInfoSelector p")
@@ -103,67 +161,91 @@ class AnimesOnlineCloud :
         }
     }
 
+    // The current site uses episode cards instead of the legacy DooPlay list.
+    override fun episodeListParse(response: Response): List<SEpisode> {
+        val document = response.useAsJsoup()
+        val episodes = document.select("div#seasons > div.se-c div.episodios-grid > div.episode-card")
+
+        return episodes.mapNotNull { element ->
+            val href = element.selectFirst("a[href]")?.attr("href")?.takeIf(String::isNotBlank)
+                ?: return@mapNotNull null
+            val title = element.attr("data-episode-title").trim()
+            val number = element.attr("data-episode-number").toFloatOrNull()
+                ?: EPISODE_NUMBER_REGEX.find(title)?.groupValues?.get(1)?.replace('-', '.')?.toFloatOrNull()
+
+            SEpisode.create().apply {
+                setUrlWithoutDomain(href)
+                name = title.ifEmpty { element.selectFirst("h3.episode-title")?.text().orEmpty() }
+                episode_number = number ?: 0F
+            }
+        }.reversed()
+    }
+
     // ============================ Video Links =============================
     override fun videoListParse(response: Response): List<Video> {
-        val document = response.useAsJsoup()
-        val players = document.select("ul#playeroptionsul li")
-        return players.parallelCatchingFlatMapBlocking(::getPlayerVideos)
+        val document = runCatching { response.useAsJsoup() }
+            .onFailure { it.printStackTrace() }
+            .getOrElse { return emptyList() }
+        val players = document.select("section.animeq-player div.animeq-player__source")
+        return players.parallelCatchingFlatMapBlocking { player ->
+            runCatching { getPlayerVideos(player) }
+                .onFailure { it.printStackTrace() }
+                .getOrDefault(emptyList())
+        }
     }
 
     private val bloggerExtractor by lazy { BloggerExtractor(client) }
     private val universalExtractor by lazy { UniversalExtractor(client) }
 
     private suspend fun getPlayerVideos(player: Element): List<Video> {
-        val name = player.selectFirst("span.title")!!.text()
-            .run {
-                when (this.uppercase()) {
-                    "SD" -> "360p"
-                    "HD" -> "720p"
-                    "SD/HD", "SD / HD" -> "720p"
-                    "FHD", "FULLHD", "FULLHD / HLS" -> "1080p"
-                    else -> this
-                }
-            }
+        val sourceNumber = player.attr("data-animeq-source")
+        val name = player.ownerDocument()
+            ?.selectFirst("[data-animeq-switch='$sourceNumber']")
+            ?.attr("data-source-name")
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+            ?: player.selectFirst("[data-video-title], iframe[title]")
+                ?.let { it.attr("data-video-title").ifEmpty { it.attr("title") } }
+                ?.trim()
+                ?.takeIf(String::isNotEmpty)
+            ?: "Fonte $sourceNumber"
 
-        val url = getPlayerUrl(player)
+        val url = player.selectFirst("source[src]")?.attr("abs:src")
+            ?.takeIf(String::isNotBlank)
+            ?: player.selectFirst("[data-video-src]")?.attr("abs:data-video-src")
+                ?.takeIf(String::isNotBlank)
+            ?: player.selectFirst("iframe[src]")?.attr("abs:src")
+                ?.takeIf(String::isNotBlank)
+            ?: return emptyList()
 
-        val videos = when {
-            "blogger.com" in url -> bloggerExtractor.videosFromUrl(url, headers)
+        if (!url.isHttpUrl()) return emptyList()
 
-            "jwplayer?source=" in url -> {
-                val videoUrl = url.toHttpUrl().queryParameter("source") ?: return emptyList()
-
-                val videoHeaders = headers.newBuilder()
-                    .add("Accept", "*/*")
-                    .add("Host", videoUrl.toHttpUrl().host)
-                    .add("Origin", "https://${url.toHttpUrl().host}")
-                    .add("Referer", "https://${url.toHttpUrl().host}/")
-                    .build()
-
-                return listOf(
-                    Video(videoUrl, name, videoUrl, videoHeaders),
-                )
-            }
-
-            else -> emptyList()
+        val directVideo = url.substringBefore('?').let { path ->
+            path.endsWith(".mp4", ignoreCase = true) || path.endsWith(".m3u8", ignoreCase = true)
         }
+        if (directVideo) return listOf(Video(url, name, url, videoHeaders))
 
-        if (videos.isEmpty()) {
-            return universalExtractor.videosFromUrl(url, headers, name)
-        }
-        return videos
+        // Playmogo is currently returning 403 and UniversalExtractor waits for
+        // its WebView timeout. Skip this known dead source immediately.
+        if ("playmogo.com" in url) return emptyList()
+
+        return runCatching {
+            if ("blogger.com" in url) {
+                bloggerExtractor.videosFromUrl(url, headers, name)
+            } else {
+                universalExtractor.videosFromUrl(url, headers, name)
+            }
+        }.onFailure { it.printStackTrace() }.getOrDefault(emptyList())
     }
 
-    private suspend fun getPlayerUrl(player: Element): String {
-        val type = player.attr("data-type")
-        val id = player.attr("data-post")
-        val num = player.attr("data-nume")
-        return client.newCall(GET("$baseUrl/wp-json/dooplayer/v2/$id/$type/$num"))
-            .awaitSuccess().bodyString()
-            .substringAfter("\"embed_url\":\"")
-            .substringBefore("\",")
-            .replace("\\", "")
+    private val videoHeaders by lazy {
+        headers.newBuilder()
+            .set("Accept", "*/*")
+            .set("Referer", baseUrl)
+            .build()
     }
+
+    private fun String.isHttpUrl(): Boolean = startsWith("https://") || startsWith("http://")
 
     // ============================== Filters ===============================
     @Volatile
@@ -288,6 +370,7 @@ class AnimesOnlineCloud :
     )
 
     companion object {
+        private val EPISODE_NUMBER_REGEX = Regex("(?:Episódio|Ep\\.?)\\s+([0-9]+(?:[.-][0-9]+)?)", RegexOption.IGNORE_CASE)
         private val REGEX_QUALITY by lazy { Regex("""(\d+)p""") }
         private val REGEX_IMAGE_SIZE_SUFFIX by lazy {
             Regex("""-\d+x\d+(?=\.[A-Za-z0-9]+$)""")
