@@ -1,36 +1,45 @@
 package eu.kanade.tachiyomi.animeextension.pt.animesgratis
 
+import android.util.Base64
 import android.util.Log
 import aniyomi.lib.bloggerextractor.BloggerExtractor
 import aniyomi.lib.filemoonextractor.FilemoonExtractor
+import aniyomi.lib.m3u8server.M3u8Integration
 import aniyomi.lib.mixdropextractor.MixDropExtractor
 import aniyomi.lib.streamtapeextractor.StreamTapeExtractor
 import aniyomi.lib.streamwishextractor.StreamWishExtractor
+import eu.kanade.tachiyomi.animeextension.pt.animesgratis.extractors.EmbedPlayerExtractor
 import eu.kanade.tachiyomi.animeextension.pt.animesgratis.extractors.NoaExtractor
 import eu.kanade.tachiyomi.animeextension.pt.animesgratis.extractors.RuplayExtractor
 import eu.kanade.tachiyomi.animeextension.pt.animesgratis.extractors.UniversalExtractor
+import eu.kanade.tachiyomi.animesource.model.AnimesPage
 import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.multisrc.dooplay.DooPlay
 import eu.kanade.tachiyomi.network.GET
-import eu.kanade.tachiyomi.util.asJsoup
-import keiyoushi.utils.parallelCatchingFlatMap
-import okhttp3.HttpUrl.Companion.toHttpUrl
+import keiyoushi.utils.parallelCatchingFlatMapBlocking
+import keiyoushi.utils.useAsJsoup
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Response
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.text.SimpleDateFormat
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 
 class Q1N :
     DooPlay(
         "pt-BR",
-        "Q1N",
-        "https://q1n.net",
+        "TopAnimes",
+        "https://topanimes.net",
     ) {
 
     private val tag by lazy { javaClass.simpleName }
+    private val json = Json { ignoreUnknownKeys = true }
 
     override val id: Long = 2969482460524685571L
 
@@ -48,6 +57,44 @@ class Q1N :
     // =============================== Search ===============================
     override fun searchAnimeSelector() = "div.result-item article div.thumbnail > a"
     override fun searchAnimeFromElement(element: Element) = popularAnimeFromElement(element)
+
+    override fun latestUpdatesParse(response: Response): AnimesPage {
+        val document = response.useAsJsoup()
+        val items = document.select(latestUpdatesSelector())
+        val animes = items.parallelCatchingFlatMapBlocking { element ->
+            runCatching { listOf(latestAnimeFromElement(element)) }.getOrDefault(emptyList())
+        }.distinctBy(SAnime::url)
+        return AnimesPage(
+            animes,
+            document.selectFirst(latestUpdatesNextPageSelector()) != null,
+        )
+    }
+
+    private fun latestAnimeFromElement(element: Element): SAnime {
+        val episodeUrl = element.selectFirst("div.data a[href]")?.attr("href")
+            ?: element.selectFirst("a[href]")?.attr("href")
+            ?: return popularAnimeFromElement(element)
+        val animeUrl = episodeUrl.toHttpUrlOrNull()?.let { pageUrl ->
+            pageUrl.encodedPath.substringAfter("/episodio/")
+                .trim('/')
+                .substringBeforeLast("-episodio-")
+                .takeIf(String::isNotBlank)
+                ?.let { "$baseUrl/animes/$it/" }
+        } ?: return popularAnimeFromElement(element)
+
+        latestAnimeCache[animeUrl]?.let { return it }
+        val anime = runCatching {
+            client.newCall(GET(animeUrl, headers)).execute().use { animeDetailsParse(it.useAsJsoup()) }
+        }.getOrElse {
+            runCatching {
+                client.newCall(GET(episodeUrl, headers)).execute().use {
+                    animeDetailsParse(getRealAnimeDoc(it.useAsJsoup()))
+                }
+            }.getOrElse { return popularAnimeFromElement(element) }
+        }
+        latestAnimeCache.putIfAbsent(animeUrl, anime)
+        return latestAnimeCache[animeUrl] ?: anime
+    }
 
     // =========================== Anime Details ============================
     override val additionalInfoSelector = "div.wp-content"
@@ -89,35 +136,36 @@ class Q1N :
                 } else {
                     episodeFromElement(element, seasonName)
                 }
-            }.onFailure { it.printStackTrace() }.getOrNull()
+            }.onFailure { e -> Log.e(tag, "Failed to parse episode element", e) }.getOrNull()
         }
     }
 
-    override fun episodeListSelector() = "ul.episodios > li > div.episodiotitle > a"
-
     override fun episodeFromElement(element: Element) = SEpisode.create().apply {
-        setUrlWithoutDomain(element.attr("href"))
-        element.text().also {
-            name = it
-            episode_number = it.substringAfter(" ").toFloatOrNull() ?: 0F
-        }
-        date_upload = element.parent()?.selectFirst(episodeDateSelector)
+        val href = element.selectFirst("a[href]")!!
+        setUrlWithoutDomain(href.attr("href"))
+        val episodeName = href.ownText().trim()
+        episode_number = element.selectFirst("div.numerando")
+            ?.text()
+            ?.let(episodeNumberRegex::find)
+            ?.groupValues
+            ?.last()
+            ?.toFloatOrNull()
+            ?: episodeName.substringAfter(" ").toFloatOrNull()
+            ?: 0F
+        name = episodeName
+        date_upload = element.selectFirst(episodeDateSelector)
             ?.text()
             ?.toDate() ?: 0L
     }
 
     // ============================ Video Links =============================
-    override suspend fun getVideoList(episode: SEpisode): List<Video> = client.newCall(videoListRequest(episode))
-        .execute()
-        .use { response ->
-            videoListParseSuspend(response)
-        }
-
-    override fun videoListParse(response: Response) = throw UnsupportedOperationException()
-    private suspend fun videoListParseSuspend(response: Response): List<Video> {
-        val document = response.asJsoup()
+    override fun videoListParse(response: Response): List<Video> {
+        val document = response.useAsJsoup()
         val players = document.select("ul#playeroptionsul li")
-        return players.parallelCatchingFlatMap(::getPlayerVideos)
+            .filterNot { getPlayerUrl(it)?.contains("/off/", ignoreCase = true) == true }
+            .distinctBy { getPlayerUrl(it) ?: "player:${it.attr("data-nume")}" }
+        return players.parallelCatchingFlatMapBlocking(::getPlayerVideos)
+            .let(m3u8Integration::processVideoList)
     }
 
     override val prefQualityValues = arrayOf("360p", "480p", "720p", "1080p")
@@ -125,47 +173,73 @@ class Q1N :
 
     private val ruplayExtractor by lazy { RuplayExtractor(client) }
     private val noaExtractor by lazy { NoaExtractor(client, headers) }
+    private val embedPlayerExtractor by lazy { EmbedPlayerExtractor(client, headers) }
+    private val m3u8Integration by lazy { M3u8Integration(client) }
     private val bloggerExtractor by lazy { BloggerExtractor(client) }
     private val filemoonExtractor by lazy { FilemoonExtractor(client) }
     private val streamTapeExtractor by lazy { StreamTapeExtractor(client) }
     private val streamWishExtractor by lazy { StreamWishExtractor(client, headers) }
     private val mixDropExtractor by lazy { MixDropExtractor(client) }
     private val universalExtractor by lazy { UniversalExtractor(client) }
+    private val latestAnimeCache = ConcurrentHashMap<String, SAnime>()
 
     private suspend fun getPlayerVideos(player: Element): List<Video> {
-        val name = player.selectFirst("span.title")!!.text().lowercase()
+        val name = player.selectFirst("span.title")!!.text()
+        val lower = name.lowercase()
         val url = getPlayerUrl(player) ?: return emptyList()
-        Log.d(tag, "Fetching videos from: $url")
 
-        return when {
-            "ruplay" in name -> ruplayExtractor.videosFromUrl(url)
-            "streamwish" in name -> streamWishExtractor.videosFromUrl(url)
-            "filemoon" in name -> filemoonExtractor.videosFromUrl(url)
-            "mixdrop" in name -> mixDropExtractor.videoFromUrl(url)
-            "streamtape" in name -> streamTapeExtractor.videosFromUrl(url)
-            "noa" in name -> noaExtractor.videosFromUrl(url)
-            "mdplayer" in name -> noaExtractor.videosFromUrl(url, name)
-            "/antivirus3/" in url -> noaExtractor.videosFromUrl(url, name)
-            "/player/" in url -> bloggerExtractor.videosFromUrl(url, headers)
-            "blogger.com" in url -> bloggerExtractor.videosFromUrl(url, headers)
-            else -> universalExtractor.videosFromUrl(url, headers, name)
+        val extractor = when {
+            "ruplay" in lower -> "Ruplay"
+            "streamwish" in lower -> "StreamWish"
+            "filemoon" in lower -> "Filemoon"
+            "mixdrop" in lower -> "MixDrop"
+            "streamtape" in lower -> "StreamTape"
+            "noa" in lower || "mdplayer" in lower || "/antivirus2/" in url || "/antivirus3/" in url || "alibabacdn.net" in url ->
+                "EmbedPlayer"
+            "doflix.net" in url -> "EmbedPlayer"
+            "/player/" in url || "blogger.com" in url -> "Blogger"
+            "abyssplayer.com" in url || "aniplay" in lower -> "Unsupported"
+            else -> "Unknown"
         }
+        var videos = when (extractor) {
+            "Ruplay" -> ruplayExtractor.videosFromUrl(url)
+            "StreamWish" -> streamWishExtractor.videosFromUrl(url)
+            "Filemoon" -> filemoonExtractor.videosFromUrl(url)
+            "MixDrop" -> mixDropExtractor.videoFromUrl(url)
+            "StreamTape" -> streamTapeExtractor.videosFromUrl(url)
+            "EmbedPlayer" -> embedPlayerExtractor.videosFromUrl(url, name)
+            "Blogger" -> bloggerExtractor.videosFromUrl(url, headers)
+            else -> emptyList()
+        }
+        if (videos.isEmpty() && extractor != "Unknown" && extractor != "Unsupported") {
+            videos = universalExtractor.videosFromUrl(url, headers, name)
+        } else if (videos.isEmpty() && extractor == "Unknown") {
+            videos = universalExtractor.videosFromUrl(url, headers, name)
+        }
+        return videos
     }
 
     private fun getPlayerUrl(player: Element): String? {
         val playerId = player.attr("data-nume")
-        val iframe = player.root().selectFirst("div#source-player-$playerId iframe")
-
-        return iframe?.tryGetAttr("data-litespeed-src", "src")?.takeIf(String::isNotBlank)
-            ?.let {
-                when {
-                    it.contains("/aviso/") ->
-                        it.toHttpUrl().queryParameter("url")
-
-                    else -> it
-                }
-            }
+        val iframe = player.root().selectFirst("div#source-player-$playerId iframe") ?: return null
+        val sourceUrl = iframe.tryGetAttr("data-litespeed-src", "src")?.takeIf(String::isNotBlank) ?: return null
+        return resolvePlayerSourceUrl(sourceUrl)
     }
+
+    private fun resolvePlayerSourceUrl(sourceUrl: String): String? {
+        val httpUrl = sourceUrl.toHttpUrlOrNull() ?: return null
+        return when {
+            "/aviso/" in sourceUrl -> httpUrl.queryParameter("url")
+            httpUrl.queryParameter("auth") != null -> decodeAuthPlayerUrl(httpUrl.queryParameter("auth"))
+            else -> sourceUrl
+        }
+    }
+
+    private fun decodeAuthPlayerUrl(auth: String?): String? = runCatching {
+        if (auth.isNullOrBlank()) return null
+        val content = json.decodeFromString<JsonObject>(String(Base64.decode(auth, Base64.DEFAULT)))
+        content["url"]?.jsonPrimitive?.content?.takeIf(String::isNotBlank)
+    }.getOrNull()
 
     // ============================== Filters ===============================
     override fun genresListRequest() = popularAnimeRequest(0)
@@ -187,11 +261,11 @@ class Q1N :
 
     // ============================= Utilities ==============================
     override fun getRealAnimeDoc(document: Document): Document {
-        if (!document.location().contains("/e/")) return document
+        if (!document.location().contains("/episodio/")) return document
 
         return document.selectFirst("div.pag_episodes div.item > a:has(i.fa-th)")?.let {
             client.newCall(GET(it.attr("href"), headers)).execute()
-                .use { response -> response.asJsoup() }
+                .use { response -> response.useAsJsoup() }
         } ?: document
     }
 
