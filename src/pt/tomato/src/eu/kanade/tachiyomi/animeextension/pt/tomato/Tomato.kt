@@ -179,6 +179,17 @@ class Tomato :
         it.animeDetails.animeId == animeId && SystemClock.elapsedRealtime() - detailsCachedAt <= DETAILS_CACHE_TTL_MS
     }
 
+    private fun loginRequiredAnime(): SAnime = SAnime.create().apply {
+        url = LOGIN_REQUIRED_URL
+        title = LOGIN_REQUIRED_TITLE
+        description = LOGIN_REQUIRED_DESCRIPTION
+        status = SAnime.UNKNOWN
+    }
+
+    private fun hasValidSession(): Boolean = userToken != null && runCatching {
+        requireValidToken()
+    }.isSuccess
+
     private fun refreshServerConfig() {
         if (serverConfigLoaded) return
 
@@ -252,6 +263,8 @@ class Tomato :
 
     // ============================== Popular ===============================
 
+    override suspend fun getPopularAnime(page: Int): AnimesPage = if (hasValidSession()) super.getPopularAnime(page) else AnimesPage(listOf(loginRequiredAnime()), false)
+
     override fun popularAnimeRequest(page: Int): Request {
         val token = requireValidToken()
         return GET("$baseUrl/v2/animes/feed", apiHeaders(token))
@@ -290,6 +303,8 @@ class Tomato :
 
     // =============================== Latest ===============================
 
+    override suspend fun getLatestUpdates(page: Int): AnimesPage = if (hasValidSession()) super.getLatestUpdates(page) else AnimesPage(listOf(loginRequiredAnime()), false)
+
     override fun latestUpdatesRequest(page: Int): Request {
         val token = requireValidToken()
         return GET("$baseUrl/v2/animes/feed", apiHeaders(token))
@@ -323,6 +338,8 @@ class Tomato :
 
     // =============================== Search ===============================
 
+    override suspend fun getSearchAnime(page: Int, query: String, filters: AnimeFilterList): AnimesPage = if (hasValidSession()) super.getSearchAnime(page, query, filters) else AnimesPage(listOf(loginRequiredAnime()), false)
+
     override fun getFilterList() = Filters.FILTER_LIST
 
     override fun searchAnimeRequest(page: Int, query: String, filters: AnimeFilterList): Request {
@@ -333,9 +350,9 @@ class Tomato :
             search = query.trim(),
             contentType = "anime",
             page = page - 1,
-            tags = genres,
+            tags = genres.takeIf { it.isNotEmpty() },
         )
-        return POST("$baseUrl/v2/content/search", apiHeaders(token), requestDto.toJsonRequestBody())
+        return POST("https://edge.betomato.com/v2/content/search", apiHeaders(token), requestDto.toJsonRequestBody())
     }
 
     override fun searchAnimeParse(response: Response): AnimesPage {
@@ -348,6 +365,8 @@ class Tomato :
     override suspend fun fetchRelatedAnimeList(anime: SAnime): List<SAnime> = emptyList()
 
     // =========================== Anime Details ============================
+
+    override suspend fun getAnimeDetails(anime: SAnime): SAnime = if (anime.url == LOGIN_REQUIRED_URL) anime else super.getAnimeDetails(anime)
 
     override fun animeDetailsRequest(anime: SAnime): Request = GET("$baseUrl${anime.url}", apiHeaders())
 
@@ -364,6 +383,7 @@ class Tomato :
     override fun episodeListRequest(anime: SAnime): Request = GET("$baseUrl${anime.url}", apiHeaders())
 
     override suspend fun getEpisodeList(anime: SAnime): List<SEpisode> {
+        if (anime.url == LOGIN_REQUIRED_URL) return emptyList()
         val animeId = anime.url.substringAfterLast('/').toIntOrNull()
             ?: throw IllegalArgumentException("ID de anime Tomato inválido")
         val details = cachedDetails(animeId) ?: client.newCall(episodeListRequest(anime)).awaitSuccess().use {
@@ -779,6 +799,9 @@ class Tomato :
     }
 
     companion object {
+        private const val LOGIN_REQUIRED_URL = "/login-required"
+        private const val LOGIN_REQUIRED_TITLE = "🔐 Login necessário"
+        private const val LOGIN_REQUIRED_DESCRIPTION = "Entre na sua conta Tomato pelas configurações da extensão para acessar o catálogo. Configurações → Ação → Fazer Login"
         private const val COMPATIBLE_APP_VERSION = "1.4.3"
         private const val DETAILS_CACHE_TTL_MS = 30_000L
         private const val PREF_TOKEN = "pref_user_token"

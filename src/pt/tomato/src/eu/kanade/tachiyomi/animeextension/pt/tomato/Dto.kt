@@ -116,7 +116,7 @@ data class SearchRequestDto(
     val search: String,
     @SerialName("content_type") val contentType: String,
     val page: Int,
-    val tags: List<String>,
+    val tags: List<String>? = null,
 )
 
 @Serializable
