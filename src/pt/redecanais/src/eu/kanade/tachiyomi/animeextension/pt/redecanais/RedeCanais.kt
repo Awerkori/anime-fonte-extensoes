@@ -2,7 +2,6 @@ package eu.kanade.tachiyomi.animeextension.pt.redecanais
 
 import android.app.Application
 import android.content.SharedPreferences
-import android.util.Log
 import android.webkit.WebSettings
 import androidx.preference.EditTextPreference
 import androidx.preference.ListPreference
@@ -12,6 +11,7 @@ import eu.kanade.tachiyomi.animeextension.pt.redecanais.htmlproxy.HtmlProxy
 import eu.kanade.tachiyomi.animeextension.pt.redecanais.htmlproxy.ImageProxy
 import eu.kanade.tachiyomi.animeextension.pt.redecanais.htmlproxy.SearchMapCache
 import eu.kanade.tachiyomi.animeextension.pt.redecanais.htmlproxy.toRedeCanaisHost
+import eu.kanade.tachiyomi.animeextension.pt.redecanais.lib.StreamContext
 import eu.kanade.tachiyomi.animeextension.pt.redecanais.lib.StreamProxy
 import eu.kanade.tachiyomi.animeextension.pt.redecanais.searchthumbproxy.SearchThumbProxy
 import eu.kanade.tachiyomi.animeextension.pt.redecanais.videolist.PlayerApiSniffer
@@ -55,7 +55,6 @@ class RedeCanais :
     override val supportsLatest = true
 
     private val context: Application by injectLazy()
-    private val tag by lazy { javaClass.simpleName }
     private val webViewUserAgent: String by lazy { WebSettings.getDefaultUserAgent(context) }
     private val baseHost by lazy { baseUrl.toHttpUrl().host }
 
@@ -63,7 +62,7 @@ class RedeCanais :
     private var searchEntriesCache: List<SearchEntry>? = null
     private val searchEntriesMutex = Mutex()
     private val playerApiSniffer by lazy { PlayerApiSniffer(baseUrl, ::browserUserAgent) }
-    private val videoProxy by lazy { StreamProxy(client) }
+    private val videoProxy by lazy { StreamProxy(network.client) }
     private val preferences: SharedPreferences by getPreferencesLazy()
     private val audioOptionsCache = mutableMapOf<String, List<AudioOption>>()
 
@@ -136,6 +135,8 @@ class RedeCanais :
     override fun searchAnimeParse(response: Response): AnimesPage = parseListing(response)
 
     // =========================== Anime Details ============================
+
+    override fun animeDetailsRequest(anime: SAnime): Request = GET(anime.absoluteAnimeUrl(), headers)
 
     override fun animeDetailsParse(response: Response): SAnime = SAnime.create().apply {
         val document = response.asJsoup()
@@ -231,20 +232,39 @@ class RedeCanais :
     override fun videoListParse(response: Response): List<Video> {
         val requestUrl = response.originalRequestUrl()
         val options = requestUrl.audioOptions()
-        Log.d(tag, "videoList options request=${requestUrl.shortLogUrl()} count=${options.size} ${options.joinToString { "${it.label}=${it.url.shortLogUrl()}" }}")
+        val iframeUrl = response.playerIframeUrl()
+        val responsePageUrl = requestUrl.cleanAudioUrl()
+        val iframeUrls = mutableMapOf(responsePageUrl to iframeUrl)
+        val snifferInputs = options.map { option ->
+            val optionPageUrl = option.url.cleanAudioUrl()
+            PlayerApiSniffer.Input(
+                parentUrl = option.url,
+                iframeUrl = iframeUrls.getOrPut(optionPageUrl) {
+                    runCatching {
+                        client.newCall(GET(optionPageUrl, headers)).execute().use { it.playerIframeUrl() }
+                    }.getOrNull()
+                },
+            )
+        }
+        val videos = playerApiSniffer.sniffAll(snifferInputs)
 
-        val videos = playerApiSniffer.sniffAll(options.map { it.url })
-        Log.d(tag, "videoList sniffer results count=${videos.size} ${videos.entries.joinToString { "${it.key.shortLogUrl()}=>${it.value.url.shortLogUrl()} ref=${it.value.referer.shortLogUrl()}" }}")
-
-        val headers = videoHeaders()
         return options.mapNotNull { option ->
-            val video = videos[option.url] ?: run {
-                Log.d(tag, "videoList missing result label=${option.label} option=${option.url.shortLogUrl()}")
-                return@mapNotNull null
-            }
-            val streamUrl = proxiedVideoUrl(video.url)
-            Log.d(tag, "videoList video label=${option.label} option=${option.url.shortLogUrl()} stream=${video.url.shortLogUrl()} proxy=${streamUrl.shortLogUrl()}")
-            Video(video.url, "RedeCanais - ${option.label}", streamUrl, headers)
+            val video = videos[option.url] ?: return@mapNotNull null
+            val streamUrl = videoProxy.proxiedUrl(
+                StreamContext(
+                    url = video.url,
+                    userAgent = video.userAgent,
+                    referer = video.referer,
+                    origin = video.referer.origin(),
+                    cookie = video.cookie.takeIf { it.isNotBlank() },
+                ),
+            )
+            Video(
+                video.url,
+                "RedeCanais - ${option.label}",
+                streamUrl,
+                Headers.headersOf("User-Agent", browserUserAgent()),
+            )
         }
     }
 
@@ -280,6 +300,12 @@ class RedeCanais :
     // ============================= Utilities ==============================
 
     private fun browserUserAgent(): String = webViewUserAgent
+
+    private fun SAnime.absoluteAnimeUrl(): String = when {
+        url.startsWith("http", ignoreCase = true) -> url.toRedeCanaisHost(baseHost)
+        url.startsWith("/") -> "$baseUrl$url"
+        else -> "$baseUrl/$url"
+    }
 
     private fun SEpisode.absoluteEpisodeUrl(): String = when {
         url.startsWith("http", ignoreCase = true) -> url.toRedeCanaisHost(baseHost)
@@ -356,39 +382,17 @@ class RedeCanais :
             .toString()
     }
 
-    private fun String.shortLogUrl(): String {
-        val url = toHttpUrlOrNull() ?: return takeLast(80)
-        val path = url.encodedPath
-        val query = url.encodedQuery?.let { "?${it.take(80)}" }.orEmpty()
-        return "${url.host}$path$query"
-    }
-
-    private fun proxiedVideoUrl(url: String): String = videoProxy.proxiedUrl(url)
-
     private fun getDomainPrefSummary(): String = preferences.getString(PREF_DOMAIN_KEY, PREF_DOMAIN_DEFAULT)!!
 
-    private fun videoHeaders(): Headers = Headers.headersOf(
-        "User-Agent",
-        VIDEO_USER_AGENT,
-        "Accept",
-        VIDEO_ACCEPT,
-        "Accept-Language",
-        ACCEPT_LANGUAGE,
-        "Accept-Encoding",
-        "gzip, deflate",
-        "Sec-GPC",
-        "1",
-        "Connection",
-        "keep-alive",
-        "Upgrade-Insecure-Requests",
-        "1",
-        "Priority",
-        "u=0, i",
-        "Pragma",
-        "no-cache",
-        "Cache-Control",
-        "no-cache",
-    )
+    private fun String.origin(): String {
+        val url = toHttpUrlOrNull() ?: return baseUrl
+        val port = when {
+            url.scheme == "http" && url.port == 80 -> ""
+            url.scheme == "https" && url.port == 443 -> ""
+            else -> ":${url.port}"
+        }
+        return "${url.scheme}://${url.host}$port"
+    }
 
     private fun Response.originalRequestUrl(): String {
         var current = this
@@ -396,6 +400,13 @@ class RedeCanais :
             current = current.priorResponse!!
         }
         return current.request.url.toString()
+    }
+
+    private fun Response.playerIframeUrl(): String? {
+        val document = Jsoup.parse(peekBody(PLAYER_HTML_PEEK_BYTES).string(), request.url.toString())
+        val iframe = document.selectFirst("#video-wrapper iframe[src], iframe[name=Player][src], iframe[src*=/player3/server.php]")
+            ?: return null
+        return iframe.absUrl("src").takeIf { it.isNotBlank() }?.toRedeCanaisHost(baseHost)
     }
 
     private fun parseListing(response: Response): AnimesPage {
@@ -536,11 +547,10 @@ class RedeCanais :
         private const val PREF_DOMAIN_KEY = "preferred_domain"
         private const val PREF_DOMAIN_TITLE = "Domínio atual (requer reinicialização da app)"
         private const val PREF_DOMAIN_DEFAULT = "https://redecanais.plus"
+        private const val PLAYER_HTML_PEEK_BYTES = 2L * 1024L * 1024L
         private const val DUBBED_AUDIO_PARAM = "rc_dublado"
         private const val SUBBED_AUDIO_PARAM = "rc_legendado"
         private const val ACCEPT_LANGUAGE = "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7"
-        private const val VIDEO_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:151.0) Gecko/20100101 Firefox/151.0"
-        private const val VIDEO_ACCEPT = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
         private const val DESCRIPTION_SELECTOR = "div[itemprop=description], div.pm-category-description"
 
         private val SEARCH_LINE_REGEX = Regex("^(.*?)<a href=\"(.*?)\"", RegexOption.IGNORE_CASE)
