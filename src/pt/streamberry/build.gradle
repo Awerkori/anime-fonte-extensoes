@@ -1,0 +1,20 @@
+ext {
+    extName = 'Streamberry'
+    extClass = '.Streamberry'
+    extVersionCode = 1
+    baseUrl = 'https://streamberry.com.br'
+    isNsfw = false
+}
+
+apply plugin: "kei.plugins.extension.legacy"
+
+android {
+    defaultConfig {
+        manifestPlaceholders += [SOURCESCHEME: 'https', SOURCEHOST: 'streamberry.com.br']
+    }
+}
+
+dependencies {
+    implementation(project(":lib-multisrc:dooplay"))
+    implementation(project(":lib:playlistutils"))
+}
