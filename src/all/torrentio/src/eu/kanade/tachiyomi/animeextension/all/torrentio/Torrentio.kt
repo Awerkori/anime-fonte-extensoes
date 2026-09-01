@@ -26,9 +26,9 @@ import eu.kanade.tachiyomi.animesource.model.AnimesPage
 import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Video
-import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.awaitSuccess
+import keiyoushi.utils.AnimeHttpLegacySource
 import keiyoushi.utils.applicationContext
 import keiyoushi.utils.getPreferencesLazy
 import kotlinx.coroutines.async
@@ -46,7 +46,7 @@ import java.util.Calendar
 import java.util.Locale
 
 class Torrentio :
-    AnimeHttpSource(),
+    AnimeHttpLegacySource(),
     ConfigurableAnimeSource {
 
     override val name = "Torrentio (Torrent / Debrid)"
@@ -549,15 +549,15 @@ class Torrentio :
         }.orEmpty()
     }
 
-    override fun List<Video>.sort(): List<Video> {
+    override fun List<Video>.sortVideos(): List<Video> {
         val isDub = preferences.getBoolean(IS_DUB_KEY, IS_DUB_DEFAULT)
         val isEfficient = preferences.getBoolean(IS_EFFICIENT_KEY, IS_EFFICIENT_DEFAULT)
 
         return sortedWith(
             compareBy(
-                { Regex("\\[(.+?) download]").containsMatchIn(it.quality) },
-                { isDub && !it.quality.contains("dubbed", true) },
-                { isEfficient && !arrayOf("hevc", "265", "av1").any { q -> it.quality.contains(q, true) } },
+                { Regex("\\[(.+?) download]").containsMatchIn(it.videoTitle) },
+                { isDub && !it.videoTitle.contains("dubbed", true) },
+                { isEfficient && !arrayOf("hevc", "265", "av1").any { q -> it.videoTitle.contains(q, true) } },
             ),
         )
     }

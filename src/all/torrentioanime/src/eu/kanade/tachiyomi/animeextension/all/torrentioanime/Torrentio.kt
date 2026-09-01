@@ -20,10 +20,10 @@ import eu.kanade.tachiyomi.animesource.model.AnimesPage
 import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Video
-import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.POST
 import eu.kanade.tachiyomi.network.awaitSuccess
+import keiyoushi.utils.AnimeHttpLegacySource
 import keiyoushi.utils.applicationContext
 import keiyoushi.utils.bodyString
 import keiyoushi.utils.getPreferencesLazy
@@ -44,7 +44,7 @@ import java.text.SimpleDateFormat
 import java.util.Locale
 
 class Torrentio :
-    AnimeHttpSource(),
+    AnimeHttpLegacySource(),
     ConfigurableAnimeSource {
 
     override val name = "Torrentio Anime (Torrent / Debrid)"
@@ -487,7 +487,7 @@ class Torrentio :
     private val codecPreferences
         get() = preferences.getStringSet(PREF_CODEC_KEY, PREF_CODEC_DEFAULT) ?: setOf()
 
-    override fun List<Video>.sort(): List<Video> {
+    override fun List<Video>.sortVideos(): List<Video> {
         val isDub = preferences.getBoolean(IS_DUB_KEY, IS_DUB_DEFAULT)
         val isEfficient = preferences.getBoolean(IS_EFFICIENT_KEY, IS_EFFICIENT_DEFAULT)
 
@@ -497,27 +497,27 @@ class Torrentio :
                 video.detectCodec() in codecPreferences
             }.sortedWith(
                 compareBy(
-                    { Regex("\\[(.+?) download]").containsMatchIn(it.quality) },
-                    { isDub && !it.quality.contains("dubbed", true) },
+                    { Regex("\\[(.+?) download]").containsMatchIn(it.videoTitle) },
+                    { isDub && !it.videoTitle.contains("dubbed", true) },
                 ),
             )
         } else {
             // If no codec preferences, use old sorting logic
             sortedWith(
                 compareBy(
-                    { Regex("\\[(.+?) download]").containsMatchIn(it.quality) },
-                    { isDub && !it.quality.contains("dubbed", true) },
-                    { isEfficient && !arrayOf("hevc", "265", "av1").any { q -> it.quality.contains(q, true) } },
+                    { Regex("\\[(.+?) download]").containsMatchIn(it.videoTitle) },
+                    { isDub && !it.videoTitle.contains("dubbed", true) },
+                    { isEfficient && !arrayOf("hevc", "265", "av1").any { q -> it.videoTitle.contains(q, true) } },
                 ),
             )
         }
     }
 
     private fun Video.detectCodec(): String = when {
-        quality.contains("264", true) -> "x264"
-        quality.contains("265", true) || quality.contains("hevc", true) -> "x265"
-        quality.contains("av1", true) -> "av1"
-        quality.contains("vp9", true) -> "vp9"
+        videoTitle.contains("264", true) -> "x264"
+        videoTitle.contains("265", true) || videoTitle.contains("hevc", true) -> "x265"
+        videoTitle.contains("av1", true) -> "av1"
+        videoTitle.contains("vp9", true) -> "vp9"
         else -> "other"
     }
 

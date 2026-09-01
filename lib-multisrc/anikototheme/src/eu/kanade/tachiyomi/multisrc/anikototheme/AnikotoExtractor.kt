@@ -367,16 +367,16 @@ class AnikotoExtractor(private val theme: AnikotoTheme) {
             return emptyList()
         }
         return videos.mapNotNull { video ->
-            val referer = video.headers?.get("Referer") ?: runCatching { "https://${video.url.toHttpUrl().host}/" }.getOrNull()
+            val referer = video.headers?.get("Referer") ?: runCatching { "https://${video.videoUrl.toHttpUrl().host}/" }.getOrNull()
             val userAgent = video.headers?.get("User-Agent")
-            val processedUrl = proxyThroughM3u8Server(video.videoUrl!!, referer, userAgent)
+            val processedUrl = proxyThroughM3u8Server(video.videoUrl, referer, userAgent)
             if (processedUrl == null) {
-                Log.w("AnikotoExtractor", "Proxy failed for: ${video.quality}")
+                Log.w("AnikotoExtractor", "Proxy failed for: ${video.videoTitle}")
             }
             processedUrl?.let {
                 Video(
                     url = it,
-                    quality = video.quality,
+                    quality = video.videoTitle,
                     videoUrl = it,
                     headers = video.headers,
                     subtitleTracks = video.subtitleTracks,

@@ -458,9 +458,9 @@ class Jellyfin(private val suffix: String) :
 
             videoList.add(
                 Video(
-                    url = it.videoBitrate.toString(),
-                    quality = it.description,
                     videoUrl = url,
+                    videoTitle = it.description,
+                    bitrate = it.videoBitrate.toInt(),
                     subtitleTracks = subtitleList,
                     headers = videoHeaders,
                 ),
@@ -470,10 +470,10 @@ class Jellyfin(private val suffix: String) :
         return videoList
     }
 
-    override fun List<Video>.sort(): List<Video> = sortedWith(
+    override fun List<Video>.sortVideos(): List<Video> = sortedWith(
         compareBy(
-            { it.url.equals(preferences.quality, true) },
-            { it.url.toLongOrNull() },
+            { it.bitrate.toString().equals(preferences.quality, true) },
+            { it.bitrate },
         ),
     ).reversed()
 

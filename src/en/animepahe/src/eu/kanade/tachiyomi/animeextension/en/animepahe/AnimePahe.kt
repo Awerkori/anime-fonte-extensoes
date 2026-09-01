@@ -14,9 +14,9 @@ import eu.kanade.tachiyomi.animesource.model.AnimesPage
 import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Video
-import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.await
+import keiyoushi.utils.AnimeHttpLegacySource
 import keiyoushi.utils.addEditTextPreference
 import keiyoushi.utils.addListPreference
 import keiyoushi.utils.addSwitchPreference
@@ -32,7 +32,6 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Request
 import okhttp3.Response
 import org.jsoup.nodes.Element
-import rx.Observable
 import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.Locale
@@ -42,7 +41,7 @@ import kotlin.time.Duration.Companion.milliseconds
 
 /* API: https://gist.github.com/Ellivers/f7716b6b6895802058c367963f3a2c51 */
 class AnimePahe :
-    AnimeHttpSource(),
+    AnimeHttpLegacySource(),
     ConfigurableAnimeSource {
 
     private val preferences by getPreferencesLazy()
@@ -195,8 +194,7 @@ class AnimePahe :
     // ============================== Popular ===============================
     override fun popularAnimeRequest(page: Int): Request = GET("$baseUrl/api?m=airing&page=$page")
 
-    @Deprecated("Use the non-RxJava API instead", replaceWith = ReplaceWith("getPopularAnime"))
-    override fun fetchPopularAnime(page: Int): Observable<AnimesPage> = Observable.fromCallable {
+    override suspend fun getPopularAnime(page: Int): AnimesPage {
         if (page > 1) {
             Thread.sleep(3000)
         }
@@ -214,7 +212,7 @@ class AnimePahe :
             throw IOException("You have been rate limited. Wait a few seconds and refresh")
         }
 
-        popularAnimeParse(response)
+        return popularAnimeParse(response)
     }
 
     override fun popularAnimeParse(response: Response): AnimesPage {
@@ -296,8 +294,7 @@ class AnimePahe :
         }
     }
 
-    @Deprecated("Use the non-RxJava API instead", replaceWith = ReplaceWith("getSearchAnime"))
-    override fun fetchSearchAnime(page: Int, query: String, filters: AnimeFilterList): Observable<AnimesPage> = Observable.fromCallable {
+    override suspend fun getSearchAnime(page: Int, query: String, filters: AnimeFilterList): AnimesPage {
         val isApiCall = query.isNotBlank() || filters.isEmpty()
         if (page > 1 && isApiCall) {
             Thread.sleep(3000)
@@ -317,7 +314,7 @@ class AnimePahe :
             throw IOException("You are being rate limited. Wait a few seconds and try again.")
         }
 
-        searchAnimeParse(response)
+        return searchAnimeParse(response)
     }
 
     override fun searchAnimeParse(response: Response): AnimesPage {
@@ -570,26 +567,26 @@ class AnimePahe :
         }
     }
 
-    override fun List<Video>.sort(): List<Video> {
+    override fun List<Video>.sortVideos(): List<Video> {
         val subPreference = preferences.getString(PREF_SUB_KEY, PREF_SUB_DEFAULT)!!
         val preferredQuality = preferences.getString(PREF_QUALITY_KEY, PREF_QUALITY_DEFAULT)!!
         val shouldBeAv1 = preferences.getBoolean(PREF_AV1_KEY, PREF_AV1_DEFAULT)
         val shouldEndWithEng = subPreference == "eng"
 
         return this.sortedWith(
-            compareByDescending<Video> { it.quality.contains(preferredQuality) }
+            compareByDescending<Video> { it.videoTitle.contains(preferredQuality) }
                 .thenByDescending {
-                    val quality = it.quality
+                    val quality = it.videoTitle
                     QUALITY_REGEX_P.find(quality)?.groupValues?.get(1)?.toIntOrNull()
                         ?: QUALITY_REGEX.find(quality)?.groupValues?.get(1)?.toIntOrNull()
                         ?: 0
                 }
                 .thenByDescending {
-                    val quality = it.quality.lowercase()
+                    val quality = it.videoTitle.lowercase()
                     val isDub = quality.contains("eng")
                     if (shouldEndWithEng) isDub else !isDub
                 }
-                .thenByDescending { it.quality.lowercase().contains("av1") == shouldBeAv1 },
+                .thenByDescending { it.videoTitle.lowercase().contains("av1") == shouldBeAv1 },
         )
     }
 

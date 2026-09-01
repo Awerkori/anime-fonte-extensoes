@@ -26,9 +26,9 @@ import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Track
 import eu.kanade.tachiyomi.animesource.model.Video
-import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import eu.kanade.tachiyomi.network.awaitSuccess
 import eu.kanade.tachiyomi.network.interceptor.rateLimit
+import keiyoushi.utils.AnimeHttpLegacySource
 import keiyoushi.utils.addListPreference
 import keiyoushi.utils.addSetPreference
 import keiyoushi.utils.firstInstanceOrNull
@@ -47,7 +47,7 @@ import okhttp3.Request
 import okhttp3.Response
 
 class XAnime :
-    AnimeHttpSource(),
+    AnimeHttpLegacySource(),
     ConfigurableAnimeSource {
     override val name = "XAnime"
     override val lang = "en"
@@ -305,19 +305,19 @@ class XAnime :
             }
         }
 
-        return videos.sort()
+        return videos
     }
 
     override fun videoListParse(response: Response): List<Video> = throw UnsupportedOperationException()
 
-    override fun List<Video>.sort(): List<Video> {
+    override fun List<Video>.sortVideos(): List<Video> {
         val quality = preferences.getString(PREF_QUALITY_KEY, PREF_QUALITY_DEFAULT)!!
         val type = preferences.getString(PREF_TYPE_KEY, PREF_TYPE_DEFAULT)!!
 
         return this.sortedWith(
-            compareByDescending<Video> { it.quality.contains(quality) }
-                .thenByDescending { getQualityNumeric(it.quality) }
-                .thenByDescending { it.quality.contains(type, ignoreCase = true) },
+            compareByDescending<Video> { it.videoTitle.contains(quality) }
+                .thenByDescending { getQualityNumeric(it.videoTitle) }
+                .thenByDescending { it.videoTitle.contains(type, ignoreCase = true) },
         )
     }
 

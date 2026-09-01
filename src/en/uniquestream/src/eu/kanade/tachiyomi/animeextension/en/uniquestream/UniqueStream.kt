@@ -5,9 +5,9 @@ import eu.kanade.tachiyomi.animesource.model.AnimesPage
 import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Video
-import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.awaitSuccess
+import keiyoushi.utils.AnimeHttpLegacySource
 import keiyoushi.utils.parallelFlatMapBlocking
 import keiyoushi.utils.parseAs
 import kotlinx.serialization.SerialName
@@ -17,7 +17,7 @@ import okhttp3.Request
 import okhttp3.Response
 import kotlin.math.ceil
 
-class UniqueStream : AnimeHttpSource() {
+class UniqueStream : AnimeHttpLegacySource() {
 
     override val name = "UniqueStream"
 
@@ -186,8 +186,8 @@ class UniqueStream : AnimeHttpSource() {
         require(videos.isNotEmpty()) { "Failed to fetch videos" }
 
         return videos.sortedWith(
-            compareByDescending<Video> { it.quality.substringBefore(" - ") == originalLabel }
-                .thenByDescending { it.quality.substringAfterLast(" ").removeSuffix("p").toIntOrNull() ?: 0 },
+            compareByDescending<Video> { it.videoTitle.substringBefore(" - ") == originalLabel }
+                .thenByDescending { it.videoTitle.substringAfterLast(" ").removeSuffix("p").toIntOrNull() ?: 0 },
         )
     }
 

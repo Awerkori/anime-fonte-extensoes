@@ -10,9 +10,9 @@ import eu.kanade.tachiyomi.animesource.model.AnimesPage
 import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Video
-import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.awaitSuccess
+import keiyoushi.utils.AnimeHttpLegacySource
 import keiyoushi.utils.bodyString
 import keiyoushi.utils.getPreferencesLazy
 import keiyoushi.utils.parallelCatchingFlatMapBlocking
@@ -32,7 +32,7 @@ import java.net.URLEncoder
 import java.util.Locale
 
 class AV1Encodes :
-    AnimeHttpSource(),
+    AnimeHttpLegacySource(),
     ConfigurableAnimeSource {
 
     override val name = "AV1Encodes"
@@ -663,7 +663,7 @@ class AV1Encodes :
         buildPreferenceScreen(screen)
     }
 
-    override fun List<Video>.sort(): List<Video> = sortByPreferredQuality(preferences)
+    override fun List<Video>.sortVideos(): List<Video> = sortByPreferredQuality(preferences)
 
     // ══════════════════════════════════════════════════════════════════════════
     // CONSTANTS

@@ -56,8 +56,8 @@ object AnimePaheHlsServer : NanoHTTPD(0) {
         this.client = client
         ensureStarted()
         return videos.map { video ->
-            if (video.url.contains(".m3u8", ignoreCase = true)) {
-                video.copyWithLocalUrl(createLocalM3u8Url(video.url))
+            if (video.videoUrl.contains(".m3u8", ignoreCase = true)) {
+                video.copyWithLocalUrl(createLocalM3u8Url(video.videoUrl))
             } else {
                 video
             }
@@ -68,8 +68,8 @@ object AnimePaheHlsServer : NanoHTTPD(0) {
         mp4Client = client
         ensureStarted()
         return videos.map { video ->
-            val localUrl = createLocalMp4Url(video.url)
-            mp4Headers[video.url] = video.headers ?: Headers.Builder().build()
+            val localUrl = createLocalMp4Url(video.videoUrl)
+            mp4Headers[video.videoUrl] = video.headers ?: Headers.Builder().build()
             video.copyWithLocalMp4Url(localUrl)
         }
     }
@@ -161,8 +161,8 @@ object AnimePaheHlsServer : NanoHTTPD(0) {
 
     private fun Video.copyWithLocalUrl(localUrl: String): Video = Video(
         videoUrl = localUrl,
-        url = url,
-        quality = quality,
+        url = videoUrl,
+        quality = videoTitle,
         subtitleTracks = subtitleTracks,
         audioTracks = audioTracks,
         headers = headers,
@@ -171,7 +171,7 @@ object AnimePaheHlsServer : NanoHTTPD(0) {
     private fun Video.copyWithLocalMp4Url(localUrl: String): Video = Video(
         videoUrl = localUrl,
         url = localUrl,
-        quality = quality,
+        quality = videoTitle,
         subtitleTracks = subtitleTracks,
         audioTracks = audioTracks,
         headers = headers,

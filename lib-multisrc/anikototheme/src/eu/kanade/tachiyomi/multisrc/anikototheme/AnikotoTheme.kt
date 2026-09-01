@@ -14,7 +14,6 @@ import eu.kanade.tachiyomi.animesource.model.AnimesPage
 import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Video
-import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import eu.kanade.tachiyomi.multisrc.anikototheme.AnikotoThemeFilters.addListQueryParameter
 import eu.kanade.tachiyomi.multisrc.anikototheme.AnikotoThemeFilters.addQueryParameterIfNotEmpty
 import eu.kanade.tachiyomi.multisrc.anikototheme.dto.ResultResponse
@@ -22,6 +21,7 @@ import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.awaitSuccess
 import eu.kanade.tachiyomi.network.interceptor.rateLimitHost
 import eu.kanade.tachiyomi.util.asJsoup
+import keiyoushi.utils.AnimeHttpLegacySource
 import keiyoushi.utils.LazyMutable
 import keiyoushi.utils.delegate
 import keiyoushi.utils.getPreferencesLazy
@@ -57,7 +57,7 @@ abstract class AnikotoTheme(
     override val name: String,
     private val domainEntries: List<String>,
     private val hosterNames: List<String>,
-) : AnimeHttpSource(),
+) : AnimeHttpLegacySource(),
     ConfigurableAnimeSource {
 
     override val supportsLatest = true
@@ -635,7 +635,7 @@ abstract class AnikotoTheme(
 
     // ============================ Video Sort ==============================
 
-    override fun List<Video>.sort(): List<Video> {
+    override fun List<Video>.sortVideos(): List<Video> {
         val quality = prefQuality
         val preferredServer = prefServer
         val preferredBase = extractBaseServerName(prefServer)
@@ -645,11 +645,11 @@ abstract class AnikotoTheme(
         val sortType = buildTypeFallbackChain(type)
 
         return sortedWith(
-            compareByDescending<Video> { it.quality.contains(quality) }
-                .thenByDescending { video -> qualitiesList.indexOfLast { video.quality.contains(it) } }
-                .thenByDescending { sortType.any { t -> it.quality.contains(" - $t ", true) } }
+            compareByDescending<Video> { it.videoTitle.contains(quality) }
+                .thenByDescending { video -> qualitiesList.indexOfLast { video.videoTitle.contains(it) } }
+                .thenByDescending { sortType.any { t -> it.videoTitle.contains(" - $t ", true) } }
                 .thenByDescending { video ->
-                    val videoServer = video.quality.substringBefore(" - ")
+                    val videoServer = video.videoTitle.substringBefore(" - ")
                     when {
                         videoServer.equals(preferredServer, ignoreCase = true) -> 2
                         extractBaseServerName(videoServer).equals(preferredBase, ignoreCase = true) -> 1
