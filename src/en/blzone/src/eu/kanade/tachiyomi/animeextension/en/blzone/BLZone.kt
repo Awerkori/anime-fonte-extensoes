@@ -13,10 +13,10 @@ import eu.kanade.tachiyomi.animesource.model.AnimesPage
 import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Video
-import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.await
 import eu.kanade.tachiyomi.util.asJsoup
+import keiyoushi.utils.AnimeHttpLegacySource
 import keiyoushi.utils.getPreferencesLazy
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -30,7 +30,7 @@ import org.jsoup.nodes.Element
 import java.nio.charset.StandardCharsets
 
 class BLZone :
-    AnimeHttpSource(),
+    AnimeHttpLegacySource(),
     ConfigurableAnimeSource {
 
     override val name = "BLZone"
@@ -225,7 +225,7 @@ class BLZone :
             videos.map { video ->
                 async(Dispatchers.IO) {
                     try {
-                        serverVideoResolver(video.url)
+                        serverVideoResolver(video.videoUrl)
                     } catch (e: Exception) {
                         emptyList()
                     }
@@ -242,10 +242,10 @@ class BLZone :
         else -> emptyList()
     }
 
-    override fun List<Video>.sort(): List<Video> {
+    override fun List<Video>.sortVideos(): List<Video> {
         val preferredServer = preferences.getString(PREF_SERVER_KEY, PREF_SERVER_DEFAULT)!!
         return this.sortedWith(
-            compareByDescending { it.quality.contains(preferredServer, ignoreCase = true) },
+            compareByDescending { it.videoTitle.contains(preferredServer, ignoreCase = true) },
         )
     }
 

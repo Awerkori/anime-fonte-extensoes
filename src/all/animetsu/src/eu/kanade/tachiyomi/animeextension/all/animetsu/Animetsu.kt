@@ -12,10 +12,10 @@ import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Track
 import eu.kanade.tachiyomi.animesource.model.Video
-import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.awaitSuccess
 import eu.kanade.tachiyomi.network.interceptor.rateLimitHost
+import keiyoushi.utils.AnimeHttpLegacySource
 import keiyoushi.utils.addListPreference
 import keiyoushi.utils.addSetPreference
 import keiyoushi.utils.addSwitchPreference
@@ -36,7 +36,7 @@ import okhttp3.Response
 import java.util.concurrent.TimeUnit
 
 class Animetsu :
-    AnimeHttpSource(),
+    AnimeHttpLegacySource(),
     ConfigurableAnimeSource {
 
     override val name = "Animetsu"
@@ -427,15 +427,15 @@ class Animetsu :
     override fun videoListRequest(episode: SEpisode): Request = throw UnsupportedOperationException()
     override fun videoListParse(response: Response): List<Video> = throw UnsupportedOperationException()
 
-    override fun List<Video>.sort(): List<Video> {
+    override fun List<Video>.sortVideos(): List<Video> {
         val quality = preferredQuality
         val server = preferredServer
         val qualitiesList = PREF_QUALITY_ENTRIES.reversed()
 
         return sortedWith(
-            compareByDescending<Video> { it.quality.contains(quality) }
-                .thenByDescending { video -> qualitiesList.indexOfLast { video.quality.contains(it) } }
-                .thenByDescending { it.quality.contains(server, true) },
+            compareByDescending<Video> { it.videoTitle.contains(quality) }
+                .thenByDescending { video -> qualitiesList.indexOfLast { video.videoTitle.contains(it) } }
+                .thenByDescending { it.videoTitle.contains(server, true) },
         )
     }
 
@@ -604,10 +604,10 @@ class Animetsu :
 
         // ENFORCE M3U8 SERVER: proxy through local server, drop if it fails
         return videos.mapNotNull { video ->
-            val processedUrl = getProcessedM3u8Url(video.url) ?: return@mapNotNull null
+            val processedUrl = getProcessedM3u8Url(video.videoUrl) ?: return@mapNotNull null
             Video(
                 url = processedUrl,
-                quality = video.quality,
+                quality = video.videoTitle,
                 videoUrl = processedUrl,
                 headers = video.headers,
                 subtitleTracks = video.subtitleTracks,

@@ -76,7 +76,7 @@ class AnimePlayer :
     override val prefQualityValues = arrayOf("FHD", "720p", "360p")
     override val prefQualityEntries = prefQualityValues
 
-    override fun List<Video>.sort(): List<Video> = this
+    override fun List<Video>.sortVideos(): List<Video> = this
 
     override suspend fun getVideoList(episode: SEpisode): List<Video> = client.newCall(videoListRequest(episode)).awaitSuccess().use { response ->
         val document = response.asJsoup()

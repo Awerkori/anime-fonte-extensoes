@@ -5,7 +5,7 @@ import android.widget.Toast
 import androidx.preference.EditTextPreference
 import androidx.preference.ListPreference
 import androidx.preference.PreferenceScreen
-import eu.kanade.tachiyomi.source.online.HttpSource
+import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import keiyoushi.utils.getPreferences
 import okhttp3.Headers
 
@@ -31,7 +31,7 @@ private fun SharedPreferences.getPrefCustomUA(): String? = getString(PREF_KEY_CU
  * @param filterInclude Filter to only include Random User Agents containing these strings
  * @param filterExclude Filter to exclude Random User Agents containing these strings
  */
-context(source: HttpSource)
+context(source: AnimeHttpSource)
 fun Headers.Builder.setRandomUserAgent(
     userAgentType: UserAgentType? = null,
     filterInclude: List<String> = emptyList(),
@@ -56,7 +56,7 @@ fun Headers.Builder.setRandomUserAgent(
 /**
  * Helper function to add Random User-Agent settings to SharedPreference
  */
-context(source: HttpSource)
+context(source: AnimeHttpSource)
 fun PreferenceScreen.addRandomUAPreference() {
     val preferences = source.getPreferences()
     val customUaPref = EditTextPreference(context).apply {

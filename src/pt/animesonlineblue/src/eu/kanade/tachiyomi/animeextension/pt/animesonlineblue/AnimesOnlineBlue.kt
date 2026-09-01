@@ -10,9 +10,9 @@ import eu.kanade.tachiyomi.animesource.model.AnimesPage
 import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Video
-import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.awaitSuccess
+import keiyoushi.utils.AnimeHttpLegacySource
 import keiyoushi.utils.getPreferencesLazy
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -23,7 +23,7 @@ import okhttp3.Response
 import uy.kohesive.injekt.injectLazy
 
 class AnimesOnlineBlue :
-    AnimeHttpSource(),
+    AnimeHttpLegacySource(),
     ConfigurableAnimeSource {
 
     override val name = "AnimesOnline Blue"
@@ -315,7 +315,7 @@ class AnimesOnlineBlue :
             }
         }
 
-        return sortVideos(videoList)
+        return sortVideoList(videoList)
     }
 
     override fun videoListParse(response: Response): List<Video> = throw UnsupportedOperationException()
@@ -433,10 +433,10 @@ class AnimesOnlineBlue :
         .replace("\\\\", "\\")
         .replace("\\/", "/")
 
-    private fun sortVideos(videos: List<Video>): List<Video> {
+    private fun sortVideoList(videos: List<Video>): List<Video> {
         val quality = preferences.getString(PREF_QUALITY_KEY, PREF_QUALITY_DEFAULT)!!
         return videos.sortedWith(
-            compareByDescending { it.quality.contains(quality) },
+            compareByDescending { it.videoTitle.contains(quality) },
         )
     }
 

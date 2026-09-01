@@ -45,7 +45,7 @@ class MeusAnimesPlayerExtractor(
             if ("blogger.com" in url) {
                 val browserVideos = browserExtractor.videosFromUrl(url)
                 browserVideos.map { video ->
-                    Video(video.url, "$label: ${video.quality}", video.videoUrl, video.headers ?: headers)
+                    Video(video.videoUrl, "$label: ${video.videoTitle}", video.videoUrl, video.headers ?: headers)
                 }
             } else if (url.startsWith("https://") || url.startsWith("http://")) {
                 listOf(Video(url, label, url, headers))

@@ -10,10 +10,10 @@ import eu.kanade.tachiyomi.animesource.model.AnimesPage
 import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Video
-import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.awaitSuccess
 import eu.kanade.tachiyomi.util.asJsoup
+import keiyoushi.utils.AnimeHttpLegacySource
 import keiyoushi.utils.LazyMutable
 import keiyoushi.utils.addListPreference
 import keiyoushi.utils.addSetPreference
@@ -40,7 +40,7 @@ open class YFlixTheme(
     protected val domainList: List<String>,
     protected val defaultDomain: String = "https://${domainList.first()}",
     override val lang: String = "en",
-) : AnimeHttpSource(),
+) : AnimeHttpLegacySource(),
     ConfigurableAnimeSource {
 
     override val supportsLatest: Boolean = true
@@ -332,7 +332,7 @@ open class YFlixTheme(
 
     protected open fun parseDate(dateStr: String): Long = runCatching { DATE_FORMATTER.parse(dateStr)?.time }.getOrNull() ?: 0L
 
-    override fun List<Video>.sort(): List<Video> {
+    override fun List<Video>.sortVideos(): List<Video> {
         val quality = preferences.qualityPref
         val server = preferences.serverPref
         val qualities = QUALITIES.reversed()
@@ -340,14 +340,14 @@ open class YFlixTheme(
         return sortedWith(
             // Prioritize videos that have the exact preferred quality and server
             compareByDescending<Video> {
-                it.quality.contains(quality, true) && it.quality.startsWith(server, true)
+                it.videoTitle.contains(quality, true) && it.videoTitle.startsWith(server, true)
             }
                 // Then, prioritize videos with the preferred quality from any server
-                .thenByDescending { it.quality.contains(quality, true) }
+                .thenByDescending { it.videoTitle.contains(quality, true) }
                 // Then, prioritize videos from the preferred server with any quality
-                .thenByDescending { it.quality.startsWith(server, true) }
+                .thenByDescending { it.videoTitle.startsWith(server, true) }
                 // Finally, sort by the quality list as a fallback
-                .thenByDescending { video -> qualities.indexOfFirst { video.quality.contains(it) } },
+                .thenByDescending { video -> qualities.indexOfFirst { video.videoTitle.contains(it) } },
         )
     }
 

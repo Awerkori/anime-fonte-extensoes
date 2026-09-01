@@ -16,10 +16,10 @@ import eu.kanade.tachiyomi.animesource.model.AnimesPage
 import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Video
-import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.await
 import eu.kanade.tachiyomi.network.awaitSuccess
+import keiyoushi.utils.AnimeHttpLegacySource
 import keiyoushi.utils.addListPreference
 import keiyoushi.utils.getPreferencesLazy
 import keiyoushi.utils.parallelCatchingFlatMapBlocking
@@ -37,7 +37,7 @@ import java.util.Locale
 import kotlin.math.min
 
 class JavGuru :
-    AnimeHttpSource(),
+    AnimeHttpLegacySource(),
     ConfigurableAnimeSource {
 
     override val name = "Jav Guru"
@@ -365,8 +365,8 @@ class JavGuru :
                     .set("Origin", baseUrl)
                     .build()
                 Video(
-                    url = video.url,
-                    quality = video.quality,
+                    url = video.videoUrl,
+                    quality = video.videoTitle,
                     videoUrl = video.videoUrl,
                     headers = newHeaders,
                     subtitleTracks = video.subtitleTracks,
@@ -398,17 +398,17 @@ class JavGuru :
         else -> emptyList()
     }
 
-    override fun List<Video>.sort(): List<Video> {
+    override fun List<Video>.sortVideos(): List<Video> {
         val quality = preferences.getString(PREF_QUALITY, PREF_QUALITY_DEFAULT)!!
 
         return sortedWith(
             compareBy<Video> {
                 val isJavClan = listOf("javplaya", "javclan", "streamwish", "wishembed").any { host ->
-                    it.videoUrl?.contains(host) == true || it.url.contains(host)
+                    it.videoUrl?.contains(host) == true
                 }
                 if (isJavClan) 1 else 0
             }.thenByDescending {
-                it.quality.contains(quality)
+                it.videoTitle.contains(quality)
             },
         )
     }

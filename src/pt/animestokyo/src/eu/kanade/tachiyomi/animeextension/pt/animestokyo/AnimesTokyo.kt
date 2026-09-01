@@ -8,10 +8,10 @@ import eu.kanade.tachiyomi.animesource.model.AnimesPage
 import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Video
-import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.POST
 import eu.kanade.tachiyomi.util.asJsoup
+import keiyoushi.utils.AnimeHttpLegacySource
 import keiyoushi.utils.parallelCatchingFlatMapBlocking
 import keiyoushi.utils.toJsonRequestBody
 import okhttp3.Headers
@@ -20,7 +20,7 @@ import okhttp3.Response
 import org.json.JSONObject
 import org.jsoup.Jsoup
 
-class AnimesTokyo : AnimeHttpSource() {
+class AnimesTokyo : AnimeHttpLegacySource() {
 
     override val name = "Animes Tokyo"
     override val baseUrl = "https://animes.tokyo"
@@ -249,7 +249,7 @@ class AnimesTokyo : AnimeHttpSource() {
     private fun extractSources(sources: List<PreparedSource>, playerHeaders: Headers): List<Video> = sources.parallelCatchingFlatMapBlocking { prepared ->
         val result = when (prepared.type) {
             SourceType.BLOGGER -> bloggerExtractor.videosFromUrl(prepared.embedUrl.orEmpty(), playerHeaders).map { video ->
-                Video(video.url, "${prepared.source.label} - ${video.quality}", video.videoUrl, video.headers ?: Headers.headersOf())
+                Video(video.videoUrl, "${prepared.source.label} - ${video.videoTitle}", video.videoUrl, video.headers ?: Headers.headersOf())
             }
             SourceType.IFRAME,
             SourceType.URL,

@@ -19,10 +19,10 @@ import eu.kanade.tachiyomi.animesource.model.AnimesPage
 import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Video
-import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.POST
 import eu.kanade.tachiyomi.network.interceptor.rateLimit
+import keiyoushi.utils.AnimeHttpLegacySource
 import keiyoushi.utils.getPreferencesLazy
 import keiyoushi.utils.parseAs
 import kotlinx.coroutines.runBlocking
@@ -43,7 +43,7 @@ import javax.crypto.spec.SecretKeySpec
 import kotlin.time.Duration.Companion.seconds
 
 class FunAnimeTV :
-    AnimeHttpSource(),
+    AnimeHttpLegacySource(),
     ConfigurableAnimeSource {
     override val name = "Fun Anime TV"
     override val baseUrl = "https://funanimetv.cyou"
@@ -336,7 +336,7 @@ class FunAnimeTV :
             candidate(data.videoUrlFhd, "1080p"),
             candidate(data.videoUrl, "720p"),
             candidate(data.videoUrlSd, "480p"),
-        ).distinctBy { it.videoUrl }.sort()
+        ).distinctBy { it.videoUrl }.sortVideos()
         return videos
     }
 
@@ -359,13 +359,13 @@ class FunAnimeTV :
         }.also(screen::addPreference)
     }
 
-    override fun List<Video>.sort(): List<Video> {
+    override fun List<Video>.sortVideos(): List<Video> {
         val quality = preferences.getString(PREF_QUALITY_KEY, PREF_QUALITY_DEFAULT).orEmpty()
         val language = preferences.getString(PREF_LANGUAGE_KEY, PREF_LANGUAGE_DEFAULT).orEmpty()
         return sortedWith(
-            compareByDescending<Video> { it.quality.contains(language) }
-                .thenByDescending { it.quality.contains(quality) }
-                .thenByDescending { REGEX_QUALITY.find(it.quality)?.groupValues?.get(1)?.toIntOrNull() ?: 0 },
+            compareByDescending<Video> { it.videoTitle.contains(language) }
+                .thenByDescending { it.videoTitle.contains(quality) }
+                .thenByDescending { REGEX_QUALITY.find(it.videoTitle)?.groupValues?.get(1)?.toIntOrNull() ?: 0 },
         )
     }
 

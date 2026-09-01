@@ -23,11 +23,11 @@ import eu.kanade.tachiyomi.animesource.model.AnimesPage
 import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Video
-import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.await
 import eu.kanade.tachiyomi.network.awaitSuccess
 import eu.kanade.tachiyomi.network.interceptor.rateLimitHost
+import keiyoushi.utils.AnimeHttpLegacySource
 import keiyoushi.utils.LazyMutable
 import keiyoushi.utils.addListPreference
 import keiyoushi.utils.addSwitchPreference
@@ -59,7 +59,7 @@ import java.util.concurrent.ConcurrentHashMap
 import kotlin.time.Duration.Companion.seconds
 
 class Miruro :
-    AnimeHttpSource(),
+    AnimeHttpLegacySource(),
     ConfigurableAnimeSource {
 
     override val name = "Miruro.tv"
@@ -1785,7 +1785,7 @@ class Miruro :
         return videos
     }
 
-    override fun List<Video>.sort(): List<Video> {
+    override fun List<Video>.sortVideos(): List<Video> {
         val quality = preferences.preferredQuality
         val subTypeLabel = formatSubTypeLabel(preferences.preferredSubType)
         val providerName = providerDisplayName(preferences.preferredProvider)
@@ -1796,7 +1796,7 @@ class Miruro :
         var working: List<Video> = this
 
         if (!includeAllProviders) {
-            val providerFiltered = working.filter { it.quality.contains(providerName) }
+            val providerFiltered = working.filter { it.videoTitle.contains(providerName) }
             if (providerFiltered.isNotEmpty()) {
                 logD { "video.sort: provider filter: ${working.size} → ${providerFiltered.size} (preferred=$providerName)" }
                 working = providerFiltered
@@ -1806,8 +1806,8 @@ class Miruro :
         }
 
         val filtered: List<Video> = when (streamTypePref) {
-            "hls" -> working.filter { it.quality.contains("HLS") }
-            "embed" -> working.filter { it.quality.contains("EMBED") }
+            "hls" -> working.filter { it.videoTitle.contains("HLS") }
+            "embed" -> working.filter { it.videoTitle.contains("EMBED") }
             else -> working
         }
 
@@ -1817,16 +1817,16 @@ class Miruro :
         }
 
         val sorted = filtered.sortedWith(
-            compareByDescending<Video> { it.quality.contains("HLS") }
-                .thenByDescending { it.quality.contains(providerName) }
-                .thenByDescending { it.quality.contains(subTypeLabel) }
+            compareByDescending<Video> { it.videoTitle.contains("HLS") }
+                .thenByDescending { it.videoTitle.contains(providerName) }
+                .thenByDescending { it.videoTitle.contains(subTypeLabel) }
                 .thenByDescending {
-                    val q = QUALITY_REGEX.find(it.quality)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                    val q = QUALITY_REGEX.find(it.videoTitle)?.groupValues?.get(1)?.toIntOrNull() ?: 0
                     when {
                         qualityInt == 0 -> q
                         q == qualityInt -> 100000
                         q > 0 -> q
-                        it.quality.contains(quality) -> 99999
+                        it.videoTitle.contains(quality) -> 99999
                         else -> 0
                     }
                 },

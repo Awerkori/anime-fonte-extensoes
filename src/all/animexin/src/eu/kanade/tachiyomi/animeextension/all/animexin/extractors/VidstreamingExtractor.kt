@@ -100,7 +100,7 @@ class VidstreamingExtractor(private val client: OkHttpClient) {
                 }
             }
             return videoList.sortedByDescending {
-                it.quality.substringBefore(qualitySuffix).substringBefore("p").toIntOrNull() ?: -1
+                it.videoTitle.substringBefore(qualitySuffix).substringBefore("p").toIntOrNull() ?: -1
             } + autoList
         } catch (e: Exception) {
             return emptyList()

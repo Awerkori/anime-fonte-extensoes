@@ -160,10 +160,10 @@ class CinebyExtractor(
 
         return videoList.sortedWith(
             compareByDescending<Video> {
-                it.quality.contains(qualityPref, ignoreCase = true) ||
-                    (qualityPref == "2160" && it.quality.contains("4k", ignoreCase = true))
+                it.videoTitle.contains(qualityPref, ignoreCase = true) ||
+                    (qualityPref == "2160" && it.videoTitle.contains("4k", ignoreCase = true))
             }.thenByDescending {
-                extractQualityValue(it.quality)
+                extractQualityValue(it.videoTitle)
             },
         )
     }

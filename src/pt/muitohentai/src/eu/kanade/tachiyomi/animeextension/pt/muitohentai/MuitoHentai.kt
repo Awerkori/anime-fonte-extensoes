@@ -6,9 +6,9 @@ import eu.kanade.tachiyomi.animesource.model.AnimesPage
 import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Video
-import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.util.asJsoup
+import keiyoushi.utils.AnimeHttpLegacySource
 import keiyoushi.utils.tryParse
 import kotlinx.coroutines.runBlocking
 import okhttp3.Request
@@ -16,7 +16,7 @@ import okhttp3.Response
 import java.text.SimpleDateFormat
 import java.util.Locale
 
-class MuitoHentai : AnimeHttpSource() {
+class MuitoHentai : AnimeHttpLegacySource() {
     override val name = "Muito Hentai"
 
     override val baseUrl = "https://www.muitohentai.com"

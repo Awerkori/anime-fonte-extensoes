@@ -11,10 +11,10 @@ import eu.kanade.tachiyomi.animesource.model.AnimeFilterList
 import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Video
-import eu.kanade.tachiyomi.animesource.online.ParsedAnimeHttpSource
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.await
 import eu.kanade.tachiyomi.util.asJsoup
+import keiyoushi.utils.ParsedAnimeHttpLegacySource
 import keiyoushi.utils.getPreferencesLazy
 import keiyoushi.utils.parallelCatchingFlatMapBlocking
 import keiyoushi.utils.parallelFlatMap
@@ -26,7 +26,7 @@ import java.text.SimpleDateFormat
 import java.util.Locale
 
 class AnimeTake :
-    ParsedAnimeHttpSource(),
+    ParsedAnimeHttpLegacySource(),
     ConfigurableAnimeSource {
 
     override val name = "AnimeTake"
@@ -184,8 +184,6 @@ class AnimeTake :
         } + videos
     }
 
-    override fun videoUrlParse(document: Document): String = throw UnsupportedOperationException()
-
     override fun videoFromElement(element: Element) = throw UnsupportedOperationException()
 
     override fun videoListSelector() = throw UnsupportedOperationException()
@@ -198,14 +196,14 @@ class AnimeTake :
         return srcRegex.find(iframe)!!.value
     }
 
-    override fun List<Video>.sort(): List<Video> {
+    override fun List<Video>.sortVideos(): List<Video> {
         val quality = preferences.getString(PREF_QUALITY_KEY, PREF_QUALITY_DEFAULT)!!
         val server = preferences.getString(PREF_SERVER_KEY, PREF_SERVER_DEFAULT)!!
 
         return this.sortedWith(
             compareBy(
-                { it.quality.contains(quality) },
-                { it.quality.contains(server) },
+                { it.videoTitle.contains(quality) },
+                { it.videoTitle.contains(server) },
             ),
         ).reversed()
     }

@@ -15,11 +15,11 @@ import eu.kanade.tachiyomi.animesource.model.AnimesPage
 import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Video
-import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.POST
 import eu.kanade.tachiyomi.network.awaitSuccess
 import eu.kanade.tachiyomi.network.interceptor.rateLimit
+import keiyoushi.utils.AnimeHttpLegacySource
 import keiyoushi.utils.getPreferencesLazy
 import keiyoushi.utils.parseAs
 import keiyoushi.utils.toJsonRequestBody
@@ -33,7 +33,7 @@ import java.util.concurrent.TimeUnit
 import kotlin.time.Duration.Companion.seconds
 
 class Tomato :
-    AnimeHttpSource(),
+    AnimeHttpLegacySource(),
     ConfigurableAnimeSource {
 
     override val name = "Tomato"
@@ -470,14 +470,14 @@ class Tomato :
             val request = GET("$baseUrl/v2/anime/episode/$episodeId/stream", apiHeaders())
             val info = client.newCall(request).awaitSuccess().use { it.parseAs<EpisodeInfoDto>() }
             info.toVideos(language)
-        }.sort()
+        }.sortVideos()
     }
 
     override fun videoListRequest(episode: SEpisode): Request = GET("$baseUrl${episode.url}", apiHeaders())
 
     override fun videoListParse(response: Response): List<Video> {
         val info = response.requireSuccess().parseAs<EpisodeInfoDto>()
-        return info.toVideos().sort()
+        return info.toVideos().sortVideos()
     }
 
     private fun EpisodeInfoDto.toVideos(language: String? = null): List<Video> {
@@ -514,12 +514,10 @@ class Tomato :
 
     private fun videoLabel(language: String?, quality: String) = listOfNotNull(language?.takeIf(String::isNotBlank), quality).joinToString(" - ")
 
-    override fun videoUrlParse(response: Response): String = throw UnsupportedOperationException("Not used")
-
-    override fun List<Video>.sort(): List<Video> {
+    override fun List<Video>.sortVideos(): List<Video> {
         val quality = preferences.getString(PREF_QUALITY, PREF_QUALITY_DEFAULT) ?: PREF_QUALITY_DEFAULT
         return sortedWith(
-            compareByDescending { it.quality.contains(quality) },
+            compareByDescending { it.videoTitle.contains(quality) },
         )
     }
 

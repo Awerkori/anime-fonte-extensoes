@@ -316,7 +316,7 @@ class OctopusExtractor(private val client: OkHttpClient) {
             }
         }
 
-        Log.d(TAG, "Octopus entries: ${entries.joinToString { it.quality }}")
+        Log.d(TAG, "Octopus entries: ${entries.joinToString { it.videoTitle }}")
         return entries
     }
 

@@ -16,9 +16,9 @@ import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Track
 import eu.kanade.tachiyomi.animesource.model.Video
-import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.interceptor.rateLimit
+import keiyoushi.utils.AnimeHttpLegacySource
 import keiyoushi.utils.addListPreference
 import keiyoushi.utils.getPreferencesLazy
 import keiyoushi.utils.parallelCatchingFlatMap
@@ -46,7 +46,7 @@ import kotlin.math.roundToInt
 import kotlin.time.Duration.Companion.seconds
 
 class ReAnime :
-    AnimeHttpSource(),
+    AnimeHttpLegacySource(),
     ConfigurableAnimeSource {
 
     override val name = "Re:ANIME"
@@ -644,8 +644,8 @@ class ReAnime :
         }
 
         return videos.sortedWith(
-            compareByDescending<Video> { it.quality.contains(preferredServer, ignoreCase = true) }
-                .thenByDescending { it.quality.contains(audioTag) },
+            compareByDescending<Video> { it.videoTitle.contains(preferredServer, ignoreCase = true) }
+                .thenByDescending { it.videoTitle.contains(audioTag) },
         )
     }
 

@@ -10,9 +10,9 @@ import eu.kanade.tachiyomi.animesource.model.AnimesPage
 import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Video
-import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.awaitSuccess
+import keiyoushi.utils.AnimeHttpLegacySource
 import keiyoushi.utils.getPreferencesLazy
 import keiyoushi.utils.useAsJsoup
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -22,7 +22,7 @@ import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 
 class HentaiHaven :
-    AnimeHttpSource(),
+    AnimeHttpLegacySource(),
     ConfigurableAnimeSource {
 
     override val name = "HentaiHaven"
@@ -257,7 +257,7 @@ class HentaiHaven :
         val videos = extractor.getVideosFromPayload(apiUrl, playerDataB64, episodeUrl)
 
         val preferred = preferences.getString(PREF_QUALITY_KEY, PREF_QUALITY_DEFAULT)!!
-        return videos.sortedWith(compareByDescending { it.quality.contains(preferred) })
+        return videos.sortedWith(compareByDescending { it.videoTitle.contains(preferred) })
     }
 
     override fun videoListParse(response: Response): List<Video> = throw UnsupportedOperationException()

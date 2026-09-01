@@ -12,9 +12,9 @@ import eu.kanade.tachiyomi.animesource.model.AnimeFilterList
 import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Video
-import eu.kanade.tachiyomi.animesource.online.ParsedAnimeHttpSource
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.util.asJsoup
+import keiyoushi.utils.ParsedAnimeHttpLegacySource
 import keiyoushi.utils.getPreferencesLazy
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.Serializable
@@ -27,7 +27,7 @@ import org.jsoup.nodes.Element
 import uy.kohesive.injekt.injectLazy
 
 class ANIMEWORLD :
-    ParsedAnimeHttpSource(),
+    ParsedAnimeHttpLegacySource(),
     ConfigurableAnimeSource {
 
     override val name = "ANIMEWORLD.tv"
@@ -161,16 +161,14 @@ class ANIMEWORLD :
 
     override fun videoFromElement(element: Element) = throw UnsupportedOperationException()
 
-    override fun videoUrlParse(document: Document) = throw UnsupportedOperationException()
-
-    override fun List<Video>.sort(): List<Video> {
+    override fun List<Video>.sortVideos(): List<Video> {
         val quality = preferences.getString("preferred_quality", "1080")!!
         val server = preferences.getString("preferred_server", "Animeworld server")!!
 
         return sortedWith(
             compareBy(
-                { it.quality.lowercase().contains(server.lowercase()) },
-                { it.quality.lowercase().contains(quality.lowercase()) },
+                { it.videoTitle.lowercase().contains(server.lowercase()) },
+                { it.videoTitle.lowercase().contains(quality.lowercase()) },
             ),
         ).reversed()
     }
