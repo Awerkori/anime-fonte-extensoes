@@ -3,7 +3,7 @@ ext {
     extClass = '.Wiflix'
     themePkg = 'datalifeengine'
     baseUrl = 'https://flemmix.best'
-    overrideVersionCode = 31
+    overrideVersionCode = 32
 }
 
 apply plugin: "kei.plugins.extension.legacy"

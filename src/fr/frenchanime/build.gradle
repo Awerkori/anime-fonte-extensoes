@@ -3,7 +3,7 @@ ext {
     extClass = '.FrenchAnime'
     themePkg = 'datalifeengine'
     baseUrl = 'https://french-anime.com'
-    overrideVersionCode = 34
+    overrideVersionCode = 35
 }
 
 apply plugin: "kei.plugins.extension.legacy"

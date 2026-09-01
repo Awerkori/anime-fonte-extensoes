@@ -1,7 +1,7 @@
 ext {
     extName = 'Doramasyt'
     extClass = '.Doramasyt'
-    extVersionCode = 41
+    extVersionCode = 42
 }
 
 apply plugin: "kei.plugins.extension.legacy"
