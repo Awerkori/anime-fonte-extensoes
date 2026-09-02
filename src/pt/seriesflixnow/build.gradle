@@ -1,0 +1,14 @@
+ext {
+    extName = 'SeriesFlixNow'
+    extClass = '.SeriesFlixNow'
+    extVersionCode = 1
+    isNsfw = false
+}
+
+apply plugin: 'kei.plugins.extension.legacy'
+
+dependencies {
+    implementation(project(':lib:vidsrcextractor'))
+    implementation(project(':lib:fireplayerextractor'))
+    implementation(project(':lib:playlistutils'))
+}

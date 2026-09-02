@@ -215,26 +215,32 @@ class RedeCanais :
         }
 
         containers.forEach { container -> container.childNodes().forEach(::visit) }
-        return episodes.values.mapNotNull { it.toSEpisode() }.ifEmpty {
+        return episodes.values.mapNotNull { it.toSEpisode(document.location()) }.ifEmpty {
             if (containers.any { it.hasListEntries() }) emptyList() else document.singleEpisodeOrEmpty(response)
         }
     }
 
     // ============================ Video Links =============================
 
-    override fun videoListRequest(episode: SEpisode): Request = GET(
-        episode.absoluteEpisodeUrl(),
-        headers.newBuilder()
-            .set(VideoListBootstrapInterceptor.HEADER, "1")
-            .build(),
-    )
+    override fun videoListRequest(episode: SEpisode): Request {
+        val requestUrl = episode.absoluteEpisodeUrl()
+        val episodeReferer = requestUrl.toHttpUrlOrNull()?.queryParameter(PARENT_PAGE_PARAM)
+        return GET(
+            requestUrl,
+            headers.newBuilder()
+                .apply { episodeReferer?.let { set("Referer", it) } }
+                .set(VideoListBootstrapInterceptor.HEADER, "1")
+                .build(),
+        )
+    }
 
     override fun videoListParse(response: Response): List<Video> {
         val requestUrl = response.originalRequestUrl()
         val options = requestUrl.audioOptions()
         val iframeUrl = response.playerIframeUrl()
         val responsePageUrl = requestUrl.cleanAudioUrl()
-        val iframeUrls = mutableMapOf(responsePageUrl to iframeUrl)
+        val iframeUrls = mutableMapOf<String, String?>()
+        iframeUrl?.let { iframeUrls[responsePageUrl] = it }
         val snifferInputs = options.map { option ->
             val optionPageUrl = option.url.cleanAudioUrl()
             PlayerApiSniffer.Input(
@@ -313,7 +319,7 @@ class RedeCanais :
         else -> "$baseUrl/$url"
     }
 
-    private fun EpisodeEntry.toSEpisode(): SEpisode? {
+    private fun EpisodeEntry.toSEpisode(parentPageUrl: String): SEpisode? {
         val primaryAudio = preferredAudio().takeIf { it in links } ?: links.keys.firstOrNull() ?: return null
         val primaryUrl = links[primaryAudio] ?: return null
         val name = listOf(season, episode, episodeTitle, primaryAudio)
@@ -324,18 +330,22 @@ class RedeCanais :
         return SEpisode.create().apply {
             this.name = name
             episode_number = episodeNumber
-            setUrlWithoutDomain(primaryUrl.withAudioOptions(links))
+            setUrlWithoutDomain(primaryUrl.withAudioOptions(links, parentPageUrl))
         }
     }
 
-    private fun String.withAudioOptions(links: Map<String, String>): String {
+    private fun String.withAudioOptions(links: Map<String, String>, parentPageUrl: String): String {
         val url = toHttpUrlOrNull() ?: return this
         val builder = url.newBuilder()
             .removeAllQueryParameters(DUBBED_AUDIO_PARAM)
             .removeAllQueryParameters(SUBBED_AUDIO_PARAM)
+            .removeAllQueryParameters(PARENT_PAGE_PARAM)
 
         links[DUBBED_AUDIO]?.let { builder.setQueryParameter(DUBBED_AUDIO_PARAM, it) }
         links[SUBBED_AUDIO]?.let { builder.setQueryParameter(SUBBED_AUDIO_PARAM, it) }
+        if (url.encodedPath.equals("/musicvideo.php", ignoreCase = true)) {
+            parentPageUrl.takeIf { it.isNotBlank() }?.let { builder.setQueryParameter(PARENT_PAGE_PARAM, it) }
+        }
 
         return builder.build().toString()
     }
@@ -345,6 +355,7 @@ class RedeCanais :
         val cleanUrl = url.newBuilder()
             .removeAllQueryParameters(DUBBED_AUDIO_PARAM)
             .removeAllQueryParameters(SUBBED_AUDIO_PARAM)
+            .removeAllQueryParameters(PARENT_PAGE_PARAM)
             .build()
             .toString()
 
@@ -378,6 +389,7 @@ class RedeCanais :
         return url.newBuilder()
             .removeAllQueryParameters(DUBBED_AUDIO_PARAM)
             .removeAllQueryParameters(SUBBED_AUDIO_PARAM)
+            .removeAllQueryParameters(PARENT_PAGE_PARAM)
             .build()
             .toString()
     }
@@ -550,6 +562,7 @@ class RedeCanais :
         private const val PLAYER_HTML_PEEK_BYTES = 2L * 1024L * 1024L
         private const val DUBBED_AUDIO_PARAM = "rc_dublado"
         private const val SUBBED_AUDIO_PARAM = "rc_legendado"
+        private const val PARENT_PAGE_PARAM = "rc_parent"
         private const val ACCEPT_LANGUAGE = "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7"
         private const val DESCRIPTION_SELECTOR = "div[itemprop=description], div.pm-category-description"
 

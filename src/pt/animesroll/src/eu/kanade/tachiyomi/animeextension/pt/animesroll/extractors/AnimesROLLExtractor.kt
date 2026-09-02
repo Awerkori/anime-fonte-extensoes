@@ -34,9 +34,13 @@ class AnimesROLLExtractor(private val client: OkHttpClient, private val headers:
     private val playlistUtils by lazy { PlaylistUtils(client, headers) }
     private val m3u8Integration by lazy { M3u8Integration(client) }
 
-    suspend fun videosFromUrl(url: String, serverName: String = ""): List<Video> {
+    suspend fun videosFromUrl(url: String, serverName: String = "", referer: String = ""): List<Video> {
         val qualityPrefix = qualityPrefix(serverName)
-        val playerDoc = client.newCall(GET(url, headers)).awaitSuccess().useAsJsoup()
+        val playerHeaders = headers.newBuilder()
+            .set("Referer", referer.takeIf { it.isNotBlank() } ?: headers["Referer"].orEmpty())
+            .set("Origin", "https://anroll.io")
+            .build()
+        val playerDoc = client.newCall(GET(url, playerHeaders)).awaitSuccess().useAsJsoup()
 
         // AniDrive embeds multiple TextDecoder scripts (service-worker first, player config later).
         // Decode each until playable sources are found instead of stopping at the first match.

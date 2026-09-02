@@ -126,6 +126,10 @@
   function fetchApi(url) {
     if (!usableApi(url) || triedApis[url]) return;
     triedApis[url] = true;
+    try {
+      window.PlayerApiSniffer.reportApi(url);
+    } catch (error) {
+    }
     fetch(url, {
       method: "GET",
       credentials: "include",

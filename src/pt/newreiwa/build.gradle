@@ -1,0 +1,13 @@
+ext {
+    extName = 'New Reiwa'
+    extClass = '.NewReiwa'
+    extVersionCode = 1
+    isNsfw = false
+}
+
+apply plugin: "kei.plugins.extension.legacy"
+
+dependencies {
+    implementation(project(':lib:googledriveextractor'))
+    implementation(project(':lib:googledriveepisodes'))
+}

@@ -16,6 +16,7 @@ import eu.kanade.tachiyomi.animeextension.pt.redecanais.destroyHeadless
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import uy.kohesive.injekt.injectLazy
+import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -71,7 +72,7 @@ class PlayerApiSniffer(
             val activeToken = AtomicInteger(0)
             val activeInput = AtomicReference<Input?>()
             val resolving = AtomicBoolean(false)
-            val loggedApiUrls = ConcurrentHashMap.newKeySet<String>()
+            val loggedApiUrls = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
             var inputIndex = 0
             var startedAt = 0L
             lateinit var bridge: PlayerBridge
@@ -195,7 +196,9 @@ class PlayerApiSniffer(
     private fun String?.samePlayerDocument(expected: String?): Boolean {
         val actualUrl = this?.toHttpUrlOrNull() ?: return false
         val expectedUrl = expected?.toHttpUrlOrNull() ?: return false
-        return actualUrl.host == expectedUrl.host &&
+        val sameHost = actualUrl.host == expectedUrl.host ||
+            (actualUrl.host.startsWith("redecanais.") && expectedUrl.host.startsWith("redecanais."))
+        return sameHost &&
             actualUrl.encodedPath.equals(expectedUrl.encodedPath, ignoreCase = true) &&
             actualUrl.queryParameter("vid") == expectedUrl.queryParameter("vid")
     }

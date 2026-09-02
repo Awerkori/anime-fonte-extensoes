@@ -8,6 +8,7 @@ import okhttp3.Protocol
 import okhttp3.Request
 import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
+import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 
@@ -17,7 +18,7 @@ internal class HtmlProxyBridge(
     private val baseHost: String,
 ) {
     private val imageBuffers = ConcurrentHashMap<String, ImageBuffer>()
-    private val pendingImages = ConcurrentHashMap.newKeySet<String>()
+    private val pendingImages = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
 
     @Volatile
     var html: HtmlProxyResult? = null

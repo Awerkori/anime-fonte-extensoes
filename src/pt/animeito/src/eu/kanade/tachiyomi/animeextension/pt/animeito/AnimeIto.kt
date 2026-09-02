@@ -1,8 +1,11 @@
 package eu.kanade.tachiyomi.animeextension.pt.animeito
 
+import android.util.Log
 import eu.kanade.tachiyomi.animeextension.pt.animeito.extractors.AnimeItoExtractor
 import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.multisrc.animestream.AnimeStream
+import keiyoushi.utils.parallelCatchingFlatMapBlocking
+import keiyoushi.utils.useAsJsoup
 import org.jsoup.nodes.Element
 
 class AnimeIto :
@@ -28,9 +31,31 @@ class AnimeIto :
 
     private val animeitoExtractor by lazy { AnimeItoExtractor(client, headers) }
 
-    override suspend fun getVideoList(url: String, name: String): List<Video> = when {
-        // Embed = googlevideo/blogger MP4; Prime = HLS (.image segments via m3u8server)
-        "anidrive.click" in url -> animeitoExtractor.videosFromUrl(url, name.trim())
-        else -> emptyList()
+    override fun videoListParse(response: okhttp3.Response): List<Video> {
+        val items = response.useAsJsoup().select(videoListSelector())
+        Log.d(VIDEO_DEBUG_TAG, "episode=${response.request.url} hosters=${items.size}")
+        return items.parallelCatchingFlatMapBlocking { element ->
+            val name = element.text()
+            val url = getHosterUrl(element)
+            Log.d(VIDEO_DEBUG_TAG, "hoster=${name.trim()} url=${url.substringBefore('?')}")
+            runCatching {
+                getVideoList(url, name, response.request.url.toString())
+            }.getOrElse { error ->
+                Log.w(VIDEO_DEBUG_TAG, "provider failed=${error::class.simpleName}:${error.message}")
+                emptyList()
+            }
+        }.also { Log.d(VIDEO_DEBUG_TAG, "videos=${it.size}") }
+    }
+
+    private suspend fun getVideoList(url: String, name: String, referer: String): List<Video> = when {
+        "anidrive.click" in url -> animeitoExtractor.videosFromUrl(url, name.trim(), referer)
+        else -> {
+            Log.d(VIDEO_DEBUG_TAG, "unsupported provider=${url.substringBefore('/')}")
+            emptyList()
+        }
+    }
+
+    companion object {
+        private const val VIDEO_DEBUG_TAG = "ANIMEITO_VIDEO_DEBUG"
     }
 }

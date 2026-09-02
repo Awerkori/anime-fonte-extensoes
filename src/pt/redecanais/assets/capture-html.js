@@ -1,5 +1,12 @@
 (function() {
   function captureHtml() {
+    if (/\/musicvideo\.php$/i.test(location.pathname)) {
+      var player = document.querySelector("#video-wrapper iframe[name='Player'][src], #video-wrapper iframe[src*='/player3/server.php']");
+      return "<!doctype html><html><body>" +
+        (player ? player.outerHTML : "") +
+        "</body></html>";
+    }
+
     var list = document.querySelector("ul.pm-ul-browse-videos");
     if (list && list.querySelector("li")) {
       var pagination = document.querySelector("ul.pagination");

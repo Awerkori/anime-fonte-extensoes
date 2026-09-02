@@ -1,5 +1,6 @@
 package eu.kanade.tachiyomi.animeextension.pt.animesroll
 
+import android.util.Log
 import androidx.preference.ListPreference
 import androidx.preference.PreferenceScreen
 import eu.kanade.tachiyomi.animeextension.pt.animesroll.extractors.AnimesROLLExtractor
@@ -257,17 +258,30 @@ class AnimesROLL :
     // ============================ Video Links =============================
 
     override fun videoListParse(response: Response): List<Video> {
+        Log.d(VIDEO_DEBUG_TAG, "episode=${response.request.url}")
         val document = response.useAsJsoup()
         val iframes = document.select("div#pembed iframe[src], div.ep-player-inner iframe[src], iframe[src]")
+        Log.d(VIDEO_DEBUG_TAG, "iframes=${iframes.size}")
 
         val iframeUrls = iframes.mapNotNull { it.attr("abs:src").takeIf(String::isNotBlank) }.distinct()
+        Log.d(VIDEO_DEBUG_TAG, "iframeUrls=${iframeUrls.joinToString { it.substringBefore('?') }}")
 
         return iframeUrls.parallelCatchingFlatMapBlocking { iframeUrl ->
             when {
-                "anidrive.click" in iframeUrl -> animesrollExtractor.videosFromUrl(iframeUrl)
-                else -> emptyList()
+                "anidrive.click" in iframeUrl -> runCatching {
+                    val videos = animesrollExtractor.videosFromUrl(iframeUrl, referer = response.request.url.toString())
+                    Log.d(VIDEO_DEBUG_TAG, "provider=anidrive videos=${videos.size}")
+                    videos
+                }.getOrElse { error ->
+                    Log.w(VIDEO_DEBUG_TAG, "provider=anidrive failed=${error::class.simpleName}:${error.message}")
+                    emptyList()
+                }
+                else -> {
+                    Log.d(VIDEO_DEBUG_TAG, "provider=unsupported host=${iframeUrl.substringBefore('/')}")
+                    emptyList()
+                }
             }
-        }
+        }.also { Log.d(VIDEO_DEBUG_TAG, "videos=${it.size}") }
     }
 
     override fun videoListSelector(): String = throw UnsupportedOperationException()
@@ -470,6 +484,7 @@ class AnimesROLL :
     }.substringBefore("?resize")
 
     companion object {
+        private const val VIDEO_DEBUG_TAG = "ANIMESROLL_VIDEO_DEBUG"
         private const val PREF_QUALITY_KEY = "preferred_quality"
         private const val PREF_QUALITY_DEFAULT = "720p"
         private val PREF_QUALITY_ENTRIES = arrayOf("1080p", "720p", "480p", "360p", "240p")

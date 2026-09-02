@@ -14,6 +14,7 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Interceptor
 import okhttp3.Protocol
 import okhttp3.Response
+import org.json.JSONObject
 import uy.kohesive.injekt.injectLazy
 import java.io.IOException
 import java.util.concurrent.CountDownLatch
@@ -40,7 +41,7 @@ class HtmlProxy(
 
         if (!request.shouldProxyPageHtml(baseHost)) return chain.proceed(request)
 
-        return when (val result = loadPageHtml(request.url.toString())) {
+        return when (val result = loadPageHtml(request.url.toString(), request.header("Referer"))) {
             is HtmlProxyResult.Success -> result.toResponse(request, protocol)
             is HtmlProxyResult.Error -> throw IOException(result.message)
             null -> throw IOException(OPEN_WEBVIEW_MESSAGE)
@@ -48,7 +49,7 @@ class HtmlProxy(
     }
 
     @SuppressLint("SetJavaScriptEnabled", "AddJavascriptInterface")
-    private fun loadPageHtml(url: String): HtmlProxyResult? {
+    private fun loadPageHtml(url: String, referer: String?): HtmlProxyResult? {
         val htmlLatch = CountDownLatch(1)
         val pageDoneLatch = CountDownLatch(1)
         val bridge = HtmlProxyBridge(htmlLatch, pageDoneLatch, baseHost)
@@ -71,9 +72,12 @@ class HtmlProxy(
                 }
                 CookieManager.getInstance().setAcceptThirdPartyCookies(view, true)
 
+                val bootstrapUrl = referer?.takeIf { candidate ->
+                    url.isLegacyVideoPage() && candidate.isRedeCanaisPage(baseHost)
+                }
                 view.addJavascriptInterface(bridge, HTML_BRIDGE_INTERFACE)
-                view.webViewClient = HtmlProxyWebViewClient(url, bridge)
-                view.loadUrl(url)
+                view.webViewClient = HtmlProxyWebViewClient(url, bootstrapUrl, bridge)
+                view.loadUrl(bootstrapUrl ?: url)
             } catch (_: Throwable) {
                 htmlLatch.countDown()
                 pageDoneLatch.countDown()
@@ -149,10 +153,12 @@ class HtmlProxy(
 
     private inner class HtmlProxyWebViewClient(
         private val pageUrl: String,
+        private val bootstrapUrl: String?,
         private val bridge: HtmlProxyBridge,
     ) : WebViewClient() {
         private var restoredCookies = false
         private var waitingCookieReload = false
+        private var waitingBootstrap = bootstrapUrl != null
 
         override fun shouldInterceptRequest(
             view: WebView,
@@ -197,6 +203,11 @@ class HtmlProxy(
         override fun onPageFinished(view: WebView, url: String?) {
             super.onPageFinished(view, url)
             if (bridge.hasFinished()) return
+            if (waitingBootstrap && url == bootstrapUrl) {
+                waitingBootstrap = false
+                view.evaluateJavascript("location.href=${JSONObject.quote(pageUrl)}", null)
+                return
+            }
             if (waitingCookieReload) return
             scheduleHtmlCapture(view, bridge, PAGE_FINISHED_HTML_CAPTURE_DELAY_MS)
         }
@@ -206,4 +217,10 @@ class HtmlProxy(
         val cookies = CookieManager.getInstance().getCookie(url).orEmpty()
         return if (cookies.isEmpty()) emptyMap() else mapOf("Cookie" to cookies)
     }
+
+    private fun String.isLegacyVideoPage(): Boolean = toHttpUrl().encodedPath.equals("/musicvideo.php", ignoreCase = true)
+
+    private fun String.isRedeCanaisPage(baseHost: String): Boolean = runCatching {
+        toHttpUrl().run { host == baseHost && encodedPath.endsWith(".html", ignoreCase = true) }
+    }.getOrDefault(false)
 }
