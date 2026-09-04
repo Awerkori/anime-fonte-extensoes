@@ -1,7 +1,7 @@
 ext {
     extName = 'Animerco'
     extClass = '.Animerco'
-    extVersionCode = 61
+    extVersionCode = 62
 }
 
 apply plugin: "kei.plugins.extension.legacy"

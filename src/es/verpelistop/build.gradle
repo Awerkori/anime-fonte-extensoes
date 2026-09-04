@@ -3,7 +3,7 @@ ext {
     extClass = '.VerPelisTop'
     themePkg = 'dooplay'
     baseUrl = 'https://www1.verpelis.top'
-    overrideVersionCode = 12
+    overrideVersionCode = 13
 }
 
 apply plugin: "kei.plugins.extension.legacy"
