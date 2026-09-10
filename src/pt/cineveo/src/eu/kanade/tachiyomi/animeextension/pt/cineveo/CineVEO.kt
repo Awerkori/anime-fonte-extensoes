@@ -113,7 +113,7 @@ class CineVEO : AnimeHttpLegacySource() {
 
     override fun animeDetailsParse(response: Response): SAnime {
         val document = response.asJsoup()
-        val hero = document.selectFirst(".series-hero-v2, .movie-hero-v2") ?: document
+        val hero: Element = document.selectFirst(".series-hero-v2, .movie-hero-v2") ?: document
         return SAnime.create().apply {
             setUrlWithoutDomain(document.location())
             title = hero.selectFirst("h1")?.text() ?: document.title().substringBefore(" - CineVEO")
