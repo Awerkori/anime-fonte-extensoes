@@ -111,8 +111,7 @@ class CineVEO : AnimeHttpLegacySource() {
         "/series/$slug-lista-de-episodios.html" + if (audio.isBlank()) "" else "?audio=$audio"
     }
 
-    private fun heroElement(document: org.jsoup.nodes.Document): Element =
-        document.selectFirst(".series-hero-v2, .movie-hero-v2") ?: document
+    private fun heroElement(document: org.jsoup.nodes.Document): Element = document.selectFirst(".series-hero-v2, .movie-hero-v2") ?: document
 
     override fun animeDetailsParse(response: Response): SAnime {
         val document = response.asJsoup()
