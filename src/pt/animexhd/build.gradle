@@ -1,0 +1,17 @@
+ext {
+    extName = 'AnimeXHD'
+    extClass = '.AnimeXHD'
+    extVersionCode = 1
+    isNsfw = false
+}
+
+apply plugin: "kei.plugins.extension.legacy"
+
+// Reuse DooPlay without inheriting its version counter: this new source starts at 14.1.
+android.defaultConfig.manifestPlaceholders += [SOURCEHOST: 'animexhd.xyz', SOURCESCHEME: 'https']
+
+dependencies {
+    implementation(project(':lib-multisrc:dooplay'))
+    implementation(project(':lib:bloggerextractor'))
+    implementation(project(':lib:fireplayerextractor'))
+}

@@ -1,0 +1,13 @@
+ext {
+    extName = 'Berry Animes'
+    extClass = '.BerryAnimes'
+    extVersionCode = 1
+    isNsfw = false
+}
+
+apply plugin: "kei.plugins.extension.legacy"
+
+dependencies {
+    implementation(project(':lib:playlistutils'))
+    implementation(project(':lib:bloggerextractor'))
+}

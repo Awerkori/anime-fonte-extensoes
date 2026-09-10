@@ -1,0 +1,16 @@
+ext {
+    extName = 'Animes HD'
+    extClass = '.AnimesHD'
+    extVersionCode = 1
+    isNsfw = false
+}
+
+apply plugin: "kei.plugins.extension.legacy"
+
+// Share DooPlay's parsing, but keep the new source's own 14.1 version counter.
+android.defaultConfig.manifestPlaceholders += [SOURCEHOST: 'animeshd.to', SOURCESCHEME: 'https']
+
+dependencies {
+    implementation(project(':lib-multisrc:dooplay'))
+    implementation(project(':lib:bloggerextractor'))
+}

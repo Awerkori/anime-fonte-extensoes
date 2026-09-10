@@ -1,7 +1,19 @@
 ext {
     extName = 'Anime Fire'
     extClass = '.AnimeFire'
-    extVersionCode = 10
+    extVersionCode = 11
 }
 
 apply plugin: "kei.plugins.extension.legacy"
+
+dependencies {
+    implementation("org.nanohttpd:nanohttpd:2.3.1")
+    testImplementation(libs.junit)
+    testImplementation(libs.jsoup)
+    testImplementation(libs.kotlin.json)
+    testImplementation("org.jetbrains.kotlin:kotlin-stdlib:2.3.21")
+}
+
+android.sourceSets.test.java.srcDirs = ["test"]
+
+android.sourceSets.test.kotlin.srcDirs = ["test"]

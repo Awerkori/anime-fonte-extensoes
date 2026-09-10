@@ -1,9 +1,15 @@
 package eu.kanade.tachiyomi.animeextension.pt.animefire
 
+import android.util.Log
 import androidx.preference.ListPreference
 import androidx.preference.PreferenceScreen
+import eu.kanade.tachiyomi.animeextension.BuildConfig
+import eu.kanade.tachiyomi.animeextension.pt.animefire.dto.AFResponse
+import eu.kanade.tachiyomi.animeextension.pt.animefire.dto.AnimeDetails
+import eu.kanade.tachiyomi.animeextension.pt.animefire.dto.Card
+import eu.kanade.tachiyomi.animeextension.pt.animefire.dto.EpisodeDetails
+import eu.kanade.tachiyomi.animeextension.pt.animefire.dto.Home
 import eu.kanade.tachiyomi.animeextension.pt.animefire.extractors.AnimeFireExtractor
-import eu.kanade.tachiyomi.animeextension.pt.animefire.extractors.IframeExtractor
 import eu.kanade.tachiyomi.animesource.ConfigurableAnimeSource
 import eu.kanade.tachiyomi.animesource.model.AnimeFilterList
 import eu.kanade.tachiyomi.animesource.model.AnimesPage
@@ -12,200 +18,179 @@ import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.awaitSuccess
-import eu.kanade.tachiyomi.util.asJsoup
-import keiyoushi.utils.ParsedAnimeHttpLegacySource
+import keiyoushi.utils.AnimeHttpLegacySource
+import keiyoushi.utils.firstInstanceOrNull
 import keiyoushi.utils.getPreferencesLazy
-import kotlinx.serialization.json.Json
+import keiyoushi.utils.parseAs
+import keiyoushi.utils.tryParse
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import okhttp3.HttpUrl.Companion.toHttpUrl
-import okhttp3.Request
 import okhttp3.Response
-import org.jsoup.nodes.Document
-import org.jsoup.nodes.Element
-import uy.kohesive.injekt.injectLazy
+import java.text.SimpleDateFormat
+import java.util.Locale
+import java.util.TimeZone
 
 class AnimeFire :
-    ParsedAnimeHttpLegacySource(),
+    AnimeHttpLegacySource(),
     ConfigurableAnimeSource {
-
     override val name = "Anime Fire"
-
     override val baseUrl = "https://animefire.io"
-
     override val lang = "pt-BR"
-
     override val supportsLatest = true
-
-    private val json: Json by injectLazy()
-
+    private val api = "https://api.animefire.io"
     private val preferences by getPreferencesLazy()
+    private val extractor by lazy { AnimeFireExtractor(client) }
+
+    @Volatile private var genres = emptyList<String>()
 
     override fun headersBuilder() = super.headersBuilder()
-        .add("Referer", baseUrl)
-        .add("Accept-Language", ACCEPT_LANGUAGE)
+        .set("Referer", "$baseUrl/").set("Origin", baseUrl)
 
-    // ============================== Popular ===============================
-    override fun popularAnimeRequest(page: Int) = GET("$baseUrl/top-animes/$page")
-    override fun popularAnimeSelector() = latestUpdatesSelector()
-    override fun popularAnimeFromElement(element: Element) = latestUpdatesFromElement(element)
-    override fun popularAnimeNextPageSelector() = latestUpdatesNextPageSelector()
+    override fun popularAnimeRequest(page: Int) = GET("$api/home", headers)
+    override fun popularAnimeParse(response: Response): AnimesPage {
+        val cards = response.parseAs<AFResponse<Home>>().data.carousels.first { it.key == "most-liked" }.items
+        return AnimesPage(cards.map(::toAnime), false).also { debug("popular=${cards.size}") }
+    }
 
-    // =============================== Latest ===============================
-    override fun latestUpdatesRequest(page: Int) = GET("$baseUrl/home/$page")
-
-    override fun latestUpdatesSelector() = "article.cardUltimosEps > a"
-
-    override fun latestUpdatesFromElement(element: Element) = SAnime.create().apply {
-        val url = element.attr("href")
-        // get anime url from episode url
-        when (url.substringAfterLast("/").toIntOrNull()) {
-            null -> setUrlWithoutDomain(url)
-
-            else -> {
-                val substr = url.substringBeforeLast("/")
-                setUrlWithoutDomain("$substr-todos-os-episodios")
+    override fun latestUpdatesRequest(page: Int) = GET("$api/home", headers)
+    override fun latestUpdatesParse(response: Response): AnimesPage = error("Use getLatestUpdates")
+    override suspend fun getLatestUpdates(page: Int): AnimesPage = coroutineScope {
+        if (page > 1) return@coroutineScope AnimesPage(emptyList(), false)
+        val home = client.newCall(latestUpdatesRequest(page)).awaitSuccess().parseAs<AFResponse<Home>>().data
+        val episodes = home.carousels.first { it.key == "new-episodes" }.items.distinctBy { it.id }
+        val gate = Semaphore(4)
+        val cards = episodes.map { episode ->
+            async {
+                gate.withPermit {
+                    try {
+                        client.newCall(GET("$api/episode/${episode.id}", headers)).awaitSuccess()
+                            .parseAs<AFResponse<EpisodeDetails>>().data.anime
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        debug("latest episode failed=${e.javaClass.simpleName}")
+                        null
+                    }
+                }
             }
-        }
-
-        title = element.selectFirst("h3.animeTitle")!!.text()
-        thumbnail_url = element.selectFirst("img")?.attr("data-src")
+        }.awaitAll().filterNotNull().distinctBy { it.id }
+        check(cards.isNotEmpty() || episodes.isEmpty()) { "Não foi possível carregar os animes dos novos episódios." }
+        AnimesPage(cards.map(::toAnime), false).also { debug("latest episodes=${episodes.size} anime=${cards.size}") }
     }
 
-    override fun latestUpdatesNextPageSelector() = "ul.pagination img.seta-right"
-
-    // =============================== Search ===============================
-    override suspend fun getSearchAnime(page: Int, query: String, filters: AnimeFilterList): AnimesPage {
-        if (query.startsWith("https://")) {
-            val url = query.toHttpUrl()
-            if (url.host != baseUrl.toHttpUrl().host) {
-                throw Exception("Unsupported url")
-            }
-            val id = url.pathSegments.getOrNull(1)
-                ?: throw Exception("Unsupported url")
-            return getSearchAnime(page, "${PREFIX_SEARCH}$id", filters)
-        }
-
-        if (query.startsWith(PREFIX_SEARCH)) {
-            val id = query.removePrefix(PREFIX_SEARCH)
-            return client.newCall(GET("$baseUrl/animes/$id"))
-                .awaitSuccess()
-                .use(::searchAnimeByIdParse)
-        }
-
-        return super.getSearchAnime(page, query, filters)
-    }
-
-    private fun searchAnimeByIdParse(response: Response): AnimesPage {
-        val details = animeDetailsParse(response).apply {
-            setUrlWithoutDomain(response.request.url.toString())
-            initialized = true
-        }
-
-        return AnimesPage(listOf(details), false)
-    }
-
-    override fun searchAnimeRequest(page: Int, query: String, filters: AnimeFilterList): Request {
-        val params = AFFilters.getSearchParameters(filters)
-        if (query.isBlank()) {
-            return when {
-                params.season.isNotBlank() -> GET("$baseUrl/temporada/${params.season}/$page")
-                else -> GET("$baseUrl/genero/${params.genre}/$page")
-            }
-        }
-        val fixedQuery = query.trim().replace(" ", "-").lowercase()
-        return GET("$baseUrl/pesquisar/$fixedQuery/$page")
-    }
-
-    override fun searchAnimeSelector() = latestUpdatesSelector()
-    override fun searchAnimeFromElement(element: Element) = latestUpdatesFromElement(element)
-    override fun searchAnimeNextPageSelector() = latestUpdatesNextPageSelector()
-
-    // =========================== Anime Details ============================
-    override fun animeDetailsParse(document: Document) = SAnime.create().apply {
-        val content = document.selectFirst("div.divDivAnimeInfo")!!
-        val names = content.selectFirst("div.div_anime_names")!!
-        val infos = content.selectFirst("div.divAnimePageInfo")!!
-        setUrlWithoutDomain(document.location())
-        thumbnail_url = content.selectFirst("div.sub_animepage_img > img")?.attr("data-src")
-        title = names.selectFirst("h1")!!.text()
-        genre = infos.select("a.spanGeneros").eachText().joinToString()
-        author = infos.getInfo("Estúdios")
-        status = parseStatus(infos.getInfo("Status"))
-
-        description = buildString {
-            content.selectFirst("div.divSinopse > span")?.also {
-                append(it.text() + "\n")
-            }
-            names.selectFirst("h6")?.also { append("\nNome alternativo: ${it.text()}") }
-            infos.getInfo("Dia de")?.also { append("\nDia de lançamento: $it") }
-            infos.getInfo("Áudio")?.also { append("\nTipo: $it") }
-            infos.getInfo("Ano")?.also { append("\nAno: $it") }
-            infos.getInfo("Episódios")?.also { append("\nEpisódios: $it") }
-            infos.getInfo("Temporada")?.also { append("\nTemporada: $it") }
-        }
-    }
-
-    // ============================== Episodes ==============================
-    override fun episodeListParse(response: Response) = super.episodeListParse(response).reversed()
-    override fun episodeListSelector(): String = "div.div_video_list > a"
-
-    override fun episodeFromElement(element: Element) = SEpisode.create().apply {
-        val url = element.attr("href")
-        setUrlWithoutDomain(url)
-        name = element.text()
-        episode_number = url.substringAfterLast("/").toFloatOrNull() ?: 0F
-    }
-
-    // ============================ Video Links =============================
-    override fun videoListParse(response: Response): List<Video> {
-        val document = response.asJsoup()
-        val videoElement = document.selectFirst("video#my-video")
-        return if (videoElement != null) {
-            AnimeFireExtractor(client, json).videoListFromElement(videoElement, headers)
+    override fun searchAnimeRequest(page: Int, query: String, filters: AnimeFilterList): okhttp3.Request {
+        val type = filters.firstInstanceOrNull<AFFilters.Type>()?.state ?: 0
+        val path = if (query.isNotBlank()) {
+            "/animes/pesquisar"
+        } else if (type == 1) {
+            "/animes/filmes"
         } else {
-            IframeExtractor(client).videoListFromDocument(document, headers)
+            "/animes"
+        }
+        val url = "$api$path".toHttpUrl().newBuilder().addQueryParameter("page", page.toString())
+        if (query.isNotBlank()) url.addQueryParameter("q", query.trim())
+        filters.firstInstanceOrNull<AFFilters.Genre>()?.selected?.takeIf { it.isNotBlank() }?.let { url.addQueryParameter("genre", it) }
+        when (filters.firstInstanceOrNull<AFFilters.Audio>()?.state) {
+            1 -> url.addQueryParameter("audio", "dublado")
+            2 -> url.addQueryParameter("audio", "legendado")
+        }
+        return GET(url.build(), headers)
+    }
+    override fun searchAnimeParse(response: Response): AnimesPage {
+        val result = response.parseAs<AFResponse<List<Card>>>()
+        result.meta?.genres?.takeIf { it.isNotEmpty() }?.let { genres = it }
+        return AnimesPage(result.data.distinctBy { it.id }.map(::toAnime), result.meta?.let { it.currentPage < it.lastPage } ?: false)
+            .also { debug("search=${it.animes.size} next=${it.hasNextPage}") }
+    }
+    override suspend fun getSearchAnime(page: Int, query: String, filters: AnimeFilterList): AnimesPage {
+        val id = when {
+            query.startsWith(PREFIX_SEARCH) -> query.removePrefix(PREFIX_SEARCH)
+            query.startsWith("$baseUrl/anime/") -> query.toHttpUrl().pathSegments.last()
+            else -> return super.getSearchAnime(page, query, filters)
+        }
+        require(id.matches(Regex("[A-Za-z0-9_-]+"))) { "Identificador inválido" }
+        return AnimesPage(listOf(client.newCall(GET("$api/anime/$id", headers)).awaitSuccess().let(::animeDetailsParse)), false)
+    }
+    private fun toAnime(card: Card) = SAnime.create().apply {
+        url = "/anime/${card.id}"
+        title = card.title
+        thumbnail_url = card.poster
+    }
+    private fun animeId(anime: SAnime): String {
+        val path = (if (anime.url.startsWith("http")) anime.url else "$baseUrl${anime.url}").toHttpUrl().pathSegments
+        require(path.size == 2 && path.first() == "anime") { "Endereço da versão antiga. Localize esta obra pela busca e migre para o novo cadastro." }
+        return path.last()
+    }
+    override fun animeDetailsRequest(anime: SAnime) = GET("$api/anime/${animeId(anime)}", headers)
+    override fun animeDetailsParse(response: Response): SAnime {
+        val details = response.parseAs<AFResponse<AnimeDetails>>().data
+        val hero = details.hero
+        return SAnime.create().apply {
+            url = "/anime/${hero.id}"
+            title = hero.titles["BR"] ?: hero.titles.values.first()
+            thumbnail_url = hero.poster
+            genre = hero.genres.joinToString()
+            status = when (hero.status) {
+                "airing" -> SAnime.ONGOING
+                "completed" -> SAnime.COMPLETED
+                else -> SAnime.UNKNOWN
+            }
+            description = buildString {
+                append(hero.synopsis.orEmpty())
+                hero.titles.values.distinct().filter { it != title }.takeIf { it.isNotEmpty() }?.let { append("\n\nTítulos alternativos: ${it.joinToString()}") }
+                hero.publishedAt?.take(4)?.toIntOrNull()?.let { append("\nAno: $it") }
+                hero.audio?.let { append("\nÁudio: $it") }
+                hero.ageRating?.let { append("\nClassificação: $it") }
+                hero.runtime?.let { append("\nDuração: $it") }
+            }
+            initialized = true
+            debug("details seasons=${details.seasons.size} episodes=${details.episodes.size}")
         }
     }
+    override fun episodeListRequest(anime: SAnime) = animeDetailsRequest(anime)
+    override fun episodeListParse(response: Response): List<SEpisode> {
+        val details = response.parseAs<AFResponse<AnimeDetails>>().data
+        return details.episodes.distinctBy { it.id }.sortedWith(compareByDescending<eu.kanade.tachiyomi.animeextension.pt.animefire.dto.Episode> { it.season ?: 0 }.thenByDescending { it.number }).map { ep ->
+            SEpisode.create().apply {
+                url = "/episode/${ep.id}"
+                val number = if (ep.number % 1F == 0F) ep.number.toInt().toString() else ep.number.toString()
+                name = if (ep.season == null) ep.title ?: details.hero.titles["BR"] ?: details.hero.titles.values.first() else "T${ep.season} E$number" + ep.title?.let { " - $it" }.orEmpty()
+                episode_number = ep.number
+                scanlator = ep.audio
+                date_upload = synchronized(dateFormat) { dateFormat.tryParse(ep.createdAt?.replace(Regex("\\.\\d+Z$"), "Z")) }
+            }
+        }.also { debug("episodes=${it.size}") }
+    }
+    override fun videoListRequest(episode: SEpisode) = GET("$api${episode.url}", headers)
+    override fun videoListParse(response: Response): List<Video> = extractor.videos(response.parseAs<AFResponse<EpisodeDetails>>().data.streams, headers).sortVideos()
+    override fun videoUrlParse(response: Response): String = error("Use videoListParse")
 
-    override fun videoListSelector() = throw UnsupportedOperationException()
-    override fun videoFromElement(element: Element) = throw UnsupportedOperationException()
-
-    // ============================== Settings ==============================
+    override fun List<Video>.sortVideos(): List<Video> {
+        val preferred = preferences.getString("quality_selection", "best")
+        return sortedWith(compareByDescending<Video> { preferred != "best" && resolution(it.videoTitle) == resolution(preferred.orEmpty()) }.thenByDescending { resolution(it.videoTitle) })
+    }
+    private fun resolution(label: String) = Regex("(\\d+)p").find(label)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+    override fun getFilterList() = AFFilters.list(genres)
     override fun setupPreferenceScreen(screen: PreferenceScreen) {
         ListPreference(screen.context).apply {
-            key = PREF_QUALITY_KEY
-            title = PREF_QUALITY_TITLE
-            entries = PREF_QUALITY_VALUES
-            entryValues = PREF_QUALITY_VALUES
-            setDefaultValue(PREF_QUALITY_DEFAULT)
+            key = "quality_selection"
+            title = "Qualidade preferida"
+            entries = arrayOf("Maior disponível", "1080p", "720p", "480p", "360p")
+            entryValues = arrayOf("best", "1080p", "720p", "480p", "360p")
+            setDefaultValue("best")
             summary = "%s"
         }.also(screen::addPreference)
     }
-
-    override fun getFilterList(): AnimeFilterList = AFFilters.FILTER_LIST
-
-    // ============================= Utilities ==============================
-    private fun parseStatus(statusString: String?): Int = when (statusString?.trim()) {
-        "Completo" -> SAnime.COMPLETED
-        "Em lançamento" -> SAnime.ONGOING
-        else -> SAnime.UNKNOWN
-    }
-
-    private fun Element.getInfo(key: String): String? = selectFirst("div.animeInfo:contains($key) span")?.text()
-
-    override fun List<Video>.sortVideos(): List<Video> {
-        val quality = preferences.getString(PREF_QUALITY_KEY, PREF_QUALITY_DEFAULT)!!
-        return sortedWith(
-            compareBy { it.videoTitle.contains(quality) },
-        ).reversed()
-    }
-
+    private val dateFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }
     companion object {
         const val PREFIX_SEARCH = "id:"
-        private const val ACCEPT_LANGUAGE = "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7"
-
-        private const val PREF_QUALITY_KEY = "preferred_quality"
-        private const val PREF_QUALITY_TITLE = "Qualidade preferida"
-        private const val PREF_QUALITY_DEFAULT = "720p"
-        private val PREF_QUALITY_VALUES = arrayOf("360p", "720p")
+        fun debug(message: String) {
+            if (BuildConfig.DEBUG) Log.d("ANIMEFIRE_DEBUG", message)
+        }
     }
 }
