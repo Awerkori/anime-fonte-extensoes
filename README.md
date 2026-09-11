@@ -20,10 +20,10 @@ O projeto acompanha o ecossistema do **Yūzōnō**, mantendo suas atualizações
   https://github.com/Awerkori/anime-extensoes
 
 - **Discord:**
-  https://discord.gg/QpyjwsWENq
+ [https://discord.gg/QpyjwsWENq](https://discord.com/invite/qNAMYUEmGj)
 
 - **Fluxer:**
-  https://fluxer.gg/q456UCVt
+  [https://fluxer.gg/q456UCVt](https://web.canary.fluxer.app/invite/q456UCVt)
 
 > Para adicionar o **Project Nox Anime** ao Aniyomi ou Anikku, copie a URL acima e adicione-a como repositório de extensões.
 
