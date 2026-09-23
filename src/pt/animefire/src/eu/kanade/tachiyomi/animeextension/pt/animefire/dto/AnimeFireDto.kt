@@ -22,7 +22,7 @@ class Carousel(val key: String, val items: List<Card>)
 @Serializable
 class Card(
     val id: String,
-    val title: String,
+    val titles: Map<String, String> = emptyMap(),
     @SerialName("poster_src") val poster: String? = null,
 )
 
@@ -71,6 +71,7 @@ class EpisodeDetails(
 class Stream(
     val audio: String? = null,
     val url: String? = null,
+    val qualities: List<String> = emptyList(),
     @SerialName("is_offline") val offline: Boolean = false,
     @SerialName("is_mtl") val machineTranslated: Boolean = false,
 )

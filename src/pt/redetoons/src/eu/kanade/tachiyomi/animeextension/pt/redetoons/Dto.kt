@@ -9,13 +9,17 @@ import kotlinx.serialization.Serializable
 
 @Serializable data class ShelvesResponse(val payload: ShelvesPayload = ShelvesPayload())
 
-@Serializable data class ShelvesPayload(val animes: List<Shelf> = emptyList())
+@Serializable data class ShelvesPayload(
+    val animes: List<Shelf> = emptyList(),
+    val series: List<Shelf> = emptyList(),
+    val filmes: List<Shelf> = emptyList(),
+)
 
 @Serializable data class Shelf(val title: String? = null, val genre_slug: String? = null, val items: List<ShelfItem> = emptyList())
 
 @Serializable data class ShelfItem(val tmdb_id: Int, val media_type: String? = null, val title: String? = null, val poster_path: String? = null, val year: String? = null)
 
-@Serializable data class Genre(val name: String? = null)
+@Serializable data class Genre(val id: Int? = null, val name: String? = null)
 
 @Serializable data class DetailsDto(
     val id: Int,
@@ -25,6 +29,8 @@ import kotlinx.serialization.Serializable
     val original_title: String? = null,
     val overview: String? = null,
     val poster_path: String? = null,
+    val original_language: String? = null,
+    val origin_country: List<String> = emptyList(),
     val first_air_date: String? = null,
     val release_date: String? = null,
     val genres: List<Genre> = emptyList(),

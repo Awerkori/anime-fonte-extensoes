@@ -8,7 +8,7 @@ import android.util.Log
 import kotlin.system.exitProcess
 
 /**
- * Springboard that accepts https://animefire.io/anime/<id> intents
+ * Springboard that accepts Anime Fire anime URLs and redirects them to Aniyomi.
  * and redirects them to the main Aniyomi process.
  */
 class AFUrlActivity : Activity() {

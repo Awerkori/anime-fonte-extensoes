@@ -1,7 +1,8 @@
 ext {
     extName = 'Anime Fire'
     extClass = '.AnimeFire'
-    extVersionCode = 11
+    libVersion = 16
+    extVersionCode = 12
 }
 
 apply plugin: "kei.plugins.extension.legacy"
@@ -17,3 +18,25 @@ dependencies {
 android.sourceSets.test.java.srcDirs = ["test"]
 
 android.sourceSets.test.kotlin.srcDirs = ["test"]
+
+android {
+    ndkVersion "27.2.12479018"
+    defaultConfig {
+        externalNativeBuild {
+            cmake {
+                abiFilters "arm64-v8a", "armeabi-v7a"
+            }
+        }
+    }
+    externalNativeBuild {
+        cmake {
+            path file("src/main/cpp/CMakeLists.txt")
+            version "3.22.1"
+        }
+    }
+    packaging {
+        jniLibs {
+            useLegacyPackaging true
+        }
+    }
+}

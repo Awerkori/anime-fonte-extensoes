@@ -10,15 +10,17 @@ import eu.kanade.tachiyomi.animeextension.pt.animefire.dto.Card
 import eu.kanade.tachiyomi.animeextension.pt.animefire.dto.EpisodeDetails
 import eu.kanade.tachiyomi.animeextension.pt.animefire.dto.Home
 import eu.kanade.tachiyomi.animeextension.pt.animefire.extractors.AnimeFireExtractor
+import eu.kanade.tachiyomi.animeextension.pt.animefire.nativebridge.AnimeFireNative
 import eu.kanade.tachiyomi.animesource.ConfigurableAnimeSource
 import eu.kanade.tachiyomi.animesource.model.AnimeFilterList
 import eu.kanade.tachiyomi.animesource.model.AnimesPage
+import eu.kanade.tachiyomi.animesource.model.Hoster
 import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Video
+import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.awaitSuccess
-import keiyoushi.utils.AnimeHttpLegacySource
 import keiyoushi.utils.firstInstanceOrNull
 import keiyoushi.utils.getPreferencesLazy
 import keiyoushi.utils.parseAs
@@ -30,21 +32,26 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Response
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.TimeZone
 
 class AnimeFire :
-    AnimeHttpLegacySource(),
+    AnimeHttpSource(),
     ConfigurableAnimeSource {
     override val name = "Anime Fire"
-    override val baseUrl = "https://animefire.io"
+    override val baseUrl = "https://animefire.one"
     override val lang = "pt-BR"
     override val supportsLatest = true
-    private val api = "https://api.animefire.io"
+    private val api = "https://api.animefire.one"
     private val preferences by getPreferencesLazy()
     private val extractor by lazy { AnimeFireExtractor(client) }
+
+    init {
+        Log.i("ANIMEFIRE_NATIVE", "FFmpeg=${AnimeFireNative.ffmpegVersion()}")
+    }
 
     @Volatile private var genres = emptyList<String>()
 
@@ -108,9 +115,10 @@ class AnimeFire :
             .also { debug("search=${it.animes.size} next=${it.hasNextPage}") }
     }
     override suspend fun getSearchAnime(page: Int, query: String, filters: AnimeFilterList): AnimesPage {
+        val queryId = animeIdFromQuery(query)
         val id = when {
             query.startsWith(PREFIX_SEARCH) -> query.removePrefix(PREFIX_SEARCH)
-            query.startsWith("$baseUrl/anime/") -> query.toHttpUrl().pathSegments.last()
+            queryId != null -> queryId
             else -> return super.getSearchAnime(page, query, filters)
         }
         require(id.matches(Regex("[A-Za-z0-9_-]+"))) { "Identificador inválido" }
@@ -118,13 +126,20 @@ class AnimeFire :
     }
     private fun toAnime(card: Card) = SAnime.create().apply {
         url = "/anime/${card.id}"
-        title = card.title
+        title = card.titles["BR"] ?: card.titles.values.firstOrNull() ?: card.id
         thumbnail_url = card.poster
     }
-    private fun animeId(anime: SAnime): String {
-        val path = (if (anime.url.startsWith("http")) anime.url else "$baseUrl${anime.url}").toHttpUrl().pathSegments
-        require(path.size == 2 && path.first() == "anime") { "Endereço da versão antiga. Localize esta obra pela busca e migre para o novo cadastro." }
+    private fun animeId(anime: SAnime) = animeIdFromUrl(anime.url.toHttpUrlOrNull() ?: "$baseUrl${anime.url}".toHttpUrl())
+    private fun animeIdFromUrl(url: okhttp3.HttpUrl): String {
+        require(url.host in supportedHosts) { "Endereço de anime não suportado" }
+        val path = url.pathSegments.filter(String::isNotEmpty)
+        require(path.size == 2 && path.first() == "anime" && path.last().matches(idPattern)) { "Identificador inválido" }
         return path.last()
+    }
+    private fun animeIdFromQuery(query: String): String? {
+        val url = query.toHttpUrlOrNull() ?: return null
+        val path = url.pathSegments.filter(String::isNotEmpty)
+        return if (url.host in supportedHosts && path.size == 2 && path.first() == "anime" && path.last().matches(idPattern)) animeIdFromUrl(url) else null
     }
     override fun animeDetailsRequest(anime: SAnime) = GET("$api/anime/${animeId(anime)}", headers)
     override fun animeDetailsParse(response: Response): SAnime {
@@ -166,13 +181,19 @@ class AnimeFire :
             }
         }.also { debug("episodes=${it.size}") }
     }
-    override fun videoListRequest(episode: SEpisode) = GET("$api${episode.url}", headers)
-    override fun videoListParse(response: Response): List<Video> = extractor.videos(response.parseAs<AFResponse<EpisodeDetails>>().data.streams, headers).sortVideos()
-    override fun videoUrlParse(response: Response): String = error("Use videoListParse")
+    override fun seasonListParse(response: Response): List<SAnime> = emptyList()
+    override fun hosterListRequest(episode: SEpisode) = GET("$api/episode/${episodeId(episode)}", headers)
+    override fun hosterListParse(response: Response): List<Hoster> = listOf(
+        Hoster(videoList = extractor.videos(response.parseAs<AFResponse<EpisodeDetails>>().data.streams, headers).sort()),
+    )
 
-    override fun List<Video>.sortVideos(): List<Video> {
+    private fun List<Video>.sort(): List<Video> {
         val preferred = preferences.getString("quality_selection", "best")
-        return sortedWith(compareByDescending<Video> { preferred != "best" && resolution(it.videoTitle) == resolution(preferred.orEmpty()) }.thenByDescending { resolution(it.videoTitle) })
+        return sortedWith(
+            compareByDescending<Video> { it.videoTitle.contains("H.264", ignoreCase = true) }
+                .thenByDescending { preferred != "best" && resolution(it.videoTitle) == resolution(preferred.orEmpty()) }
+                .thenByDescending { resolution(it.videoTitle) },
+        )
     }
     private fun resolution(label: String) = Regex("(\\d+)p").find(label)?.groupValues?.get(1)?.toIntOrNull() ?: 0
     override fun getFilterList() = AFFilters.list(genres)
@@ -189,8 +210,18 @@ class AnimeFire :
     private val dateFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }
     companion object {
         const val PREFIX_SEARCH = "id:"
+        private val supportedHosts = setOf("animefire.one", "animefire.io", "animefire.plus")
+        private val idPattern = Regex("[A-Za-z0-9_-]+")
         fun debug(message: String) {
             if (BuildConfig.DEBUG) Log.d("ANIMEFIRE_DEBUG", message)
         }
+    }
+
+    private fun episodeId(episode: SEpisode): String {
+        val url = episode.url.toHttpUrlOrNull() ?: "$baseUrl${episode.url}".toHttpUrl()
+        require(url.host in supportedHosts) { "Endereço de episódio não suportado" }
+        val path = url.pathSegments.filter(String::isNotEmpty)
+        require(path.size == 2 && path.first() == "episode" && path.last().matches(idPattern)) { "Identificador inválido" }
+        return path.last()
     }
 }

@@ -2,12 +2,22 @@ package eu.kanade.tachiyomi.animeextension.pt.animefire.extractors
 
 import eu.kanade.tachiyomi.animeextension.pt.animefire.dto.AFResponse
 import eu.kanade.tachiyomi.animeextension.pt.animefire.dto.AnimeDetails
+import eu.kanade.tachiyomi.animeextension.pt.animefire.dto.Card
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 
 class AnimeFireDtoTest {
+    @Test
+    fun cardUsesCurrentTitlesSchema() {
+        val response = Json.decodeFromString<AFResponse<List<Card>>>(
+            """{"data":[{"id":"eU7t5IvcNKU","titles":{"BR":"Naruto"},"poster_src":"https://image.tmdb.org/poster.jpg"}]}""",
+        )
+
+        assertEquals("Naruto", response.data.single().titles["BR"])
+    }
+
     @Test
     fun movieAcceptsFormattedRuntimeAndUntitledUnseasonedEpisode() {
         val response = Json.decodeFromString<AFResponse<AnimeDetails>>(
