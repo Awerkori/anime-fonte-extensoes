@@ -10,7 +10,6 @@ import eu.kanade.tachiyomi.animeextension.pt.animefire.dto.Card
 import eu.kanade.tachiyomi.animeextension.pt.animefire.dto.EpisodeDetails
 import eu.kanade.tachiyomi.animeextension.pt.animefire.dto.Home
 import eu.kanade.tachiyomi.animeextension.pt.animefire.extractors.AnimeFireExtractor
-import eu.kanade.tachiyomi.animeextension.pt.animefire.nativebridge.AnimeFireNative
 import eu.kanade.tachiyomi.animesource.ConfigurableAnimeSource
 import eu.kanade.tachiyomi.animesource.model.AnimeFilterList
 import eu.kanade.tachiyomi.animesource.model.AnimesPage
@@ -48,10 +47,6 @@ class AnimeFire :
     private val api = "https://api.animefire.one"
     private val preferences by getPreferencesLazy()
     private val extractor by lazy { AnimeFireExtractor(client) }
-
-    init {
-        Log.i("ANIMEFIRE_NATIVE", "FFmpeg=${AnimeFireNative.ffmpegVersion()}")
-    }
 
     @Volatile private var genres = emptyList<String>()
 

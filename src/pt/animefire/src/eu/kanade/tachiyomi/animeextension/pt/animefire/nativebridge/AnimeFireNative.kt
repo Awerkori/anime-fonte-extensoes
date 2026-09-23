@@ -3,7 +3,7 @@ package eu.kanade.tachiyomi.animeextension.pt.animefire.nativebridge
 import java.io.File
 
 internal object AnimeFireNative {
-    init {
+    private val loaded by lazy {
         val application = Class.forName("android.app.ActivityThread")
             .getMethod("currentApplication")
             .invoke(null) as android.app.Application
@@ -12,7 +12,10 @@ internal object AnimeFireNative {
             0,
         )
         System.load(File(extensionContext.applicationInfo.nativeLibraryDir, "libanimefire_ffmpeg.so").absolutePath)
+        true
     }
+
+    fun ensureLoaded() = check(loaded)
 
     external fun ffmpegVersion(): String
 

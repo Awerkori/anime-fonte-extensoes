@@ -173,6 +173,7 @@ private object HlsServer : NanoHTTPD("127.0.0.1", 0) {
                             entry.initCache[initUrl] ?: HlsResource.fetch(entry.client, initUrl, requestHeaders).bytes.also { entry.initCache[initUrl] = it }
                         }
                         val startedTransmux = System.nanoTime()
+                        AnimeFireNative.ensureLoaded()
                         AnimeFireNative.transmuxToMpegTs(init, resource.bytes).also { ts ->
                             synchronized(entry) { entry.tsCache[url] = ts }
                             Log.d("ANIMEFIRE_NATIVE", "TRANSMUX bytesIn=${init.size + resource.bytes.size} bytesOut=${ts.size} ms=${(System.nanoTime() - startedTransmux) / 1_000_000} url=$url")
@@ -285,6 +286,7 @@ private object HlsServer : NanoHTTPD("127.0.0.1", 0) {
                 initCache[initUrl] ?: HlsResource.fetch(client, initUrl, requestHeaders).bytes.also { initCache[initUrl] = it }
             }
             val started = System.nanoTime()
+            AnimeFireNative.ensureLoaded()
             AnimeFireNative.transcodeAv1FragmentToMpegTs(init, fragment).also { ts ->
                 synchronized(this) { tsCache[url] = ts }
                 Log.d("ANIMEFIRE_NATIVE", "AV1_TRANSCODE bytesIn=${init.size + fragment.size} bytesOut=${ts.size} ms=${(System.nanoTime() - started) / 1_000_000} url=$url")
