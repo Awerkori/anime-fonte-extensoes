@@ -284,12 +284,36 @@ class AniPM :
         val ep = dto.episodes.firstOrNull { fmtNum(it.number) == epNum }
             ?: return emptyList()
 
+        val epParam = ep.routeId ?: epNum
+        val bootPackage = try {
+            val bootRes = client.get(
+                "$apiUrl/anime/playback-bootstrap/settlar/${dto.id}?ep=$epParam&lang=sub",
+                apiHeaders(),
+            )
+            val boot = bootRes.use { it.parseAs<BootstrapDto>() }
+            val epKey = fmtNum(ep.number)
+            boot.anipmPackages?.episodes?.get(epKey)
+        } catch (_: Exception) {
+            null
+        }
+
+        val hasSub = bootPackage?.sub ?: ep.sub
+        val hasSubhard = bootPackage?.subhard ?: ep.subhard
+        val hasDub = bootPackage?.dub ?: ep.dub
+        val hasDubhard = bootPackage?.dubhard ?: ep.dubhard
+
         return buildList {
-            if (ep.sub && "[Sub]" !in excludedAudioTypes) {
+            if (hasSub && "[Sub]" !in excludedAudioTypes) {
                 add(Hoster(hosterName = "[Sub]", internalData = "anipm::${dto.id}/$epNum/sub"))
             }
-            if (ep.dub && "[Dub]" !in excludedAudioTypes) {
+            if (hasSubhard && "[Hard Sub]" !in excludedAudioTypes) {
+                add(Hoster(hosterName = "[Hard Sub]", internalData = "anipm::${dto.id}/$epNum/subhard"))
+            }
+            if (hasDub && "[Dub]" !in excludedAudioTypes) {
                 add(Hoster(hosterName = "[Dub]", internalData = "anipm::${dto.id}/$epNum/dub"))
+            }
+            if (hasDubhard && "[Hard Dub]" !in excludedAudioTypes) {
+                add(Hoster(hosterName = "[Hard Dub]", internalData = "anipm::${dto.id}/$epNum/dubhard"))
             }
         }
     }
@@ -298,8 +322,16 @@ class AniPM :
 
     // ========================== Hoster Sorting ==========================
     override fun List<Hoster>.sortHosters(): List<Hoster> {
-        val audioTag = if (preferredAudio == "dub") "[Dub]" else "[Sub]"
-        return sortedByDescending { it.hosterName.contains(audioTag) }
+        val (primary, secondary) = when (preferredAudio) {
+            "subhard" -> "[Hard Sub]" to "[Sub]"
+            "dub" -> "[Dub]" to "[Hard Dub]"
+            "dubhard" -> "[Hard Dub]" to "[Dub]"
+            else -> "[Sub]" to "[Hard Sub]"
+        }
+        return sortedWith(
+            compareByDescending<Hoster> { it.hosterName == primary }
+                .thenByDescending { it.hosterName == secondary },
+        )
     }
 
     // =============================== Videos ===============================
@@ -315,8 +347,9 @@ class AniPM :
         return try {
             // 1) Bootstrap — numeric settlar ID (verified: /playback-bootstrap/settlar/8922)
             val settlarId = handle
+            val bootLang = if (lang.startsWith("dub")) "dub" else "sub"
             val boot = client.get(
-                "$apiUrl/anime/playback-bootstrap/settlar/$settlarId?ep=$epNum&lang=$lang",
+                "$apiUrl/anime/playback-bootstrap/settlar/$settlarId?ep=$epNum&lang=$bootLang",
                 apiHeaders(),
             ).use { it.parseAs<BootstrapDto>() }
             val selection = boot.settlarSelection?.takeIf(String::isNotBlank)
@@ -351,7 +384,7 @@ class AniPM :
                 }
             }
 
-            /*** We route through [StellarProxy]. */
+            /*** We route through [SettlarProxy]. */
             val proxy = getProxy()
             val vids = playlistUtils.extractFromHls(
                 playlistUrl = proxy.proxyUrl(manifest),
@@ -447,8 +480,8 @@ class AniPM :
             MultiSelectListPreference(context).apply {
                 key = PREF_AUDIO_EXCLUDE_KEY
                 title = "Exclude Audio Types"
-                entries = arrayOf("Sub", "Dub")
-                entryValues = arrayOf("[Sub]", "[Dub]")
+                entries = arrayOf("Sub", "Hard Sub", "Dub", "Hard Dub")
+                entryValues = arrayOf("[Sub]", "[Hard Sub]", "[Dub]", "[Hard Dub]")
                 setDefaultValue(PREF_AUDIO_EXCLUDE_DEFAULT)
                 summary = "Hide videos of the selected audio types."
             },
@@ -481,8 +514,8 @@ class AniPM :
         private const val PREF_QUALITY_DEFAULT = "1080"
 
         private const val PREF_AUDIO_KEY = "preferred_audio"
-        private val PREF_AUDIO_ENTRIES = listOf("Sub", "Dub")
-        private val PREF_AUDIO_VALUES = listOf("sub", "dub")
+        private val PREF_AUDIO_ENTRIES = listOf("Sub", "Hard Sub", "Dub", "Hard Dub")
+        private val PREF_AUDIO_VALUES = listOf("sub", "subhard", "dub", "dubhard")
         private const val PREF_AUDIO_DEFAULT = "sub"
 
         private const val PREF_AUDIO_EXCLUDE_KEY = "excluded_audio_types"
