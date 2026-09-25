@@ -120,6 +120,84 @@ class SyncDeletionTest(unittest.TestCase):
         self.assertIn("src/tr/turkanime", result[4])
         self.assertNotIn("src/tr/turkanime", result[3])
 
+    def test_tomato_explicit_protection_survives_upstream_deletion(self):
+        tomato_dir = ROOT / "src/pt/tomato"
+        build_file = tomato_dir / "build.gradle"
+        self.assertTrue(build_file.is_file(), "Nox Tomato source must be restored")
+        tomato_build = build_file.read_text("utf-8")
+        self.assertRegex(tomato_build, r"extVersionCode\s*=\s*12")
+        self.assertIn('extName = \'Tomato\'', tomato_build)
+        self.assertIn("extClass = '.Tomato'", tomato_build)
+        self.assertIn("isNsfw = false", tomato_build)
+        tomato_source = next(tomato_dir.glob("src/**/Tomato.kt")).read_text("utf-8")
+        self.assertIn("https://edge.betomato.com/v2/content/search", tomato_source)
+        self.assertIn("🔐 Login necessário", tomato_source)
+
+        # Form a realistic divergence where Tomato existed in the common base,
+        # Yuzono deleted it, and the current Nox tree plus allowlist keep it.
+        self.add_source("src/pt/tomato", 12)
+        (self.repo / ".github").mkdir()
+        (self.repo / ".github/nox-protected.txt").write_text(
+            "src/pt/tomato\n", encoding="utf-8",
+        )
+        run("git", "add", "-A", cwd=self.repo)
+        run("git", "commit", "-m", "Tomato protected base", cwd=self.repo)
+        self.base = run("git", "rev-parse", "HEAD", cwd=self.repo)
+        upstream_ref = self.commit_upstream(
+            lambda: shutil_rmtree(self.repo / "src/pt/tomato"),
+        )
+        run("git", "switch", "-c", "nox-main", self.base, cwd=self.repo)
+
+        upstream_units = sync.collect_units(
+            sync.changed_entries(self.base, upstream_ref),
+        )[0]
+        main_units = sync.collect_units(
+            sync.changed_entries(self.base, "HEAD"),
+        )[0]
+        protections = sync.get_explicit_delete_protections()
+        self.assertIn("src/pt/tomato", protections)
+        result = sync.classify_sync_units(
+            self.base, upstream_ref, upstream_units, main_units, protections,
+        )
+        protected_deletions = result[4]
+        self.assertIn("src/pt/tomato", protected_deletions)
+        self.assertNotIn("src/pt/tomato", result[3])
+
+        import io
+        from contextlib import redirect_stdout
+        output = io.StringIO()
+        with redirect_stdout(output):
+            sync.print_plan(
+                self.base, upstream_ref, result[0], result[1], result[2],
+                [], set(), [], result[3], protected_deletions,
+            )
+        self.assertIn(
+            "[deleted upstream] src/pt/tomato → KEEP (explicitly protected)",
+            output.getvalue(),
+        )
+
+        git_calls = []
+        original_git = sync.git
+
+        def record_git(*args, **kwargs):
+            git_calls.append(args)
+            return original_git(*args, **kwargs)
+
+        sync.git = record_git
+        try:
+            sync.apply_units(
+                upstream_ref,
+                sorted(set(upstream_units) | set(result[3]) | set(protected_deletions)),
+                set(result[1]), [], result[3], protected_deletions,
+            )
+        finally:
+            sync.git = original_git
+        self.assertFalse(any(
+            len(call) >= 3 and call[0] == "rm" and call[-1] == "src/pt/tomato"
+            for call in git_calls
+        ))
+        self.assertTrue((self.repo / "src/pt/tomato/build.gradle").is_file())
+
     def test_nox_exclusive_source_is_not_classified_as_deleted(self):
         upstream_ref, up, local = self.create_divergence(
             lambda: self.add_source("src/fr/upstream_marker", 1),

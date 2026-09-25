@@ -2,3 +2,4 @@
 # Add one source unit per line (for example: src/pt/example).
 # Ordinary upstream edits still use the automatic Nox-wins conflict policy;
 # historical local edits or version bumps do not preserve deleted sources.
+src/pt/tomato
