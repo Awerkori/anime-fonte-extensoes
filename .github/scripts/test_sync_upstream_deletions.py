@@ -211,6 +211,8 @@ class SyncDeletionTest(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/build_push.yml").read_text("utf-8")
         self.assertIn("needs.build.result == 'skipped'", workflow)
         self.assertIn("echo '{}' > output.json", workflow)
+        sync_script = (ROOT / ".github/scripts/sync-upstream.py").read_text("utf-8")
+        self.assertNotRegex(sync_script, r'git\("push"[^\n]*"--force"')
 
     def test_dry_run_labels_turkanime_as_remove_not_conflict(self):
         upstream_ref, up, local = self.create_divergence(

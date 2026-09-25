@@ -584,7 +584,8 @@ def main() -> None:
 
     # Update sync branch to mirror upstream tip
     if args.push:
-        git("push", "origin", f"{upstream_ref}:refs/heads/{SYNC_BRANCH}", "--force")
+        # Keep this a normal fast-forward push. Refuse to rewrite the published sync history.
+        git("push", "origin", f"{upstream_ref}:refs/heads/{SYNC_BRANCH}")
     else:
         print(f"\nWould update origin/{SYNC_BRANCH} from {upstream_ref}")
 
