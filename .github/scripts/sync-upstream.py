@@ -144,6 +144,72 @@ def collect_units(entries: list[tuple[str, list[str]]]) -> tuple[list[str], list
     return sorted(units), sorted(preserved)
 
 
+def get_explicit_delete_protections() -> list[str]:
+    """Read units that Nox intentionally keeps after upstream deletion.
+
+    This is deliberately separate from automatic conflict protection: a historical
+    Nox edit or version bump must not prevent an upstream removal.
+    """
+    protection_file = Path(".github/nox-protected.txt")
+    if not protection_file.exists():
+        return []
+    protected = []
+    for raw_line in protection_file.read_text("utf-8").splitlines():
+        unit = raw_line.split("#", 1)[0].strip()
+        if not unit:
+            continue
+        if not re.fullmatch(r"src/[^/]+/[^/]+", unit):
+            raise ValueError(f"Invalid upstream-delete protection entry: {unit}")
+        protected.append(unit)
+    return sorted(set(protected))
+
+
+def upstream_historical_units(upstream_ref: str) -> set[str]:
+    """Return source units that were added at some point in upstream history.
+
+    The sync workflow uses an `ours` merge, so the current merge-base can already
+    contain an upstream deletion while the Nox tree still has the deleted unit.
+    History distinguishes that stale tree entry from a Nox-only source.
+    """
+    paths = git(
+        "log", "--diff-filter=A", "--name-only", "--format=",
+        upstream_ref, "--", "src/*/*/build.gradle",
+    ).splitlines()
+    return {
+        unit for path in paths
+        if path.endswith("/build.gradle")
+        if (unit := sync_unit(path)) is not None and unit.startswith("src/")
+    }
+
+
+def classify_sync_units(
+    base: str,
+    upstream_ref: str,
+    upstream_units: list[str],
+    main_units: list[str],
+    explicit_delete_protections: list[str],
+) -> tuple[list[str], list[str], list[str], list[str], list[str]]:
+    """Separate normal updates/conflicts from true upstream source deletions."""
+    upstream_set = set(upstream_units)
+    main_set = set(main_units)
+    candidates = upstream_set | main_set
+    historically_upstream = upstream_historical_units(upstream_ref)
+    deleted = {
+        unit for unit in candidates
+        if unit.startswith("src/")
+        and (path_exists(base, unit) or unit in historically_upstream)
+        and path_exists("HEAD", unit)
+        and not path_exists(upstream_ref, unit)
+    }
+    explicitly_protected = set(explicit_delete_protections)
+    deleted_protected = sorted(deleted & explicitly_protected)
+    deleted_remove = sorted(deleted - explicitly_protected)
+    conflicts = sorted((upstream_set & main_set) - deleted)
+    upstream_only = sorted(upstream_set - set(conflicts) - deleted)
+    nox_only = sorted(main_set - upstream_set - deleted)
+    return upstream_only, conflicts, nox_only, deleted_remove, deleted_protected
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Indirect impact detection
 # ──────────────────────────────────────────────────────────────────────────────
@@ -352,6 +418,8 @@ def print_plan(
     protected: list[str],
     indirect: set[str],
     preserved_paths: list[str],
+    upstream_deleted: list[str],
+    protected_deletions: list[str],
 ) -> None:
     commits = git("rev-list", "--count", f"{base}..{upstream_ref}").strip()
     print(f"\nBase: {base}")
@@ -362,6 +430,11 @@ def print_plan(
     print(f"\nConflict units (Nox wins): {len(conflict_units)}")
     for u in conflict_units:
         print(f"  [conflict→Nox] {u}")
+    print(f"\nUpstream-deleted units: {len(upstream_deleted) + len(protected_deletions)}")
+    for u in upstream_deleted:
+        print(f"  [deleted upstream] {u} → REMOVE")
+    for u in protected_deletions:
+        print(f"  [deleted upstream] {u} → KEEP (explicitly protected)")
     print(f"\nNox-only units (preserved): {len(nox_only)}")
     for u in nox_only:
         print(f"  [nox-only] {u}")
@@ -397,10 +470,21 @@ def apply_units(
     upstream_units: list[str],
     conflict_set: set[str],
     protected: list[str],
+    upstream_deleted: list[str] | None = None,
+    protected_deletions: list[str] | None = None,
 ) -> list[str]:
     git("merge", "--no-ff", "--no-commit", "-s", "ours", upstream_ref)
 
+    deleted_set = set(upstream_deleted or [])
+    deletion_protection_set = set(protected_deletions or [])
     for unit in upstream_units:
+        if unit in deleted_set:
+            print(f"Removing upstream-deleted unit: {unit}")
+            git("rm", "-r", "--ignore-unmatch", "--quiet", "--", unit)
+            continue
+        if unit in deletion_protection_set:
+            print(f"Preserving explicitly protected upstream deletion: {unit}")
+            continue
         if unit in conflict_set:
             continue  # Nox wins — skip upstream version of this unit
         print(f"Applying {unit}")
@@ -472,10 +556,21 @@ def main() -> None:
     main_entries = changed_entries(base, "HEAD")
     main_units, _ = collect_units(main_entries)
 
-    conflict_units = sorted(set(upstream_units) & set(main_units))
+    explicit_delete_protections = get_explicit_delete_protections()
+    (
+        upstream_only,
+        conflict_units,
+        nox_only,
+        upstream_deleted,
+        protected_deletions,
+    ) = classify_sync_units(
+        base,
+        upstream_ref,
+        upstream_units,
+        main_units,
+        explicit_delete_protections,
+    )
     conflict_set = set(conflict_units)
-    upstream_only = sorted(set(upstream_units) - conflict_set)
-    nox_only = sorted(set(main_units) - set(upstream_units))
 
     protected = get_nox_protected_units(base, upstream_ref)
     indirect = detect_indirect_impacts(upstream_units)
@@ -484,6 +579,7 @@ def main() -> None:
         base, upstream_ref,
         upstream_only, conflict_units, nox_only,
         protected, indirect, preserved_paths,
+        upstream_deleted, protected_deletions,
     )
 
     # Update sync branch to mirror upstream tip
@@ -492,7 +588,7 @@ def main() -> None:
     else:
         print(f"\nWould update origin/{SYNC_BRANCH} from {upstream_ref}")
 
-    if not upstream_units and not indirect:
+    if not upstream_units and not indirect and not upstream_deleted:
         print("No upstream changes to apply.")
         return
 
@@ -500,7 +596,15 @@ def main() -> None:
         print("Dry run — no changes applied.")
         return
 
-    bumped = apply_units(upstream_ref, upstream_units, conflict_set, protected)
+    units_to_apply = sorted(set(upstream_units) | set(upstream_deleted) | set(protected_deletions))
+    bumped = apply_units(
+        upstream_ref,
+        units_to_apply,
+        conflict_set,
+        protected,
+        upstream_deleted,
+        protected_deletions,
+    )
     write_step_summary(protected, bumped)
     git("push", "origin", "HEAD:main")
 

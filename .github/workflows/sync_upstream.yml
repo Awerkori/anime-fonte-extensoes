@@ -35,5 +35,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
+      - name: Test upstream deletion handling
+        run: python .github/scripts/test_sync_upstream_deletions.py
+
       - name: Sync upstream (Nox-wins)
         run: python .github/scripts/sync-upstream.py --push
