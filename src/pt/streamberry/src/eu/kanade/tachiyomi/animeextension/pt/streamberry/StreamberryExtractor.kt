@@ -149,7 +149,8 @@ class StreamberryExtractor(private val client: OkHttpClient) {
         val parent = parentUrl.toHttpUrlOrNull() ?: return@runCatching emptyList()
         val code = parent.pathSegments.getOrNull(1)?.takeIf { it.isNotBlank() } ?: return@runCatching emptyList()
         val apiBase = "${parent.scheme}://${parent.host}/api/videos/$code/embed"
-        val userAgent = WebSettings.getDefaultUserAgent(applicationContext)
+        val userAgent = runCatching { WebSettings.getDefaultUserAgent(applicationContext) }
+            .getOrDefault("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
         val embedHeaders = Headers.Builder().apply {
             add("Accept", "application/json")
             add("User-Agent", userAgent)
@@ -246,75 +247,13 @@ class StreamberryExtractor(private val client: OkHttpClient) {
         return JSONObject(clear.toString(Charsets.UTF_8))
     }
 
-    private fun decodeBase64Url(value: String): ByteArray = Base64.decode(
-        value,
-        Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING,
-    )
-
-    private fun solvePow(nonce: String, difficulty: Int): String {
-        if (difficulty <= 0) return "0"
-        var solution = 0
-        while (true) {
-            if (leadingZeroBits(powDigest("$nonce:$solution")) >= difficulty) return solution.toString()
-            solution++
-        }
+    private fun decodeBase64Url(value: String): ByteArray = try {
+        Base64.decode(value, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+    } catch (_: Throwable) {
+        java.util.Base64.getUrlDecoder().decode(value)
     }
 
-    private fun powDigest(value: String): IntArray {
-        val state = intArrayOf(1779033703, 3144134277L.toInt(), 1013904242, 2773480762L.toInt())
-        value.toByteArray().forEach { byte ->
-            state[0] += byte.toInt() and 0xff
-            state[0] = Integer.rotateLeft(state[0], 7)
-            powQuarterRound(state)
-        }
-        repeat(8) { powQuarterRound(state) }
-        val memory = IntArray(512)
-        memory.indices.forEach { index ->
-            powQuarterRound(state)
-            memory[index] = state[0] xor state[2]
-        }
-        repeat(2) {
-            memory.indices.forEach { index ->
-                val selected = memory[index] and 511
-                var mixed = memory[index] + memory[selected]
-                mixed = Integer.rotateLeft(mixed, 13)
-                mixed = mixed xor (memory[(index + 1) and 511] * 2654435761L.toInt())
-                memory[index] = mixed
-                state[0] = state[0] xor mixed
-                powQuarterRound(state)
-            }
-        }
-        return IntArray(8) { block ->
-            powQuarterRound(state)
-            var mixed = state[0]
-            repeat(64) { index ->
-                val item = memory[block * 64 + index]
-                mixed += item
-                mixed = Integer.rotateLeft(mixed, 5)
-                mixed = mixed xor (item * 2246822519L.toInt())
-            }
-            mixed xor state[2]
-        }
-    }
-
-    private fun powQuarterRound(state: IntArray) {
-        state[0] += state[1]
-        state[3] = Integer.rotateLeft(state[3] xor state[0], 16)
-        state[2] += state[3]
-        state[1] = Integer.rotateLeft(state[1] xor state[2], 12)
-        state[0] += state[1]
-        state[3] = Integer.rotateLeft(state[3] xor state[0], 8)
-        state[2] += state[3]
-        state[1] = Integer.rotateLeft(state[1] xor state[2], 7)
-    }
-
-    private fun leadingZeroBits(values: IntArray): Int {
-        var total = 0
-        values.forEach { value ->
-            if (value == 0) total += 32 else return total + Integer.numberOfLeadingZeros(value)
-        }
-        return total
-    }
+    private fun solvePow(nonce: String, difficulty: Int): String = StreamberryHelper.solvePow(nonce, difficulty)
 
     private fun finalHeaders(playlistUrl: String, iframeUrl: String, headers: Headers): Headers {
         val cookies = listOf(CookieManager.getInstance().getCookie(playlistUrl), CookieManager.getInstance().getCookie(iframeUrl))

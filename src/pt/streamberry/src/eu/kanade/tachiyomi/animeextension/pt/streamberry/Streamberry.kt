@@ -1,7 +1,5 @@
 package eu.kanade.tachiyomi.animeextension.pt.streamberry
 
-import android.os.SystemClock
-import android.util.Log
 import aniyomi.lib.playlistutils.PlaylistUtils
 import eu.kanade.tachiyomi.animesource.model.AnimeFilter
 import eu.kanade.tachiyomi.animesource.model.AnimeFilterList
@@ -9,199 +7,284 @@ import eu.kanade.tachiyomi.animesource.model.AnimesPage
 import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Video
-import eu.kanade.tachiyomi.multisrc.dooplay.DooPlay
 import eu.kanade.tachiyomi.network.GET
-import eu.kanade.tachiyomi.network.POST
-import eu.kanade.tachiyomi.util.asJsoup
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
-import okhttp3.MediaType.Companion.toMediaType
+import keiyoushi.utils.AnimeHttpLegacySource
+import keiyoushi.utils.firstInstanceOrNull
 import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
-import org.jsoup.nodes.Document
-import org.jsoup.nodes.Element
-import uy.kohesive.injekt.injectLazy
+import java.net.URLEncoder
 
-class Streamberry : DooPlay("pt-BR", "Streamberry", "https://streamberry.com.br") {
-    @Volatile private var lastSuccessfulServer: String? = null
-    private val json: Json by injectLazy()
+open class Streamberry : AnimeHttpLegacySource() {
+    override val name = "Streamberry"
+    override val baseUrl = "https://streamberry.com.br"
+    override val lang = "pt-BR"
+    override val supportsLatest = true
+
     private val extractor by lazy { StreamberryExtractor(client) }
     private val playlistUtils by lazy { PlaylistUtils(client, headers) }
 
-    override fun popularAnimeRequest(page: Int): Request = GET(baseUrl, headers)
+    override fun headersBuilder() = super.headersBuilder()
+        .add("Referer", "$baseUrl/")
+        .add("Accept", "application/json, text/plain, */*")
 
-    override fun popularAnimeSelector() = "#featured-titles article.item div.poster"
+    // ============================== Popular ===============================
 
-    override fun latestUpdatesRequest(page: Int): Request = GET(
-        if (page == 1) "$baseUrl/episodios/" else "$baseUrl/episodios/page/$page/",
-        headers,
-    )
+    override fun popularAnimeRequest(page: Int): Request = GET("$baseUrl/api/v1/home/sections/recentes?page=$page&limit=24&sort=popular_desc", headers)
 
-    override fun latestUpdatesSelector() = "#archive-content article.item.se.episodes"
+    override fun popularAnimeParse(response: Response): AnimesPage {
+        val (animes, hasNextPage) = StreamberryHelper.parseSectionPage(response.body.string())
+        return AnimesPage(animes, hasNextPage)
+    }
 
-    override fun latestUpdatesNextPageSelector() = "div.pagination a[href*='/episodios/page/']"
+    // =============================== Latest ===============================
 
-    override fun latestUpdatesParse(response: Response): AnimesPage {
-        fetchGenresList()
-        val document = response.asJsoup()
-        val works = LinkedHashMap<String, Element>()
-        fun collect(pageDocument: Document) {
-            pageDocument.select(latestUpdatesSelector()).forEach { element ->
-                val episodeUrl = element.selectFirst("a[href]")?.attr("abs:href") ?: return@forEach
-                val slug = episodeUrl.substringBeforeLast('/').substringAfterLast('/')
-                    .replace(Regex("-\\d+x\\d+$"), "")
-                val url = "$baseUrl/series/$slug/"
-                if (!works.containsKey(url)) works[url] = element
+    override fun latestUpdatesRequest(page: Int): Request = GET("$baseUrl/api/v1/home/sections/recentes?page=$page&limit=24&sort=published_desc", headers)
+
+    override fun latestUpdatesParse(response: Response): AnimesPage = popularAnimeParse(response)
+
+    // =============================== Search ===============================
+
+    override fun searchAnimeRequest(page: Int, query: String, filters: AnimeFilterList): Request {
+        val typeFilter = filters.firstInstanceOrNull<TypeFilter>()
+        val genreFilter = filters.firstInstanceOrNull<GenreFilter>()
+        val sortFilter = filters.firstInstanceOrNull<SortFilter>()
+        val sort = sortFilter?.selected ?: "popular_desc"
+        val genre = genreFilter?.selected?.takeIf { it.isNotBlank() }
+
+        if (query.isNotBlank()) {
+            val q = query.trim()
+            val encodedQ = URLEncoder.encode(q, "UTF-8")
+            return when (typeFilter?.state) {
+                1 -> GET("$baseUrl/api/v1/movies?q=$encodedQ&page=$page&limit=24&sort=$sort${genre?.let { "&genre=$it" }.orEmpty()}", headers)
+                2 -> GET("$baseUrl/api/v1/series?q=$encodedQ&page=$page&limit=24&sort=$sort${genre?.let { "&genre=$it" }.orEmpty()}", headers)
+                3 -> GET("$baseUrl/api/v1/series?q=$encodedQ&category=dorama&page=$page&limit=24&sort=$sort${genre?.let { "&genre=$it" }.orEmpty()}", headers)
+                4 -> GET("$baseUrl/api/v1/series?q=$encodedQ&category=reality&page=$page&limit=24&sort=$sort${genre?.let { "&genre=$it" }.orEmpty()}", headers)
+                5 -> GET("$baseUrl/api/v1/series?q=$encodedQ&category=documentary&page=$page&limit=24&sort=$sort${genre?.let { "&genre=$it" }.orEmpty()}", headers)
+                else -> GET("$baseUrl/api/v1/movies?q=$encodedQ&page=$page&limit=14&sort=$sort${genre?.let { "&genre=$it" }.orEmpty()}&_combined=1", headers)
             }
         }
-        collect(document)
-        var page = 1
-        while (works.size < 15 && page < 5 && document.selectFirst("div.pagination a[href*='/episodios/page/${page + 1}/']") != null) {
-            page++
-            client.newCall(latestUpdatesRequest(page)).execute().use { collect(it.asJsoup()) }
-        }
-        val items = works.map { (url, element) ->
-            val canonical = runCatching {
-                client.newCall(GET(url, headers)).execute().use { it.asJsoup() }
-            }.getOrNull()
-            val poster = canonical?.selectFirst("div.sheader div.poster > img")
-            SAnime.create().apply {
-                setUrlWithoutDomain(url)
-                title = canonical?.selectFirst("div.sheader div.data > h1")?.text()?.trim()
-                    .takeUnless { it.isNullOrBlank() }
-                    ?: element.selectFirst(".serie")?.text()?.trim().orEmpty()
-                thumbnail_url = poster?.let {
-                    it.attr("abs:data-lazy-src").ifEmpty {
-                        it.attr("abs:data-src").ifEmpty { it.attr("abs:src") }
-                    }
+
+        return when (typeFilter?.state) {
+            1 -> GET("$baseUrl/api/v1/movies?page=$page&limit=24&sort=$sort${genre?.let { "&genre=$it" }.orEmpty()}", headers)
+            2 -> GET("$baseUrl/api/v1/series?page=$page&limit=24&sort=$sort${genre?.let { "&genre=$it" }.orEmpty()}", headers)
+            3 -> GET("$baseUrl/api/v1/series?category=dorama&page=$page&limit=24&sort=$sort${genre?.let { "&genre=$it" }.orEmpty()}", headers)
+            4 -> GET("$baseUrl/api/v1/series?category=reality&page=$page&limit=24&sort=$sort${genre?.let { "&genre=$it" }.orEmpty()}", headers)
+            5 -> GET("$baseUrl/api/v1/series?category=documentary&page=$page&limit=24&sort=$sort${genre?.let { "&genre=$it" }.orEmpty()}", headers)
+            else -> {
+                if (genre != null) {
+                    GET("$baseUrl/api/v1/movies?page=$page&limit=14&sort=$sort&genre=$genre&_combined=1", headers)
+                } else {
+                    GET("$baseUrl/api/v1/home/sections/recentes?page=$page&limit=24&sort=$sort", headers)
                 }
             }
         }
-        return AnimesPage(items, document.selectFirst(latestUpdatesNextPageSelector()) != null)
     }
 
-    override fun searchAnimeRequest(page: Int, query: String, filters: AnimeFilterList): Request = if (query.isBlank()) {
-        super.searchAnimeRequest(page, query, filters)
-    } else {
-        GET("$baseUrl/page/$page/?s=${query.trim().replace(" ", "+")}", headers)
+    override fun searchAnimeParse(response: Response): AnimesPage {
+        val url = response.request.url
+        if (url.encodedPath.contains("/home/sections/recentes")) {
+            return popularAnimeParse(response)
+        }
+        val isCombined = url.queryParameter("_combined") == "1"
+        val body = response.body.string()
+        if (!isCombined) {
+            val (animes, hasNextPage) = StreamberryHelper.parseCatalogPage(body)
+            return AnimesPage(animes, hasNextPage)
+        }
+
+        val firstData = StreamberryHelper.json.decodeFromString<StreamberryHelper.CatalogResponseDto>(body)
+        val seriesUrl = url.newBuilder()
+            .encodedPath("/api/v1/series")
+            .removeAllQueryParameters("_combined")
+            .build()
+        val seriesData = runCatching {
+            client.newCall(GET(seriesUrl, headers)).execute().use { resp ->
+                StreamberryHelper.json.decodeFromString<StreamberryHelper.CatalogResponseDto>(resp.body.string())
+            }
+        }.getOrNull()
+
+        val firstItems = firstData.items.mapNotNull(StreamberryHelper::animeFromCatalogItem)
+        val seriesItems = seriesData?.items?.mapNotNull(StreamberryHelper::animeFromCatalogItem).orEmpty()
+        val combined = (firstItems + seriesItems).distinctBy { it.url }
+        val hasNextPage = (firstData.pagination != null && firstData.pagination.page < firstData.pagination.totalPages) ||
+            (seriesData?.pagination != null && seriesData.pagination.page < seriesData.pagination.totalPages)
+        return AnimesPage(combined, hasNextPage)
     }
 
-    override fun animeDetailsParse(document: Document): SAnime = super.animeDetailsParse(document).apply {
-        val header = document.selectFirst("div.sheader")
-        val audio = header?.select(".poster-audio-tags .post-tag-audio")?.eachText()?.joinToString(" ")
-        if (!audio.isNullOrBlank()) description = (description.orEmpty() + "\nÁudio: $audio").trim()
+    // =========================== Anime Details ============================
+
+    override fun animeDetailsRequest(anime: SAnime): Request {
+        val path = anime.url.removePrefix("/")
+        return if (path.startsWith("filmes/")) {
+            val slug = path.substringAfter("filmes/").removeSuffix("/")
+            GET("$baseUrl/api/v1/movies/$slug", headers)
+        } else {
+            val slug = path.substringAfter("series/").removeSuffix("/")
+            GET("$baseUrl/api/v1/series/$slug", headers)
+        }
     }
+
+    override fun animeDetailsParse(response: Response): SAnime {
+        val url = response.request.url.encodedPath
+        val body = response.body.string()
+        return if (url.contains("/movies/")) {
+            StreamberryHelper.parseMovieDetails(body)
+        } else {
+            StreamberryHelper.parseSeriesDetails(body)
+        }
+    }
+
+    // ============================== Episodes ==============================
+
+    override fun episodeListRequest(anime: SAnime): Request = animeDetailsRequest(anime)
 
     override fun episodeListParse(response: Response): List<SEpisode> {
-        val document = getRealAnimeDoc(response.asJsoup())
-        val seasonList = document.select("div#seasons > div")
-        return if (seasonList.isEmpty()) {
-            listOf(
-                SEpisode.create().apply {
-                    setUrlWithoutDomain(document.location())
-                    episode_number = 1F
-                    name = "Filme"
-                },
-            )
+        val url = response.request.url.encodedPath
+        val body = response.body.string()
+        return if (url.contains("/movies/")) {
+            StreamberryHelper.parseMovieEpisodes(body, url)
         } else {
-            seasonList.flatMap { season ->
-                val seasonName = season.selectFirst("span.se-t")?.text() ?: "1"
-                season.select("ul.episodios > li").mapNotNull { element ->
-                    val link = element.selectFirst(".episodiotitle a") ?: return@mapNotNull null
-                    val number = element.selectFirst(".numerando")?.text()?.substringAfterLast("-")?.trim()?.toFloatOrNull() ?: 0F
-                    SEpisode.create().apply {
-                        setUrlWithoutDomain(link.attr("href"))
-                        episode_number = number
-                        name = "Temporada $seasonName x $number - ${link.ownText()}"
-                        date_upload = element.selectFirst(".date")?.text()?.let { parseDate(it) } ?: 0L
-                    }
-                }
-            }.reversed()
+            StreamberryHelper.parseSeriesEpisodes(body, url)
+        }
+    }
+
+    // ============================ Video List ==============================
+
+    override fun videoListRequest(episode: SEpisode): Request {
+        val path = episode.url.removePrefix("/")
+        return when {
+            path.startsWith("filmes/") -> {
+                val slug = path.substringAfter("filmes/").removeSuffix("/")
+                GET("$baseUrl/api/v1/movies/$slug", headers)
+            }
+            path.startsWith("episodios/") || path.startsWith("episodio/") -> {
+                val slug = path.substringAfterLast("/").ifEmpty { path.removeSuffix("/").substringAfterLast("/") }
+                GET("$baseUrl/api/v1/series/episode-by-slug/$slug", headers)
+            }
+            path.startsWith("series/") -> {
+                val slug = path.substringAfter("series/").removeSuffix("/")
+                GET("$baseUrl/api/v1/series/$slug", headers)
+            }
+            else -> GET("$baseUrl/api/v1/movies/$path", headers)
         }
     }
 
     override fun videoListParse(response: Response): List<Video> {
-        val document = response.asJsoup()
-        val startedAt = SystemClock.elapsedRealtime()
-        val type = if (document.location().contains("/episodios/")) "tv" else "movie"
-        val language = document.selectFirst(".sb-lang-tab-btn.active")?.text()?.trim() ?: "Vídeo"
-        val options = document.select("li.dooplay_player_option[data-post][data-nume]")
-            .sortedBy { serverPriority(serverName(it)) }
-        var attempts = 0
-        val seenOptionIds = HashSet<String>()
-        val seenPlayers = HashSet<String>()
-        for (option in options) {
-            val server = serverName(option)
-            val optionId = "${option.attr("data-post")}:${option.attr("data-nume")}"
-            if (!seenOptionIds.add(optionId)) continue
-            attempts++
-            val embed = runCatching { getEmbed(option, type, document.location()) }.getOrNull() ?: continue
-            val embedHost = android.net.Uri.parse(embed).host.orEmpty()
-            val embedHash = Integer.toHexString(embed.hashCode())
-            Log.d("Streamberry", "SERVER_LABEL=$server IFRAME_HOST=$embedHost IFRAME_URL_HASH=$embedHash AUDIO_LABEL=$language PLAYER_OPTION_ID=$optionId")
-            if (!seenPlayers.add("$optionId|$embed")) continue
-            val videos = runCatching {
-                getVideos(embed, server, document.location(), language)
-            }.getOrDefault(emptyList())
-            if (videos.isNotEmpty()) {
-                lastSuccessfulServer = server
-                Log.d("Streamberry", "TOTAL_RESOLVE_MS=${SystemClock.elapsedRealtime() - startedAt} SERVER_ATTEMPTS=$attempts SUCCESSFUL_SERVER=$server VIDEO_COUNT=${videos.size}")
-                return videos
+        val url = response.request.url.encodedPath
+        val body = response.body.string()
+        val players: List<StreamberryHelper.PlayerDto> = when {
+            url.contains("/movies/") -> StreamberryHelper.json.decodeFromString<StreamberryHelper.MovieDetailDto>(body).players.orEmpty()
+            url.contains("/episode-by-slug/") -> StreamberryHelper.json.decodeFromString<StreamberryHelper.EpisodeDetailDto>(body).players.orEmpty()
+            url.contains("/series/") -> {
+                val series = StreamberryHelper.json.decodeFromString<StreamberryHelper.SeriesDetailDto>(body)
+                series.seasons.orEmpty().firstOrNull()?.episodes.orEmpty().firstOrNull()?.players.orEmpty()
+            }
+            else -> emptyList()
+        }
+
+        val activePlayers = players.filter { it.isActive && !it.embedUrl.isNullOrBlank() }
+        if (activePlayers.isEmpty()) return emptyList()
+
+        val grouped = activePlayers.groupBy { it.audioType?.trim()?.uppercase() ?: "PRINCIPAL" }
+        val videoList = mutableListOf<Video>()
+
+        for ((audioType, playerList) in grouped) {
+            val sorted = playerList.sortedBy { StreamberryHelper.serverPriority(it.serverName.orEmpty()) }
+            for (player in sorted) {
+                val embedUrl = player.embedUrl ?: continue
+                val serverName = player.serverName?.trim().orEmpty().ifBlank { "Servidor" }
+                val label = "$serverName - $audioType"
+                val videos = runCatching {
+                    extractor.videosFromUrl(embedUrl, label, baseUrl, playlistUtils)
+                }.getOrDefault(emptyList())
+
+                if (videos.isNotEmpty()) {
+                    videoList.addAll(videos)
+                    break
+                }
             }
         }
-        Log.d("Streamberry", "TOTAL_RESOLVE_MS=${SystemClock.elapsedRealtime() - startedAt} SERVER_ATTEMPTS=$attempts VIDEO_COUNT=0")
-        return emptyList()
+        return videoList
     }
 
-    private fun serverName(option: Element): String = option.selectFirst(".sb-player-title")?.text()?.trim()?.ifEmpty { null } ?: "Servidor"
+    // ============================= Filters ================================
 
-    private fun serverPriority(server: String): Int = when {
-        server.contains("Vidara", ignoreCase = true) -> 0
-        server.contains("EU PLAYER", ignoreCase = true) -> 1
-        server == lastSuccessfulServer -> 2
-        server.contains("Lulu", ignoreCase = true) -> 3
-        server.contains("Byse", ignoreCase = true) -> 4
-        server.contains("Loadvid", ignoreCase = true) -> 5
-        else -> 6
-    }
-
-    private fun getVideos(embed: String, server: String, episodeUrl: String, language: String): List<Video> {
-        val name = "$server - $language"
-        return extractor.videosFromUrl(embed, name, episodeUrl, playlistUtils)
-    }
-
-    private fun getEmbed(option: Element, type: String, episodeUrl: String): String {
-        val body = "action=doo_player_ajax&post=${option.attr("data-post")}&nume=${option.attr("data-nume")}&type=$type"
-            .toRequestBody("application/x-www-form-urlencoded; charset=UTF-8".toMediaType())
-        val requestHeaders = headers.newBuilder()
-            .set("Accept", "*/*")
-            .set("Origin", baseUrl)
-            .set("Referer", episodeUrl)
-            .set("X-Requested-With", "XMLHttpRequest")
-            .build()
-        return client.newCall(POST("$baseUrl/wp-admin/admin-ajax.php", body = body, headers = requestHeaders))
-            .execute().use { json.decodeFromString<Embed>(it.body.string()).embedUrl }
-            .replace("\\/", "/")
-            .replace(Regex("^//"), "https://")
-    }
-
-    override fun genresListRequest() = GET(baseUrl, headers)
-
-    override fun genresListParse(document: Document): Array<Pair<String, String>> = document.select("a[href*='/genre/']")
-        .map { it.text() to it.attr("href").substringAfter("$baseUrl/") }
-        .distinctBy { it.second }.toTypedArray()
-
-    override fun getFilterList() = AnimeFilterList(
-        AnimeFilter.Header("Filtros por gênero e áudio"),
-        AudioFilter(),
-        super.getFilterList().firstOrNull() ?: AnimeFilter.Separator(),
+    override fun getFilterList(): AnimeFilterList = AnimeFilterList(
+        TypeFilter(),
+        GenreFilter(),
+        SortFilter(),
     )
 
-    private class AudioFilter : UriPartFilter("Áudio", arrayOf("Todos" to "", "Dublado" to "tipo/dublado", "Legendado" to "tipo/legendado"))
+    open class UriPartFilter(
+        displayName: String,
+        private val vals: Array<Pair<String, String>>,
+        defaultValue: Int = 0,
+    ) : AnimeFilter.Select<String>(
+        displayName,
+        vals.map { it.first }.toTypedArray(),
+        defaultValue,
+    ) {
+        val selected get() = vals[state].second
+    }
 
-    @Serializable
-    private data class Embed(@kotlinx.serialization.SerialName("embed_url") val embedUrl: String)
+    private class TypeFilter :
+        UriPartFilter(
+            "Tipo",
+            arrayOf(
+                "Todos" to "",
+                "Filmes" to "movies",
+                "Séries" to "series",
+                "Doramas" to "dorama",
+                "Reality Shows" to "reality",
+                "Documentários" to "documentary",
+            ),
+        )
 
-    private fun parseDate(value: String) = runCatching { java.text.SimpleDateFormat("MMMM. dd, yyyy", java.util.Locale.ENGLISH).parse(value)?.time ?: 0L }.getOrDefault(0L)
+    private class GenreFilter :
+        UriPartFilter(
+            "Gênero",
+            arrayOf(
+                "Todos" to "",
+                "Ação" to "acao",
+                "Action & Adventure" to "action-adventure",
+                "Animação" to "animacao",
+                "Aventura" to "aventura",
+                "Cinema TV" to "cinema-tv",
+                "Comédia" to "comedia",
+                "Crime" to "crime",
+                "Documentário" to "documentario",
+                "Dorama" to "dorama",
+                "Drama" to "drama",
+                "Família" to "familia",
+                "Fantasia" to "fantasia",
+                "Faroeste" to "faroeste",
+                "Ficção científica" to "ficcao-cientifica",
+                "Guerra" to "guerra",
+                "História" to "historia",
+                "Kids" to "kids",
+                "Mistério" to "misterio",
+                "Música" to "musica",
+                "Reality" to "reality",
+                "Romance" to "romance",
+                "Sci-Fi & Fantasy" to "sci-fi-fantasy",
+                "Soap" to "soap",
+                "Talk" to "talk",
+                "Terror" to "terror",
+                "Thriller" to "thriller",
+                "War & Politics" to "war-politics",
+            ),
+        )
+
+    private class SortFilter :
+        UriPartFilter(
+            "Ordenar por",
+            arrayOf(
+                "Popularidade" to "popular_desc",
+                "Mais Recentes" to "published_desc",
+                "Data de Lançamento" to "date_desc",
+                "Nota (Avaliação)" to "rating_desc",
+                "Título (A - Z)" to "title_asc",
+                "Título (Z - A)" to "title_desc",
+            ),
+        )
 }

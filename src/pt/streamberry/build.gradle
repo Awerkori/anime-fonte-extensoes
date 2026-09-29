@@ -1,7 +1,7 @@
 ext {
     extName = 'Streamberry'
     extClass = '.Streamberry'
-    extVersionCode = 3
+    extVersionCode = 4
     baseUrl = 'https://streamberry.com.br'
     isNsfw = false
 }
@@ -15,6 +15,10 @@ android {
 }
 
 dependencies {
-    implementation(project(":lib-multisrc:dooplay"))
     implementation(project(":lib:playlistutils"))
+    testImplementation(libs.junit)
+    testImplementation(libs.bundles.common)
 }
+
+android.sourceSets.test.java.srcDirs = ["test"]
+android.sourceSets.test.kotlin.srcDirs = ["test"]
