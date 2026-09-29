@@ -1,8 +1,16 @@
 ext {
     extName = 'CineVEO'
     extClass = '.CineVEO'
-    extVersionCode = 1
+    extVersionCode = 2
     isNsfw = false
 }
 
 apply plugin: 'kei.plugins.extension.legacy'
+
+dependencies {
+    testImplementation(libs.junit)
+    testImplementation(libs.bundles.common)
+}
+
+android.sourceSets.test.java.srcDirs = ["test"]
+android.sourceSets.test.kotlin.srcDirs = ["test"]
