@@ -2,7 +2,7 @@ ext {
     extName = 'Oploverz'
     extClass = '.Oploverz'
     libVersion = 16
-    extVersionCode = 27
+    extVersionCode = 28
 }
 
 apply plugin: "kei.plugins.extension.legacy"

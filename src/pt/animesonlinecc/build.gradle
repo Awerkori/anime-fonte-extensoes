@@ -3,7 +3,7 @@ ext {
     extClass = '.AnimesOnlineCC'
     themePkg = 'dooplay'
     baseUrl = 'https://animesonlinecc.to'
-    overrideVersionCode = 3
+    overrideVersionCode = 4
     isNsfw = true
 }
 

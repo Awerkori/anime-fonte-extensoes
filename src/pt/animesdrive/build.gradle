@@ -3,7 +3,7 @@ ext {
     extClass = '.AnimesDrive'
     themePkg = 'dooplay'
     baseUrl = 'https://animesdrive.online'
-    overrideVersionCode = 8
+    overrideVersionCode = 9
     isNsfw = true
 }
 
