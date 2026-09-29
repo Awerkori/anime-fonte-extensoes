@@ -1,16 +1,21 @@
 ext {
     extName = 'Anikyuu'
     extClass = '.Anikyuu'
-    themePkg = 'animestream'
-    baseUrl = 'https://anikyuu.to'
-    overrideVersionCode = 7
+    extVersionCode = 16
 }
 
 apply plugin: "kei.plugins.extension.legacy"
 
 dependencies {
+    implementation(project(":lib:bloggerextractor"))
+    implementation(project(":lib:googledriveplayerextractor"))
     implementation(project(":lib:filemoonextractor"))
     implementation(project(":lib:m3u8server"))
     implementation(project(":lib:playlistutils"))
     implementation(project(":lib:unpacker"))
+    testImplementation(libs.junit)
+    testImplementation(libs.bundles.common)
 }
+
+android.sourceSets.test.java.srcDirs = ["test"]
+android.sourceSets.test.kotlin.srcDirs = ["test"]

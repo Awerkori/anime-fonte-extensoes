@@ -6,6 +6,9 @@ import eu.kanade.tachiyomi.network.POST
 import eu.kanade.tachiyomi.network.awaitSuccess
 import keiyoushi.utils.bodyString
 import keiyoushi.utils.parseAs
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import okhttp3.Headers
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
@@ -83,6 +86,37 @@ class BloggerExtractor(private val client: OkHttpClient) {
             .awaitSuccess().bodyString()
 
         if (!rpcString.contains("https://")) return emptyList()
+
+        val parsedVideos = runCatching {
+            val line = rpcString.lineSequence().firstOrNull { it.contains("\"WcwnYd\"") } ?: return@runCatching emptyList()
+            val outerArray = line.parseAs<JsonArray>()
+            val payloadStr = outerArray.firstNotNullOfOrNull { item ->
+                val arr = item as? JsonArray ?: return@firstNotNullOfOrNull null
+                val rpcId = (arr.getOrNull(1) as? JsonPrimitive)?.contentOrNull
+                if (rpcId == "WcwnYd") {
+                    (arr.getOrNull(2) as? JsonPrimitive)?.contentOrNull
+                } else {
+                    null
+                }
+            } ?: return@runCatching emptyList()
+            val innerArray = payloadStr.parseAs<JsonArray>()
+            val streams = (innerArray.getOrNull(2) as? JsonArray) ?: return@runCatching emptyList()
+            streams.mapNotNull { streamElement ->
+                val streamArr = streamElement as? JsonArray ?: return@mapNotNull null
+                val videoUrl = (streamArr.getOrNull(0) as? JsonPrimitive)?.contentOrNull
+                    ?.takeIf { it.startsWith("http") } ?: return@mapNotNull null
+                val formatElement = streamArr.getOrNull(1)
+                val format = when (formatElement) {
+                    is JsonArray -> (formatElement.getOrNull(0) as? JsonPrimitive)?.contentOrNull ?: ""
+                    is JsonPrimitive -> formatElement.contentOrNull ?: ""
+                    else -> ""
+                }
+                val quality = qualityFromFormat(format)
+                Video(videoUrl, "Blogger - $quality $suffix".trimEnd(), videoUrl, headers)
+            }
+        }.getOrNull().orEmpty()
+
+        if (parsedVideos.isNotEmpty()) return parsedVideos
 
         return rpcString
             .substringAfter("[[\\\"", "")
