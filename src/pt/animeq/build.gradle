@@ -2,8 +2,8 @@ ext {
     extName = 'AnimeQ'
     extClass = '.AnimeQ'
     themePkg = 'dooplay'
-    baseUrl = 'https://animeq.net'
-    overrideVersionCode = 8
+    baseUrl = 'https://animeq.cloud'
+    overrideVersionCode = 9
     isNsfw = true
 }
 
@@ -12,4 +12,9 @@ apply plugin: "kei.plugins.extension.legacy"
 dependencies {
     implementation(project(":lib:bloggerextractor"))
     implementation(project(":lib:playlistutils"))
+    testImplementation(libs.junit)
+    testImplementation(libs.bundles.common)
 }
+
+android.sourceSets.test.java.srcDirs = ["test"]
+android.sourceSets.test.kotlin.srcDirs = ["test"]
