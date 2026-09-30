@@ -24,6 +24,8 @@ class Card(
     val id: String,
     val titles: Map<String, String> = emptyMap(),
     @SerialName("poster_src") val poster: String? = null,
+    @SerialName("still_src") val still: String? = null,
+    @SerialName("thumbnail_src") val thumbnail: String? = null,
 )
 
 @Serializable
@@ -58,6 +60,8 @@ class Episode(
     val number: Float,
     val audio: String? = null,
     @SerialName("created_at") val createdAt: String? = null,
+    @SerialName("still_src") val still: String? = null,
+    @SerialName("poster_src") val poster: String? = null,
 )
 
 @Serializable
@@ -74,4 +78,13 @@ class Stream(
     val qualities: List<String> = emptyList(),
     @SerialName("is_offline") val offline: Boolean = false,
     @SerialName("is_mtl") val machineTranslated: Boolean = false,
+    val chapters: List<Chapter> = emptyList(),
+    val thumbnails: String? = null,
+)
+
+@Serializable
+class Chapter(
+    val type: String? = null,
+    val start: Double = 0.0,
+    val end: Double = 0.0,
 )

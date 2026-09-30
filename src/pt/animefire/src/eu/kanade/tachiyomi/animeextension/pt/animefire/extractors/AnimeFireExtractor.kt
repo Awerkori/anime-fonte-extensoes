@@ -1,5 +1,6 @@
 package eu.kanade.tachiyomi.animeextension.pt.animefire.extractors
 
+import android.util.Base64
 import android.util.Log
 import eu.kanade.tachiyomi.animeextension.pt.animefire.dto.Stream
 import eu.kanade.tachiyomi.animeextension.pt.animefire.nativebridge.AnimeFireNative
@@ -23,57 +24,99 @@ import java.util.concurrent.Executors
 class AnimeFireExtractor(private val client: OkHttpClient) {
     fun videos(streams: List<Stream>, headers: Headers): List<Video> = streams.filterNot { it.offline }.flatMap { stream ->
         val url = stream.url ?: return@flatMap emptyList()
+        val language = when (stream.audio) {
+            "dublado" -> "Dublado"
+            "legendado" -> "Legendado"
+            else -> stream.audio ?: "Idioma não informado"
+        } + if (stream.machineTranslated) " (tradução automática)" else ""
+
         try {
-            val manifest = client.newCall(GET(url, headers)).execute().use { response ->
-                check(response.isSuccessful) { "HTTP ${response.code}" }
-                response.body!!.string()
+            val response = client.newCall(GET(url, headers)).execute()
+            if (!response.isSuccessful) {
+                val code = response.code
+                response.close()
+                throw IllegalStateException("HTTP_FAILURE: HTTP $code")
             }
-            val language = when (stream.audio) {
-                "dublado" -> "Dublado"
-                "legendado" -> "Legendado"
-                else -> stream.audio ?: "Idioma não informado"
-            } + if (stream.machineTranslated) " (tradução automática)" else ""
+            val contentType = response.header("Content-Type").orEmpty().lowercase()
+            val rawBody = response.body?.string().orEmpty()
+            val manifest = rawBody.trimStart('\uFEFF', ' ', '\t', '\r', '\n')
+            if (manifest.isBlank()) {
+                throw IllegalStateException("EMPTY_BODY: Manifest body is empty")
+            }
+
+            val isHls = manifest.startsWith("#EXTM3U") ||
+                contentType.contains("mpegurl") ||
+                manifest.contains("#EXT-X-STREAM-INF")
+            val isDash = contentType.contains("dash+xml") ||
+                manifest.startsWith("<?xml") ||
+                manifest.contains("<MPD", ignoreCase = true)
+
             when {
-                manifest.startsWith("#EXTM3U") -> HlsMaster.variants(manifest, url)
-                    .sortedWith(
-                        compareByDescending<HlsVariant> { it.isH264 }
-                            .thenBy { variant -> if (variant.isH264) -(variant.height ?: 0) else variant.height ?: Int.MAX_VALUE },
-                    )
-                    .map { variant ->
-                        val codec = if (variant.isH264) {
-                            "H.264"
-                        } else if (variant.codecs.contains("av01", true)) {
-                            "AV1"
-                        } else {
-                            variant.codecs
-                        }
-                        val localUrl = HlsServer.register(
-                            variant.url,
-                            client,
-                            headers,
-                            compatibilityTs = variant.isH264,
-                            av1Compatibility = variant.codecs.contains("av01", true),
-                        )
-                        Log.d(TAG, "variant resolution=${variant.height} codec=$codec child=${variant.url} local=$localUrl result=CREATED")
-                        // The host persists the selected source by Video.url. Using the
-                        // master URL here made every rendition indistinguishable and could
-                        // revive an earlier AV1 selection instead of the H.264 default.
-                        Video(variant.url, "Akumast - $language - ${variant.height}p $codec", localUrl, headers)
+                isHls -> {
+                    val variants = HlsMaster.variants(manifest, url)
+                    if (variants.isEmpty()) {
+                        throw IllegalStateException("HLS_NO_VARIANTS: No variants found in master playlist")
                     }
-                else -> DashManifest.variants(manifest, url).map { (height, xml) ->
-                    val localUrl = DashServer.register(xml, client, headers)
-                    Video(url, "Akumast - $language - ${height?.let { "${it}p" } ?: "Unknown"}", localUrl, headers)
+                    variants
+                        .sortedWith(
+                            compareByDescending<HlsVariant> { it.isH264 }
+                                .thenBy { variant -> if (variant.isH264) -(variant.height ?: 0) else variant.height ?: Int.MAX_VALUE },
+                        )
+                        .map { variant ->
+                            val codec = if (variant.isH264) {
+                                "H.264"
+                            } else if (variant.codecs.contains("av01", true)) {
+                                "AV1"
+                            } else {
+                                variant.codecs
+                            }
+                            val localUrl = HlsServer.register(
+                                variant.url,
+                                client,
+                                headers,
+                                compatibilityTs = variant.isH264,
+                                av1Compatibility = variant.codecs.contains("av01", true),
+                            )
+                            Log.d(TAG, "variant resolution=${variant.height} codec=$codec child=${variant.url} local=$localUrl result=CREATED")
+                            Video(variant.url, "Akumast - $language - ${variant.height}p $codec", localUrl, headers)
+                        }
+                }
+                isDash -> {
+                    val variants = DashManifest.variants(manifest, url)
+                    if (variants.isEmpty()) {
+                        throw IllegalStateException("INVALID_MPD: No representations in DASH manifest")
+                    }
+                    variants.map { (height, xml) ->
+                        val localUrl = DashServer.register(xml, client, headers)
+                        Video(url, "Akumast - $language - ${height?.let { "${it}p" } ?: "Unknown"}", localUrl, headers)
+                    }
+                }
+                else -> {
+                    throw IllegalStateException("UNSUPPORTED_FORMAT: Content-Type=$contentType, prefix=${manifest.take(40).replace('\n', ' ')}")
                 }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "stream=$url result=REJECTED reason=${e.message}", e)
-            // An unavailable audio/server must not discard another valid one.
+            val errorType = when {
+                e.message?.startsWith("HTTP_FAILURE") == true -> "HTTP_FAILURE"
+                e.message?.startsWith("EMPTY_BODY") == true -> "EMPTY_BODY"
+                e.message?.startsWith("HLS_NO_VARIANTS") == true -> "HLS_NO_VARIANTS"
+                e.message?.startsWith("INVALID_MPD") == true -> "INVALID_MPD"
+                e.message?.startsWith("PROTECTED_DASH") == true -> "PROTECTED_DASH"
+                e.message?.startsWith("UNSUPPORTED_FORMAT") == true -> "UNSUPPORTED_FORMAT"
+                e is java.io.IOException -> "HTTP_FAILURE"
+                else -> "UNSUPPORTED_FORMAT"
+            }
+            Log.w(TAG, "stream=${maskUrl(url)} result=REJECTED error_type=$errorType reason=${e.message}")
             emptyList()
         }
     }
 
     private companion object {
         const val TAG = "ANIMEFIRE_VIDEO"
+
+        fun maskUrl(url: String): String = url.replace(Regex("(/i/|/t/)([A-Za-z0-9_-]{6})[A-Za-z0-9_-]+([A-Za-z0-9_-]{4})")) { match ->
+            "${match.groupValues[1]}${match.groupValues[2]}...${match.groupValues[3]}"
+        }
     }
 }
 
@@ -122,6 +165,25 @@ private object HlsServer : NanoHTTPD("127.0.0.1", 0) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Entry>?) = size > 256
     }
 
+    @Volatile private var defaultEntry: Entry? = null
+
+    private fun encodeRoute(url: String, init: String?): String {
+        val raw = if (init != null) "$url|$init" else url
+        return Base64.encodeToString(raw.toByteArray(Charsets.UTF_8), Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+    }
+
+    private fun decodeRoute(key: String): Entry.Route? = try {
+        val raw = String(Base64.decode(key, Base64.URL_SAFE or Base64.NO_WRAP), Charsets.UTF_8)
+        val parts = raw.split('|', limit = 2)
+        if (parts[0].startsWith("http")) {
+            Entry.Route(parts[0], parts.getOrNull(1))
+        } else {
+            null
+        }
+    } catch (_: Exception) {
+        null
+    }
+
     @Synchronized fun register(
         url: String,
         client: OkHttpClient,
@@ -131,14 +193,16 @@ private object HlsServer : NanoHTTPD("127.0.0.1", 0) {
     ): String {
         if (!isAlive) start(SOCKET_READ_TIMEOUT, true)
         val id = UUID.randomUUID().toString()
-        entries[id] = Entry(client, headers, compatibilityTs, av1Compatibility)
+        val entry = Entry(client, headers, compatibilityTs, av1Compatibility)
+        entries[id] = entry
+        defaultEntry = entry
         Log.i("ANIMEFIRE_NATIVE", "HLS_REGISTER id=$id compatibilityTs=$compatibilityTs av1Compatibility=$av1Compatibility child=$url")
         return "http://127.0.0.1:$listeningPort/$id/playlist.m3u8?url=${url.encode()}"
     }
 
     override fun serve(session: IHTTPSession): Response {
         val parts = session.uri.trimStart('/').split('/', limit = 3)
-        val entry = synchronized(this) { entries[parts.firstOrNull()] }
+        val entry = synchronized(this) { entries[parts.firstOrNull()] ?: defaultEntry }
             ?: return newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "Reload the video list.")
         if (parts.getOrNull(1) == "diagnostic.ts") {
             val bytes = synchronized(entry) { entry.diagnosticAv1Ts }
@@ -149,7 +213,9 @@ private object HlsServer : NanoHTTPD("127.0.0.1", 0) {
             }
         }
         val routeKey = parts.getOrNull(2)?.substringBefore('.')
-        val route = routeKey?.let { synchronized(entry) { entry.routes[it] } }
+        val route = routeKey?.let { key ->
+            synchronized(entry) { entry.routes[key] } ?: decodeRoute(key)
+        }
         val url = route?.url ?: session.parms["url"]
             ?: return newFixedLengthResponse(Response.Status.BAD_REQUEST, MIME_PLAINTEXT, "Missing URL")
         val localUrl = "http://127.0.0.1:$listeningPort${session.uri}?${session.queryParameterString}"
@@ -218,7 +284,7 @@ private object HlsServer : NanoHTTPD("127.0.0.1", 0) {
             // Do not expose an upstream .jpg in the local URL. libavformat 61
             // examines query strings too and otherwise selects image2/MJPEG for a
             // perfectly valid MPEG-TS response.
-            val key = UUID.randomUUID().toString()
+            val key = encodeRoute(upstreamUrl, upstreamInit)
             synchronized(entry) { entry.routes[key] = Entry.Route(upstreamUrl, upstreamInit) }
             return "http://127.0.0.1:$listeningPort/$id/segment/$key.ts"
         }
@@ -373,8 +439,8 @@ internal class HlsResource(
 internal object DashManifest {
     fun variants(xml: String, sourceUrl: String): List<Pair<Int?, String>> {
         val document = Jsoup.parse(xml, sourceUrl, Parser.xmlParser())
-        require(document.selectFirst("MPD") != null) { "Missing DASH manifest" }
-        require(document.select("ContentProtection").isEmpty()) { "Protected DASH is not supported" }
+        require(document.selectFirst("MPD") != null) { "INVALID_MPD: Missing DASH manifest" }
+        require(document.select("ContentProtection").isEmpty()) { "PROTECTED_DASH: Protected DASH is not supported" }
         // The player receives a localhost manifest. Preserve the original segment base.
         document.select("SegmentTemplate").forEach { template ->
             for (attribute in listOf("media", "initialization")) {
@@ -402,6 +468,8 @@ private object DashServer : NanoHTTPD("127.0.0.1", 0) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Entry>?) = size > 256
     }
 
+    @Volatile private var defaultEntry: Entry? = null
+
     @Synchronized fun register(xml: String, client: OkHttpClient, headers: Headers): String {
         if (!isAlive) start(SOCKET_READ_TIMEOUT, true)
         val id = UUID.randomUUID().toString()
@@ -418,12 +486,14 @@ private object DashServer : NanoHTTPD("127.0.0.1", 0) {
                 template.attr(attribute, "$base$route/${url.substring(prefixEnd)}")
             }
         }
-        entries[id] = Entry(document.outerHtml(), routes, client, headers)
+        val entry = Entry(document.outerHtml(), routes, client, headers)
+        entries[id] = entry
+        defaultEntry = entry
         return "${base}manifest.mpd"
     }
     override fun serve(session: IHTTPSession): Response {
         val parts = session.uri.trimStart('/').split('/', limit = 3)
-        val entry = synchronized(this) { entries[parts.firstOrNull()] }
+        val entry = synchronized(this) { entries[parts.firstOrNull()] ?: defaultEntry }
             ?: return newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "Reload the video list.")
         if (parts.getOrNull(1) == "manifest.mpd") return newFixedLengthResponse(Response.Status.OK, "application/dash+xml", entry.xml)
         val prefix = entry.routes[parts.getOrNull(1)]
