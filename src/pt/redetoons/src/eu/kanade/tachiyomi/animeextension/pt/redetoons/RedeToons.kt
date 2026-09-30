@@ -30,7 +30,7 @@ class RedeToons :
     AnimeHttpSource(),
     ConfigurableAnimeSource {
     override val name = "RedeToons"
-    override val baseUrl = "https://redetoons.win"
+    override val baseUrl = "https://redetoonstv.win"
     override val lang = "pt-BR"
     override val supportsLatest = true
     private val preferences by getPreferencesLazy()
