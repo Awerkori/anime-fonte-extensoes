@@ -1,0 +1,20 @@
+ext {
+    extName = 'Pobreflix Irish'
+    extClass = '.PobreflixIrish'
+    extVersionCode = 1
+    isNsfw = true
+}
+
+apply plugin: 'kei.plugins.extension.legacy'
+
+dependencies {
+    implementation(project(':lib:fireplayerextractor'))
+    implementation(project(':lib:universalextractor'))
+    implementation(project(':lib:playlistutils'))
+    implementation(project(':lib:unpacker'))
+    testImplementation(libs.junit)
+    testImplementation(libs.bundles.common)
+}
+
+android.sourceSets.test.java.srcDirs = ["test"]
+android.sourceSets.test.kotlin.srcDirs = ["test"]
