@@ -40,6 +40,7 @@ import org.nanohttpd.protocols.http.NanoHTTPD
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.TimeZone
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.math.roundToInt
 
 class Senshi :
@@ -404,7 +405,8 @@ class Senshi :
                         fmt(resolve(epSkip?.introStart, embed.introStartMs)) + "|||" +
                         fmt(resolve(epSkip?.introEnd, embed.introEndMs)) + "|||" +
                         fmt(resolve(epSkip?.outroStart, embed.outroStartMs)) + "|||" +
-                        fmt(resolve(epSkip?.outroEnd, embed.outroEndMs)),
+                        fmt(resolve(epSkip?.outroEnd, embed.outroEndMs)) +
+                        "|||$meta.malId|||$epNum",
                 )
             }
     }
@@ -418,17 +420,18 @@ class Senshi :
         if (!hoster.internalData.startsWith("vidcloud::")) return emptyList()
 
         val parts = hoster.internalData.removePrefix("vidcloud::").split("|||")
-        val sourceId = parts.getOrNull(0)?.takeIf(String::isNotBlank) ?: return emptyList()
+        val videoId = parts.getOrNull(0)?.takeIf(String::isNotBlank)?.toLongOrNull()
+            ?: return emptyList()
 
         val entries = try {
-            client.get("https://s.vidcloud.se/_v1/sources?id=$sourceId", videoHeaders)
-                .use { it.parseAs<List<VidcloudEntryDto>>() }
+            keyStore.resolve(videoId)
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) {
             return emptyList()
         }
-
         val audioTag = parts.getOrNull(1).orEmpty()
-        // Rendition patterns as observed in decrypted masters: audio/0_ja, audio/1_en
+        // Rendition patterns as observed in masters: audio/0_ja, audio/1_en
         val audioRendition = if (audioTag == "Dub") "1_en" else "0_ja"
 
         val proxy = getProxyServer()
@@ -463,7 +466,7 @@ class Senshi :
                 .ifEmpty {
                     entry.tracks.filter { !it.url.isNullOrBlank() && !it.label.equals("chapter", ignoreCase = true) }
                 }
-                .map { Track(proxy.proxyUrl(it.url!!), it.label ?: "Unknown") }
+                .map { Track((it.url!!), it.label ?: "Unknown") }
 
             playlistUtils.extractFromHls(
                 playlistUrl = proxy.proxyUrl(src) + "&audio=$audioRendition",
@@ -486,18 +489,16 @@ class Senshi :
     }
 
     // ========================= Proxy / Key Wiring =========================
-    private val keyStore by lazy {
-        Em3u8KeyStore(preferences, network.client, headers) { baseUrl }
-    }
+    private val keyStore by lazy { EM3u8KeyStore(network.client, videoHeaders) }
 
     @Volatile
-    private var proxyServer: Em3u8Proxy? = null
+    private var proxyServer: EM3u8Proxy? = null
 
     @Synchronized
-    private fun getProxyServer(): Em3u8Proxy {
+    private fun getProxyServer(): EM3u8Proxy {
         if (proxyServer == null || !proxyServer!!.isAlive) {
             proxyServer?.stop()
-            proxyServer = Em3u8Proxy(videoHeaders, network.client, keyStore)
+            proxyServer = EM3u8Proxy(videoHeaders, network.client)
                 .also { it.start(NanoHTTPD.SOCKET_READ_TIMEOUT, false) }
         }
         return proxyServer!!
