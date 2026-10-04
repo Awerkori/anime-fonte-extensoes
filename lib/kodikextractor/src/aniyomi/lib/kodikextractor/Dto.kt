@@ -1,22 +1,12 @@
-package eu.kanade.tachiyomi.animeextension.ru.jutsu
+package aniyomi.lib.kodikextractor
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
-@Serializable
-class PlayerResponse(
-    val status: Boolean = false,
-    val data: PlayerData? = null,
-)
-
-@Serializable
-class PlayerData(
-    val name: String = "",
-    val kind: String = "",
-    val src: String = "",
-    val label: String = "",
-)
-
+/**
+ * Signed parameters the Kodik player embeds in the page as a JSON blob assigned to
+ * `urlParams`. They have to be posted back to the player to get the actual stream URLs.
+ */
 @Serializable
 class KodikFormData(
     val d: String = "",
