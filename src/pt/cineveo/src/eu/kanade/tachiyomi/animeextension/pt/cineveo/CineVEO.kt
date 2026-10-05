@@ -37,56 +37,68 @@ class CineVEO : AnimeHttpLegacySource() {
         .set("User-Agent", "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36")
 
     override fun popularAnimeRequest(page: Int) = GET(
-        "$baseUrl/api/get_home_content.php?type=tv&sort=popular&limit=30&page=$page",
+        "$baseUrl/api/get_home_content.php?sort=popular&limit=30&page=$page",
         headers,
     )
 
     override fun popularAnimeParse(response: Response): AnimesPage {
         val data = response.parseAs<HomeResponse>()
-        return AnimesPage(data.results.map(::animeFromItem).distinctBy { it.url }, data.page < data.totalPages)
+        return AnimesPage(data.results.map(::animeFromItem).distinctBy { it.url }, data.results.isNotEmpty())
     }
 
-    override fun latestUpdatesRequest(page: Int): Request = if (page == 1) GET(baseUrl, headers) else categoryRequest("series", page)
+    override fun latestUpdatesRequest(page: Int): Request = GET(
+        "$baseUrl/api/get_home_content.php?sort=latest&limit=30&page=$page",
+        headers,
+    )
 
     override fun latestUpdatesParse(response: Response): AnimesPage {
-        if (response.request.url.encodedPath == "/") {
-            val document = response.asJsoup()
-            val sections = document.select("section.home-v3-shelf")
-                .filter { it.selectFirst("h2")?.text()?.contains("Atualizadas", true) == true }
-            val animes = sections.flatMap { it.select("a.home-v3-card__link") }.map(::animeFromCard)
-                .distinctBy { it.title.lowercase() }
-            return AnimesPage(animes, true)
-        }
-        return categoryParse(response)
+        val data = response.parseAs<HomeResponse>()
+        return AnimesPage(data.results.map(::animeFromItem).distinctBy { it.url }, data.results.isNotEmpty())
     }
 
     override fun searchAnimeRequest(page: Int, query: String, filters: AnimeFilterList): Request {
         if (query.isNotBlank()) {
             return GET(
-                "$baseUrl/search.php".toHttpUrl().newBuilder().addQueryParameter("ajax_search", "1")
-                    .addQueryParameter("q", query).addQueryParameter("page", page.toString()).build(),
+                "$baseUrl/search.php".toHttpUrl().newBuilder().addQueryParameter("q", query)
+                    .addQueryParameter("page", page.toString()).build(),
                 headers,
             )
         }
-        return categoryRequest(filters.firstInstanceOrNull<CategoryFilter>()?.value ?: "series", page)
+        return categoryRequest(filters.firstInstanceOrNull<CategoryFilter>()?.value ?: "tv", page)
     }
 
-    override fun searchAnimeParse(response: Response): AnimesPage = if (response.request.url.encodedPath == "/search.php") {
-        val data = response.parseAs<SearchResponse>()
-        AnimesPage(data.results.map(::animeFromItem).distinctBy { it.url }, data.pagination.currentPage < data.pagination.totalPages)
-    } else {
-        categoryParse(response)
+    override fun searchAnimeParse(response: Response): AnimesPage {
+        val bodyStr = response.body.string()
+        if (bodyStr.trimStart().startsWith("{")) {
+            val data = runCatching { json.decodeFromString<SearchResponse>(bodyStr) }
+                .getOrElse {
+                    val home = json.decodeFromString<HomeResponse>(bodyStr)
+                    SearchResponse(home.results)
+                }
+            return AnimesPage(data.results.map(::animeFromItem).distinctBy { it.url }, data.results.isNotEmpty())
+        }
+        val document = org.jsoup.Jsoup.parse(bodyStr, response.request.url.toString())
+        val items = document.select(".item.poster, .item").mapNotNull { card ->
+            val link = card.selectFirst("a[href*='watch/']") ?: return@mapNotNull null
+            val href = link.absUrl("href")
+            val title = card.selectFirst("h6, .poster-img")?.text()?.takeIf { it.isNotBlank() }
+                ?: card.selectFirst("img")?.attr("alt")?.takeIf { it.isNotBlank() }
+                ?: link.text().removePrefix("Assistir ")
+            val poster = card.selectFirst("img")?.absUrl("src")
+                ?: Regex("""background(?:-image)?:\s*url\(['"]?([^'")]+)""").find(card.html())?.groupValues?.get(1)
+            SAnime.create().apply {
+                this.title = title
+                this.thumbnail_url = poster
+                setUrlWithoutDomain(href)
+            }
+        }.distinctBy { it.url }
+        return AnimesPage(items, false)
     }
 
     private fun categoryRequest(type: String, page: Int) = GET(
-        "$baseUrl/category.php?fetch_mode=1&type=$type&page=$page",
-        headers.newBuilder().set("Accept", "application/json").build(),
+        "$baseUrl/api/get_home_content.php?type=$type&sort=latest&limit=30&page=$page",
+        headers,
     )
-
-    private fun categoryParse(response: Response): AnimesPage {
-        val data = response.parseAs<CategoryResponse>()
-        return AnimesPage(data.results.map(::animeFromItem).distinctBy { it.url }, data.currentPage < data.totalPages)
-    }
 
     override fun getFilterList() = AnimeFilterList(
         AnimeFilter.Header("A listagem preserva DUB/LEG exibidos pelo site."),
@@ -94,7 +106,7 @@ class CineVEO : AnimeHttpLegacySource() {
     )
 
     private class CategoryFilter : AnimeFilter.Select<String>("Categoria", arrayOf("Séries", "Animes", "Filmes", "Doramas")) {
-        val value get() = arrayOf("series", "anime", "movie", "dorama")[state]
+        val value get() = arrayOf("tv", "anime", "movie", "dorama")[state]
     }
 
     private fun animeFromItem(item: CatalogItem) = SAnime.create().apply {
@@ -109,71 +121,161 @@ class CineVEO : AnimeHttpLegacySource() {
         setUrlWithoutDomain(card.absUrl("href"))
     }
 
-    private fun detailUrl(slug: String, type: String, audio: String) = if (type == "movie") {
-        "/filme/$slug.html"
-    } else {
-        "/series/$slug-lista-de-episodios.html" + if (audio.isBlank()) "" else "?audio=$audio"
-    }
-
-    private fun heroElement(document: org.jsoup.nodes.Document): Element = document.selectFirst(".series-hero-v2, .movie-hero-v2") ?: document
+    private fun detailUrl(slug: String, type: String = "", audio: String = "") = "/watch/$slug"
 
     override fun animeDetailsParse(response: Response): SAnime {
         val document = response.asJsoup()
-        val hero = heroElement(document)
         return SAnime.create().apply {
             setUrlWithoutDomain(document.location())
-            title = hero.selectFirst("h1")?.text()
+            title = document.selectFirst("#title, h1")?.text()
                 ?: document.selectFirst("meta[property='og:title']")?.attr("content")
                     ?.removePrefix("Assistir ")
                     ?.substringBefore(" - ")
-                    ?.replace(Regex("\\s+(?:HD|FHD|\\d{3,4}p)(?:\\s+Online)?$", RegexOption.IGNORE_CASE), "")
                 ?: document.title().substringBefore(" - CineVEO")
-            thumbnail_url = hero.selectFirst(".series-hero-v2__poster img, .movie-hero-v2__poster img, img[alt^=Capa]")?.absUrl("src")
+
+            val posterBg = document.selectFirst("#poster, .poster")?.attr("style")
+            val backBg = document.selectFirst("#backImage, .backImage")?.attr("style")
+            val bgUrl = Regex("""url\(['"]?([^'")]+)""").find(posterBg ?: "")?.groupValues?.get(1)
+                ?: Regex("""url\(['"]?([^'")]+)""").find(backBg ?: "")?.groupValues?.get(1)
+
+            thumbnail_url = bgUrl?.takeIf { it.isNotBlank() }
+                ?: document.selectFirst(".series-hero-v2__poster img, .movie-hero-v2__poster img, img[alt^=Capa], img.poster-img")?.absUrl("src")
                 ?: document.selectFirst("meta[property='og:image']")?.attr("content")
-            description = hero.selectFirst(".series-hero-v2__description, .movie-hero-v2__description")?.text()
+
+            val synopsis = document.selectFirst("#synopsis, .series-hero-v2__description, .movie-hero-v2__description")?.text()
                 ?: document.selectFirst("meta[name=description]")?.attr("content")
-            val chips = hero.select(".series-hero-v2__chip, .movie-hero-v2__chip").eachText()
-            genre = document.select("a[href*='genero']").eachText().distinct().joinToString()
+
+            val genresList = document.select("#genres span, a[href*='genero']").eachText().filter { it.isNotBlank() }.distinct()
+            genre = genresList.joinToString()
+
+            val logSpans = document.select(".log span, .series-hero-v2__chip, .movie-hero-v2__chip").eachText()
+            val extra = mutableListOf<String>()
+            val year = document.selectFirst("#year")?.text()?.takeIf { it.isNotBlank() }
+            if (year != null) extra.add(year)
+            val quality = document.selectFirst("#quality")?.text()?.takeIf { it.isNotBlank() }
+            if (quality != null) extra.add(quality)
+            val imdb = document.selectFirst("#imdb")?.text()?.takeIf { it.isNotBlank() }
+            if (imdb != null) extra.add("IMDb $imdb")
+            val runtime = document.selectFirst("#runtime")?.text()?.takeIf { it.isNotBlank() }
+            if (runtime != null) extra.add(runtime)
+
+            for (chip in logSpans) {
+                if (chip.contains("Dublado", true) || chip.contains("Legendado", true)) {
+                    if (chip !in extra) extra.add(chip)
+                }
+            }
+
             status = when {
-                chips.any { it.contains("em andamento", true) } -> SAnime.ONGOING
-                chips.any { it.contains("completo", true) } -> SAnime.COMPLETED
+                logSpans.any { it.contains("em andamento", true) } -> SAnime.ONGOING
+                logSpans.any { it.contains("completo", true) } -> SAnime.COMPLETED
                 else -> SAnime.UNKNOWN
             }
-            val extra = chips.filter { it.matches(Regex("\\d{4}", RegexOption.IGNORE_CASE)) || it.contains("Dublado", true) || it.contains("Legendado", true) }
-            if (extra.isNotEmpty()) description = listOfNotNull(description, extra.joinToString(" • ")).joinToString("\n\n")
+
+            description = if (extra.isNotEmpty()) {
+                listOfNotNull(synopsis, extra.joinToString(" • ")).joinToString("\n\n")
+            } else {
+                synopsis
+            }
             initialized = true
         }
     }
 
     override fun episodeListParse(response: Response): List<SEpisode> {
         val document = response.asJsoup()
-        if (document.location().contains("/filme/")) {
+        val html = document.html()
+
+        val moviePlayLink = document.selectFirst("a[href*='/m/'], a#btn-play[href*='/m/']")
+        if (moviePlayLink != null || (!html.contains("allSeasons") && !html.contains("series-section"))) {
+            val movieUrl = moviePlayLink?.absUrl("href") ?: document.location()
             return listOf(
                 SEpisode.create().apply {
-                    setUrlWithoutDomain(document.location())
+                    setUrlWithoutDomain(movieUrl)
                     name = "Filme"
                     episode_number = 1F
                 },
             )
         }
-        return document.select("a[data-episode-card]").map { card ->
-            val label = card.selectFirst(".episode-card-v2__badge")?.text().orEmpty()
-            val season = Regex("T(\\d+)").find(label)?.groupValues?.get(1).orEmpty()
-            val number = card.attr("data-episode").toFloatOrNull() ?: 0F
-            SEpisode.create().apply {
-                setUrlWithoutDomain(card.absUrl("href"))
-                name = "T$season E${number.toInt()} - ${card.selectFirst(".episode-card-v2__title")?.text().orEmpty()}"
-                episode_number = number
+
+        val allSeasonsJson = Regex("""const\s+allSeasons\s*=\s*(\{[\s\S]*?\});""").find(html)?.groupValues?.get(1)
+        val tmdbId = Regex("""currentTmdbId\s*=\s*(\d+)""").find(html)?.groupValues?.get(1)?.toIntOrNull()
+            ?: Regex("""id_tmdb["']?\s*:\s*(\d+)""").find(html)?.groupValues?.get(1)?.toIntOrNull()
+            ?: 0
+
+        if (!allSeasonsJson.isNullOrBlank()) {
+            val seasonsMap = runCatching { json.decodeFromString<Map<String, List<SeasonEpisode>>>(allSeasonsJson) }.getOrNull()
+            if (!seasonsMap.isNullOrEmpty()) {
+                val episodes = mutableListOf<SEpisode>()
+                for ((seasonStr, epList) in seasonsMap) {
+                    val sNum = seasonStr.toIntOrNull() ?: 1
+                    for (ep in epList) {
+                        val eNum = ep.episodio
+                        val salt = (tmdbId * 37 + sNum * 19 + eNum * 41 + 41) % 100
+                        val saltStr = salt.toString().padStart(2, '0')
+                        val epCode = ep.playerSlug?.takeIf { it.isNotBlank() } ?: "$tmdbId$sNum$eNum$saltStr"
+                        val playerUrl = "https://watch.cineveo20.lat/s/$epCode"
+                        val epTitle = ep.nome?.takeIf { it.isNotBlank() } ?: "Episódio ${sNum}x$eNum"
+                        episodes.add(
+                            SEpisode.create().apply {
+                                setUrlWithoutDomain(playerUrl)
+                                name = "T$sNum E$eNum - $epTitle"
+                                episode_number = eNum.toFloat()
+                            },
+                        )
+                    }
+                }
+                if (episodes.isNotEmpty()) {
+                    return episodes.distinctBy { it.url }.reversed()
+                }
             }
-        }.distinctBy { it.url }.reversed()
+        }
+
+        val epElements = document.select(".ep, div[id^=ep-], a[data-episode-card]")
+        if (epElements.isNotEmpty()) {
+            return epElements.mapNotNull { epEl ->
+                val link = epEl.selectFirst("a[href*='watch.cineveo20.lat/s/'], a[href*='/s/'], a[data-episode-card]") ?: return@mapNotNull null
+                val href = link.absUrl("href")
+                val title = epEl.selectFirst("h5, .episode-card-v2__title")?.text().orEmpty()
+                val numStr = epEl.selectFirst("p[number]")?.text()
+                    ?: epEl.attr("data-episode").takeIf { it.isNotBlank() }
+                    ?: Regex("""\d+x(\d+)""").find(title)?.groupValues?.get(1).orEmpty()
+                val eNum = numStr.toFloatOrNull() ?: 1F
+                SEpisode.create().apply {
+                    setUrlWithoutDomain(href)
+                    name = title.ifBlank { "Episódio ${eNum.toInt()}" }
+                    episode_number = eNum
+                }
+            }.distinctBy { it.url }.reversed()
+        }
+
+        return emptyList()
     }
 
-    override fun videoListRequest(episode: SEpisode) = GET(baseUrl + episode.url, headers)
+    override fun videoListRequest(episode: SEpisode): Request {
+        val fullUrl = when {
+            episode.url.startsWith("http://") || episode.url.startsWith("https://") -> episode.url
+            episode.url.startsWith("/s/") || episode.url.startsWith("/m/") -> "https://watch.cineveo20.lat" + episode.url
+            else -> baseUrl + episode.url
+        }
+        return GET(fullUrl, headers)
+    }
 
     override fun videoListParse(response: Response): List<Video> {
         val episodeUrl = response.request.url.toString()
         val document = response.asJsoup()
+        val html = document.html()
         val videos = mutableListOf<Video>()
+
+        val jwFile = Regex("""file\s*:\s*["'](https?://[^"']+)["']""").find(html)?.groupValues?.get(1)
+        if (!jwFile.isNullOrBlank()) {
+            val jwTitle = Regex("""title\s*:\s*["']([^"']+)["']""").find(html)?.groupValues?.get(1)
+                ?.substringBefore(" - CineVEO")
+                ?.takeIf { it.isNotBlank() }
+                ?: "CineVEO"
+            val videoHeaders = headers.newBuilder()
+                .set("Referer", episodeUrl)
+                .build()
+            videos.add(Video(jwFile, "$jwTitle - Principal", jwFile, videoHeaders))
+        }
 
         val redeFlixFrame = document.selectFirst("#player-iframe, iframe[src*='redeflixapi.store']")
             ?.absUrl("src")
@@ -385,6 +487,19 @@ class CineVEO : AnimeHttpLegacySource() {
         val file: String = "",
         val subtitle: String = "",
         val title: String = "",
+    )
+
+    @Serializable
+    private class SeasonEpisode(
+        val id: Long = 0,
+        @SerialName("id_tmdb") val idTmdb: Long = 0,
+        val temporada: Int = 1,
+        val episodio: Int = 1,
+        val nome: String? = null,
+        val sinopse: String? = null,
+        val imagem: String? = null,
+        @SerialName("url_video") val urlVideo: String? = null,
+        @SerialName("player_slug") val playerSlug: String? = null,
     )
 
     companion object {

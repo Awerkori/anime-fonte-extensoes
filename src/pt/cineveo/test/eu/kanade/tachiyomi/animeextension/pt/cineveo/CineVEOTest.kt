@@ -126,4 +126,111 @@ class CineVEOTest {
 
         assertEquals("https://cdn.example.com/v/test.mp4?token=abc&exp=123", fallback)
     }
+
+    @Serializable
+    private class SeasonEpisode(
+        val id: Long = 0,
+        @SerialName("id_tmdb") val idTmdb: Long = 0,
+        val temporada: Int = 1,
+        val episodio: Int = 1,
+        val nome: String? = null,
+        val sinopse: String? = null,
+        val imagem: String? = null,
+        @SerialName("url_video") val urlVideo: String? = null,
+        @SerialName("player_slug") val playerSlug: String? = null,
+    )
+
+    @Test
+    fun testDetailUrlRouting() {
+        val seriesSlug = "reacher-108978"
+        val movieSlug = "jack-reacher-o-ltimo-tiro-svasn"
+        val seriesUrl = "/watch/$seriesSlug"
+        val movieUrl = "/watch/$movieSlug"
+        assertEquals("/watch/reacher-108978", seriesUrl)
+        assertEquals("/watch/jack-reacher-o-ltimo-tiro-svasn", movieUrl)
+    }
+
+    @Test
+    fun testEpCodeSaltAlgorithm() {
+        val tmdbId = 108978
+        // Season 1 Episode 1
+        val s1 = 1
+        val e1 = 1
+        val salt1 = (tmdbId * 37 + s1 * 19 + e1 * 41 + 41) % 100
+        val saltStr1 = salt1.toString().padStart(2, '0')
+        val epCode1 = "$tmdbId$s1$e1$saltStr1"
+        assertEquals("1089781187", epCode1)
+
+        // Season 1 Episode 2
+        val s2 = 1
+        val e2 = 2
+        val salt2 = (tmdbId * 37 + s2 * 19 + e2 * 41 + 41) % 100
+        val saltStr2 = salt2.toString().padStart(2, '0')
+        val epCode2 = "$tmdbId$s2$e2$saltStr2"
+        assertEquals("1089781228", epCode2)
+    }
+
+    @Test
+    fun testJwPlayerExtraction() {
+        val html = """
+            <script type="text/javascript">
+                const playerInstance = jwplayer("player").setup({
+                    file: "https://nixplay.lat/series/cinevs-vods/wrcmBDcf4/108978/1/1.mp4",
+                    type: "mp4",
+                    title: "Reacher - T1 E1 - CineVEO",
+                    width: "100%",
+                    height: "100%",
+                    autostart: true
+                });
+            </script>
+        """.trimIndent()
+
+        val file = Regex("""file\s*:\s*["'](https?://[^"']+)["']""").find(html)?.groupValues?.get(1)
+        val title = Regex("""title\s*:\s*["']([^"']+)["']""").find(html)?.groupValues?.get(1)
+            ?.substringBefore(" - CineVEO")
+
+        assertEquals("https://nixplay.lat/series/cinevs-vods/wrcmBDcf4/108978/1/1.mp4", file)
+        assertEquals("Reacher - T1 E1", title)
+    }
+
+    @Test
+    fun testAllSeasonsParsing() {
+        val jsonStr = """
+            {
+                "1": [
+                    {"id": 1147559, "id_tmdb": 108978, "temporada": 1, "episodio": 1, "nome": "Bem-vindo a Margrave"},
+                    {"id": 1147560, "id_tmdb": 108978, "temporada": 1, "episodio": 2, "nome": "Primeira Dança"}
+                ],
+                "2": [
+                    {"id": 1147569, "id_tmdb": 108978, "temporada": 2, "episodio": 1, "nome": "Caixa Eletrônico"}
+                ]
+            }
+        """.trimIndent()
+
+        val seasonsMap = json.decodeFromString<Map<String, List<SeasonEpisode>>>(jsonStr)
+        assertEquals(2, seasonsMap.size)
+        assertEquals(2, seasonsMap["1"]?.size)
+        assertEquals(1, seasonsMap["2"]?.size)
+        assertEquals("Bem-vindo a Margrave", seasonsMap["1"]?.get(0)?.nome)
+    }
+
+    @Test
+    fun testRealReacherAllSeasons() {
+        val sampleJson = """
+            {
+                "1": [
+                    {"id": 1147559, "id_tmdb": 108978, "temporada": 1, "episodio": 1, "nome": "Bem-vindo a Margrave", "sinopse": "Reacher é acusado...", "imagem": "https://image.tmdb.org/t/p/w300/15xLLZN3LLAdvoiHnYL5DcXlsYu.jpg", "url_video": null, "player_slug": null},
+                    {"id": 1147560, "id_tmdb": 108978, "temporada": 1, "episodio": 2, "nome": "Primeira Dança", "sinopse": "Quando mais vítimas...", "imagem": "https://image.tmdb.org/t/p/w300/4nfnpqWMX8dHI1bYZcdxLEvy2c9.jpg", "url_video": null, "player_slug": null}
+                ],
+                "2": [
+                    {"id": 1147569, "id_tmdb": 108978, "temporada": 2, "episodio": 1, "nome": "Caixa Eletrônico", "sinopse": "Reacher e Neagley...", "imagem": "https://image.tmdb.org/t/p/w300/j7hYdtMCzXsRtk8oeoynzcB1skZ.jpg", "url_video": null, "player_slug": null}
+                ]
+            }
+        """.trimIndent()
+        val seasonsMap = json.decodeFromString<Map<String, List<SeasonEpisode>>>(sampleJson)
+        assertEquals(2, seasonsMap.size)
+        assertEquals(2, seasonsMap["1"]?.size)
+        assertEquals(1, seasonsMap["2"]?.size)
+        assertEquals(108978L, seasonsMap["1"]?.get(0)?.idTmdb)
+    }
 }
