@@ -28,7 +28,7 @@ import org.jsoup.nodes.Element
 
 class CineVEO : AnimeHttpLegacySource() {
     override val name = "CineVEO"
-    override val baseUrl = "https://cineveo.club"
+    override val baseUrl = "https://cineveo20.lat"
     override val lang = "pt-BR"
     override val supportsLatest = true
 
@@ -122,8 +122,14 @@ class CineVEO : AnimeHttpLegacySource() {
         val hero = heroElement(document)
         return SAnime.create().apply {
             setUrlWithoutDomain(document.location())
-            title = hero.selectFirst("h1")?.text() ?: document.title().substringBefore(" - CineVEO")
+            title = hero.selectFirst("h1")?.text()
+                ?: document.selectFirst("meta[property='og:title']")?.attr("content")
+                    ?.removePrefix("Assistir ")
+                    ?.substringBefore(" - ")
+                    ?.replace(Regex("\\s+(?:HD|FHD|\\d{3,4}p)(?:\\s+Online)?$", RegexOption.IGNORE_CASE), "")
+                ?: document.title().substringBefore(" - CineVEO")
             thumbnail_url = hero.selectFirst(".series-hero-v2__poster img, .movie-hero-v2__poster img, img[alt^=Capa]")?.absUrl("src")
+                ?: document.selectFirst("meta[property='og:image']")?.attr("content")
             description = hero.selectFirst(".series-hero-v2__description, .movie-hero-v2__description")?.text()
                 ?: document.selectFirst("meta[name=description]")?.attr("content")
             val chips = hero.select(".series-hero-v2__chip, .movie-hero-v2__chip").eachText()
@@ -264,12 +270,14 @@ class CineVEO : AnimeHttpLegacySource() {
                         GET(playerUrl, headers.newBuilder().set("Referer", frameUrl).build()),
                     ).execute().use { it.body.string() }
 
-                    val configJson = Regex("""window\.__RF_INITIAL_CONFIG\s*=\s*(\{.+?\});""")
+                    val configJson = Regex("""window\.__RF_INITIAL_CONFIG\s*=\s*(\{.+?\});""", RegexOption.DOT_MATCHES_ALL)
                         .find(playerHtml)?.groupValues?.get(1)
 
                     val config = configJson?.let { runCatching { json.decodeFromString<RfInitialConfig>(it) }.getOrNull() }
                     val fileUrl = config?.file?.takeIf { it.isNotBlank() }
-                        ?: Regex(""""file"\s*:\s*"([^"]+)"""").find(playerHtml)?.groupValues?.get(1)?.replace("\\/", "/")
+                        ?: Regex(""""file"\s*:\s*"([^"]+)"""").find(playerHtml)?.groupValues?.get(1)
+                            ?.replace("\\/", "/")
+                            ?.replace("\\u0026", "&")
 
                     if (!fileUrl.isNullOrBlank()) {
                         val subUrl = config?.subtitle?.takeIf { it.isNotBlank() }

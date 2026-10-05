@@ -1,0 +1,25 @@
+ext {
+    extName = 'Startflix'
+    extClass = '.Startflix'
+    extVersionCode = 1
+    baseUrl = 'https://www.startflix.biz'
+    isNsfw = false
+}
+
+apply plugin: "kei.plugins.extension.legacy"
+
+android {
+    defaultConfig {
+        manifestPlaceholders += [SOURCESCHEME: 'https', SOURCEHOST: 'www.startflix.biz']
+    }
+}
+
+dependencies {
+    implementation(project(":lib-multisrc:dooplay"))
+    implementation(project(":lib:playlistutils"))
+    implementation(project(":lib:filemoonextractor"))
+    implementation(project(":lib:vidsrcextractor"))
+    implementation(project(":lib:streamwishextractor"))
+    implementation(project(":lib:doodextractor"))
+    implementation(project(":lib:universalextractor"))
+}

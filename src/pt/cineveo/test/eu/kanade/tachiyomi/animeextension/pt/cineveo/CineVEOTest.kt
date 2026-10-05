@@ -86,4 +86,44 @@ class CineVEOTest {
         assertEquals("https://hubby-dmca.com/movie/test.mp4", config.file)
         assertEquals("https://subs.com/pt.vtt", config.subtitle)
     }
+
+    @Test
+    fun testMovieTitleFallbackCleaning() {
+        val rawTitle = "Assistir Naruto to Boruto: The Live 2019 1080p Online - RedeCanais"
+        val cleaned = rawTitle
+            .removePrefix("Assistir ")
+            .substringBefore(" - ")
+            .replace(Regex("""\s+(?:HD|FHD|\d{3,4}p)(?:\s+Online)?$""", RegexOption.IGNORE_CASE), "")
+        assertEquals("Naruto to Boruto: The Live 2019", cleaned)
+    }
+
+    @Test
+    fun testMultilineRfInitialConfig() {
+        val playerHtml = """
+            <script>
+            window.__RF_INITIAL_CONFIG = {
+                "file": "https://cdn.example.com/video.mp4?a=1\u0026b=2",
+                "subtitle": "",
+                "autostart": true
+            };
+            </script>
+        """.trimIndent()
+
+        val configJson = Regex("""window\.__RF_INITIAL_CONFIG\s*=\s*(\{.+?\});""", RegexOption.DOT_MATCHES_ALL)
+            .find(playerHtml)?.groupValues?.get(1)
+        assertNotNull(configJson)
+
+        val config = json.decodeFromString<RfInitialConfig>(configJson!!)
+        assertEquals("https://cdn.example.com/video.mp4?a=1&b=2", config.file)
+    }
+
+    @Test
+    fun testFallbackRegexUnescape() {
+        val playerHtml = """window.__RF_INITIAL_CONFIG = {"file":"https:\/\/cdn.example.com\/v\/test.mp4?token=abc\u0026exp=123"};"""
+        val fallback = Regex(""""file"\s*:\s*"([^"]+)"""").find(playerHtml)?.groupValues?.get(1)
+            ?.replace("\\/", "/")
+            ?.replace("\\u0026", "&")
+
+        assertEquals("https://cdn.example.com/v/test.mp4?token=abc&exp=123", fallback)
+    }
 }
