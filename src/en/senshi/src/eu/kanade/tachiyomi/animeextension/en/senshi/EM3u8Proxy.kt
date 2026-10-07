@@ -51,14 +51,16 @@ class EM3u8Proxy(
                     bytes.startsWithAscii("#EXTM3U") || isPlaylist(finalUrl) ->
                         serveManifest(bytes.toString(Charsets.UTF_8), finalUrl, audio)
 
-                    // Episode images; they require referer, which the app does not
-                    // pass. We pass them through the proxy with referer, fixing
-                    // thumbnails/preview_url.
+                    // Episode images and subtitles; both need the referer (subtitles also
+                    // sit behind Cloudflare), which the player does not send.
                     else -> {
+                        val path = res.request.url.encodedPath
                         val mime = when {
-                            finalUrl.endsWith(".jpg") || finalUrl.endsWith(".jpeg") -> "image/jpeg"
-                            finalUrl.endsWith(".webp") -> "image/webp"
-                            finalUrl.endsWith(".png") -> "image/png"
+                            path.endsWith(".ass") -> "text/x-ssa"
+                            path.endsWith(".vtt") -> "text/vtt"
+                            path.endsWith(".jpg") || path.endsWith(".jpeg") -> "image/jpeg"
+                            path.endsWith(".webp") -> "image/webp"
+                            path.endsWith(".png") -> "image/png"
                             else -> "application/octet-stream"
                         }
                         newFixedLengthResponse(Status.OK, mime, bytes.inputStream(), bytes.size.toLong())
@@ -71,36 +73,46 @@ class EM3u8Proxy(
         }
     }
 
-    private fun serveManifest(text: String, parentUrl: String, audioRendition: String? = null): Response {
+    /**
+     * Child playlists are proxied, everything else is made absolute for the player.
+     * Playlist-ness comes from the HLS structure, not the extension: bcdn serves
+     * child playlists as `/p/<base64>.jpg` and segments as `/c/<base64>.jpg`.
+     */
+    private fun serveManifest(text: String, parentUrl: String, audioLanguage: String? = null): Response {
         if ("#EXT-X-KEY" in text || "#EXT-X-SESSION-KEY" in text) {
             Log.w(TAG, "manifest carries #EXT-X-KEY — playlist/segment encryption may be back: $parentUrl")
         }
-        val filtered = audioRendition?.let { filterAudioRenditions(text, it) } ?: text
+        val filtered = audioLanguage?.let { filterAudioRenditions(text, it) } ?: text
         val parent = parentUrl.toHttpUrl()
+        val isMaster = "#EXT-X-STREAM-INF" in filtered
         val out = filtered.split("\n").joinToString("\n") { raw ->
             val line = raw.trimEnd('\r')
             when {
                 line.isEmpty() -> ""
                 line.startsWith("#") -> line.replace(URI_REGEX) { m ->
                     val resolved = parent.resolve(m.groupValues[1])?.toString() ?: return@replace m.value
-                    if (isPlaylist(resolved)) "URI=\"${proxyUrl(resolved)}\"" else m.value
+                    val childPlaylist = isMaster && line.startsWith("#EXT-X-MEDIA")
+                    "URI=\"${if (childPlaylist) proxyUrl(resolved) else resolved}\""
                 }
-                isPlaylist(line) -> proxyUrl(parent.resolve(line)?.toString() ?: line)
-                else -> parent.resolve(line)?.toString() ?: line // segment: absolute, player-direct
+                else -> {
+                    val resolved = parent.resolve(line)?.toString() ?: line
+                    if (isMaster) proxyUrl(resolved) else resolved // segment: player-direct
+                }
             }
         }
         return newFixedLengthResponse(Status.OK, "application/vnd.apple.mpegurl", out)
     }
 
     /**
-     * Keeps only the TYPE=AUDIO #EXT-X-MEDIA rendition whose URI matches [pattern]
-     * ("0_ja"/"1_en"), forcing DEFAULT=YES (explicit DEFAULT=NO is flipped;
+     * Keeps only the TYPE=AUDIO #EXT-X-MEDIA rendition with LANGUAGE=[language]
+     * ("ja"/"en"), forcing DEFAULT=YES (explicit DEFAULT=NO is flipped;
      * a rendition without a DEFAULT attribute is left as-is) — turns a shared
      * both-audio stream into a single-language hoster. Falls back to the
      * untouched manifest when the layout is unknown (no renditions / nothing
      * matches) so audio is never lost.
      */
-    private fun filterAudioRenditions(manifest: String, pattern: String): String {
+    private fun filterAudioRenditions(manifest: String, language: String): String {
+        val pattern = "LANGUAGE=\"$language\""
         val lines = manifest.split("\n")
         val audioMedia = lines.filter { it.trimStart().startsWith("#EXT-X-MEDIA") && "TYPE=AUDIO" in it }
         if (audioMedia.isEmpty()) return manifest

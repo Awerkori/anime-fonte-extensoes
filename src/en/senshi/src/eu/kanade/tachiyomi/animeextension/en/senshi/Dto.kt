@@ -15,8 +15,7 @@ import kotlinx.serialization.Serializable
  *   GET  /anime/{public_id}/recommended       -> List<SenshiAnimeDto>
  *   GET  /episodes/{malId}                    -> List<EpisodeDto>          (bare array)
  *   GET  /episode-embeds/{malId}/{epNumber}   -> List<EpisodeEmbedDto>     (bare array)
- *   GET  https://s.vidcloud.se/_v1/sources?id={remote_source_id} ->
- *   List<VidcloudEntryDto>    (bare array)
+ *   window.__oct.open({remote_source_id})     -> List<VidcloudEntryDto>    (see VidcloudResolver)
  *
  * Deliberately unmodeled: created_at/last_viewed_at (site DB stamps),
  * views_day/week/month, scored_by, version (telemetry), rating and producers
@@ -121,25 +120,24 @@ class EpisodeEmbedDto(
 )
 
 // =============================== Streams ==================================
+// window.__oct.open(remote_source_id), normalized by VidcloudResolver
 @Serializable
 class VidcloudEntryDto(
-    val source: VidcloudSourceDto? = null,
+    val sources: List<VidcloudSourceDto> = emptyList(),
     val tracks: List<VidcloudTrackDto> = emptyList(),
 )
 
 @Serializable
 class VidcloudSourceDto(
-    val src: String? = null, // pre-signed EM3U8v1 master manifest (bcdn1/bcdn2 hosts rotate)
-    val quality: String? = null,
-    val audio: String? = null,
+    val src: String, // signed bcdn master playlist (hosts rotate)
+    val label: String? = null, // "sub" / "dub" / "both"
 )
 
 @Serializable
 class VidcloudTrackDto(
     val url: String? = null,
-    @SerialName("vtt_url") val vttUrl: String? = null,
+    val vttUrl: String? = null,
     val label: String? = null,
-    val default: Boolean? = null,
 )
 
 // ============================= Skip Times =================================
