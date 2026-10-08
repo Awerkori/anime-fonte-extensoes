@@ -1,7 +1,7 @@
 ext {
     extName = 'VerAni.me'
     extClass = '.VerAnime'
-    extVersionCode = 8
+    extVersionCode = 9
 }
 
 apply plugin: "kei.plugins.extension.legacy"

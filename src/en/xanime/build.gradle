@@ -1,7 +1,7 @@
 ext {
     extName = 'XAnime'
     extClass = '.XAnime'
-    extVersionCode = 4
+    extVersionCode = 5
     isNsfw = true
 }
 

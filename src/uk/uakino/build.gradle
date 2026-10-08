@@ -1,7 +1,7 @@
 ext {
     extName = 'UAKino'
     extClass = '.UAKino'
-    extVersionCode = 7
+    extVersionCode = 8
 }
 
 apply plugin: "kei.plugins.extension.legacy"

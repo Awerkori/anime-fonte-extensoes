@@ -1,7 +1,7 @@
 ext {
     extName = 'RouVideo'
     extClass = '.RouVideoFactory'
-    extVersionCode = 16
+    extVersionCode = 17
     isNsfw = true
 }
 

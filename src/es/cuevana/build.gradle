@@ -1,7 +1,7 @@
 ext {
     extName = 'Cuevana'
     extClass = '.CuevanaFactory'
-    extVersionCode = 70
+    extVersionCode = 71
 }
 
 apply plugin: "kei.plugins.extension.legacy"

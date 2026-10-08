@@ -1,7 +1,7 @@
 ext {
     extName = 'AnimeMovil'
     extClass = '.AnimeMovil'
-    extVersionCode = 53
+    extVersionCode = 54
 }
 
 apply plugin: "kei.plugins.extension.legacy"

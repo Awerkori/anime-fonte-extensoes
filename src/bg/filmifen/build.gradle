@@ -1,7 +1,7 @@
 ext {
     extName = 'FilmiFen'
     extClass = '.FilmiFen'
-    extVersionCode = 2
+    extVersionCode = 3
     libVersion = 16
     isNsfw = false
 }

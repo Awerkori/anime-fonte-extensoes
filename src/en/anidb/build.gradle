@@ -1,7 +1,7 @@
 ext {
     extName = 'AniDB'
     extClass = '.AniDB'
-    extVersionCode = 8
+    extVersionCode = 9
     isNsfw = true
 }
 
