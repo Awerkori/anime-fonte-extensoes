@@ -45,7 +45,7 @@ class PlaylistUtils(private val client: OkHttpClient, private val headers: Heade
         subtitleList: List<Track> = emptyList(),
         audioList: List<Track> = emptyList(),
         toStandardQuality: (String) -> String = { quality ->
-            stnQuality(quality)
+            standardQuality(quality)
         },
     ): List<Video> = extractFromHls(
         playlistUrl,
@@ -90,8 +90,52 @@ class PlaylistUtils(private val client: OkHttpClient, private val headers: Heade
         subtitleList: List<Track> = emptyList(),
         audioList: List<Track> = emptyList(),
         toStandardQuality: (String) -> String = { quality ->
-            stnQuality(quality)
+            standardQuality(quality)
         },
+    ): List<Video> = extractFromHlsInternal(
+        playlistUrl,
+        referer,
+        masterHeadersGen,
+        videoHeadersGen,
+        videoNameGen,
+        subtitleList,
+        audioList,
+        toStandardQuality,
+        withDetails = false,
+    )
+
+    /**
+     * Extracts HLS variants with codec, frame rate, dynamic range and estimated bandwidth labels.
+     * Unlike [extractFromHls], this opt-in parser matches audio/subtitle groups to each variant,
+     * prefers default tracks, handles unordered media attributes and resolves relative URIs.
+     * Variants remain sorted by bandwidth so callers can retain the best of otherwise identical streams.
+     */
+    fun extractFromHlsWithDetails(
+        playlistUrl: String,
+        referer: String = playlistUrl.toDefaultReferer(),
+        videoNameGen: (String) -> String = { it },
+    ): List<Video> = extractFromHlsInternal(
+        playlistUrl,
+        referer,
+        ::generateMasterHeaders,
+        { baseHeaders, ref, _ -> generateMasterHeaders(baseHeaders, ref) },
+        videoNameGen,
+        emptyList(),
+        emptyList(),
+        ::standardQuality,
+        withDetails = true,
+    )
+
+    private fun extractFromHlsInternal(
+        playlistUrl: String,
+        referer: String,
+        masterHeadersGen: (Headers, String) -> Headers,
+        videoHeadersGen: (Headers, String, String) -> Headers,
+        videoNameGen: (String) -> String,
+        subtitleList: List<Track>,
+        audioList: List<Track>,
+        toStandardQuality: (String) -> String,
+        withDetails: Boolean,
     ): List<Video> {
         val masterHeaders = masterHeadersGen(headers, referer)
 
@@ -128,6 +172,24 @@ class PlaylistUtils(private val client: OkHttpClient, private val headers: Heade
             )
         }.toList()
 
+        val mediaTracks = if (withDetails) {
+            masterPlaylist.lineSequence()
+                .filter { it.startsWith("#EXT-X-MEDIA:") }
+                .map { it.hlsAttributes() }
+                .toList()
+        } else {
+            emptyList()
+        }
+        fun tracks(type: String, group: String?): List<Track> = mediaTracks
+            .filter { it["TYPE"] == type && group != null && it["GROUP-ID"] == group }
+            .sortedByDescending { it["DEFAULT"] == "YES" }
+            .mapNotNull { attributes ->
+                val uri = attributes["URI"] ?: return@mapNotNull null
+                val url = playlistUrl.toHttpUrl().resolve(uri)?.toString() ?: return@mapNotNull null
+                Track(url, attributes["NAME"] ?: attributes["LANGUAGE"] ?: type)
+            }
+            .distinctBy(Track::url)
+
         /*
          * Stream might have multiple sub-streams separated by [PLAYLIST_SEPARATOR]. Template:
          *
@@ -158,52 +220,79 @@ class PlaylistUtils(private val client: OkHttpClient, private val headers: Heade
          *
          */
         return masterPlaylist.substringAfter(PLAYLIST_SEPARATOR).split(PLAYLIST_SEPARATOR).mapNotNull { stream ->
-            val codec = CODECS_REGEX.find(stream)?.groupValues?.get(1)
+            val attributes = if (withDetails) stream.substringBefore('\n').hlsAttributes() else emptyMap()
+            val codec = if (withDetails) attributes["CODECS"] else CODECS_REGEX.find(stream)?.groupValues?.get(1)
             if (!codec.isNullOrBlank()) {
                 // Skip audio only streams. Can check if `codecs` starts with any of avc/hev1/hvc1/vp9/av01.
                 val codecs = codec.split(',')
-                if (codecs.all { it.startsWith("mp4a") }) return@mapNotNull null
+                val audioOnly = if (withDetails) {
+                    codecs.all { it.trim().substringBefore('.') in AUDIO_CODECS }
+                } else {
+                    codecs.all { it.startsWith("mp4a") }
+                }
+                if (audioOnly) return@mapNotNull null
             }
 
-            val resolution = RESOLUTION_REGEX.find(stream)
-                ?.groupValues?.get(1)
-                ?.let { resolution ->
-                    val standardQuality = QUALITY_REGEX.find(resolution)
-                        ?.groupValues?.get(1)
-                        ?.let { toStandardQuality(it) }
+            val dimensions = if (withDetails) attributes["RESOLUTION"] else RESOLUTION_REGEX.find(stream)?.groupValues?.get(1)
+            val resolution = dimensions?.let { resolution ->
+                val standardQuality = QUALITY_REGEX.find(resolution)
+                    ?.groupValues?.get(1)
+                    ?.let { toStandardQuality(it) }
 
-                    if (!standardQuality.isNullOrBlank()) {
-                        "$standardQuality ($resolution)"
-                    } else {
-                        resolution
-                    }
+                if (!standardQuality.isNullOrBlank()) {
+                    "$standardQuality ($resolution)"
+                } else {
+                    resolution
                 }
-            val bandwidth = BANDWIDTH_REGEX.find(stream)
-                ?.groupValues?.get(1)
+            }
+            val bandwidth = (if (withDetails) attributes["BANDWIDTH"] else BANDWIDTH_REGEX.find(stream)?.groupValues?.get(1))
                 ?.toLongOrNull()
-            val bandwidthFormatted = bandwidth
-                ?.formatBytes()
-            val streamName = listOfNotNull(resolution, bandwidthFormatted).joinToString(" - ")
+            val bandwidthFormatted = bandwidth?.let { rate ->
+                if (withDetails) {
+                    val averageRate = attributes["AVERAGE-BANDWIDTH"]?.toLongOrNull()?.takeIf { it > 0 } ?: rate
+                    averageRate.takeIf { it > 0 }?.let { "~%.2f Mbps".format(it / 1_000_000.0) }
+                } else {
+                    rate.formatBytes()
+                }
+            }
+            val codecName = codec?.takeIf { withDetails }?.let(::formatCodecs)
+            val frameRate = attributes["FRAME-RATE"]?.let { "$it fps" }
+            val videoRange = attributes["VIDEO-RANGE"]?.takeUnless { it == "SDR" }
+            val streamName = listOfNotNull(resolution, codecName, frameRate, videoRange, bandwidthFormatted?.takeUnless { withDetails }).joinToString(" - ")
                 .takeIf { it.isNotBlank() }
                 ?: "Video"
+            val streamLabel = if (withDetails && bandwidthFormatted != null) "$streamName $bandwidthFormatted" else streamName
 
-            val videoUrl = stream.substringAfter("\n").substringBefore("\n").let { url ->
-                UrlUtils.fixUrl(url, playlistUrl)?.trimEnd()
+            val videoUrl = if (withDetails) {
+                val uri = stream.lineSequence().drop(1).map(String::trim).firstOrNull { it.isNotEmpty() && !it.startsWith('#') }
+                    ?: return@mapNotNull null
+                playlistUrl.toHttpUrl().resolve(uri)?.toString()
+            } else {
+                stream.substringAfter("\n").substringBefore("\n").let { url ->
+                    UrlUtils.fixUrl(url, playlistUrl)?.trimEnd()
+                }
             } ?: return@mapNotNull null
+            val streamSubtitles = if (withDetails) tracks("SUBTITLES", attributes["SUBTITLES"]) else subtitleTracks
+            val streamAudio = if (withDetails) tracks("AUDIO", attributes["AUDIO"]) else audioTracks
 
+            // Keep the legacy constructor: existing PlaylistUtils callers still support extensions-lib 14.
             bandwidth to Video(
                 url = videoUrl,
-                quality = videoNameGen(streamName),
+                quality = videoNameGen(streamLabel),
                 videoUrl = videoUrl,
                 headers = videoHeadersGen(headers, referer, videoUrl),
-                subtitleTracks = subtitleTracks,
-                audioTracks = audioTracks,
+                subtitleTracks = streamSubtitles,
+                audioTracks = streamAudio,
             )
         }
             .sortedByDescending { (bandwidth, _) ->
                 bandwidth ?: 0L
             }
             .map { (_, video) -> video }
+    }
+
+    private fun String.hlsAttributes(): Map<String, String> = HLS_ATTRIBUTE_REGEX.findAll(this).associate {
+        it.groupValues[1] to (it.groups[2]?.value ?: it.groupValues[3])
     }
 
     fun generateMasterHeaders(baseHeaders: Headers, referer: String): Headers = baseHeaders.newBuilder().apply {
@@ -240,7 +329,7 @@ class PlaylistUtils(private val client: OkHttpClient, private val headers: Heade
         subtitleList: List<Track> = emptyList(),
         audioList: List<Track> = emptyList(),
         toStandardQuality: (String) -> String = { quality ->
-            stnQuality(quality)
+            standardQuality(quality)
         },
     ): List<Video> = extractFromDash(
         mpdUrl,
@@ -287,7 +376,7 @@ class PlaylistUtils(private val client: OkHttpClient, private val headers: Heade
         subtitleList: List<Track> = emptyList(),
         audioList: List<Track> = emptyList(),
         toStandardQuality: (String) -> String = { quality ->
-            stnQuality(quality)
+            standardQuality(quality)
         },
     ): List<Video> = extractFromDash(
         mpdUrl,
@@ -336,7 +425,7 @@ class PlaylistUtils(private val client: OkHttpClient, private val headers: Heade
         subtitleList: List<Track> = emptyList(),
         audioList: List<Track> = emptyList(),
         toStandardQuality: (String) -> String = { quality ->
-            stnQuality(quality)
+            standardQuality(quality)
         },
     ): List<Video> {
         val mpdHeaders = mpdHeadersGen(headers, referer)
@@ -376,7 +465,8 @@ class PlaylistUtils(private val client: OkHttpClient, private val headers: Heade
         ""
     }
 
-    private fun stnQuality(quality: String): String {
+    /** Returns the closest standard resolution label for a stream's pixel height. */
+    fun standardQuality(quality: String): String {
         val intQuality = quality.trim().toIntOrNull() ?: return quality
         val result = STANDARD_QUALITIES.minByOrNull { abs(it - intQuality) } ?: intQuality
         return "${result}p"
@@ -486,6 +576,9 @@ class PlaylistUtils(private val client: OkHttpClient, private val headers: Heade
         }
 
         private const val PLAYLIST_SEPARATOR = "#EXT-X-STREAM-INF:"
+
+        private val HLS_ATTRIBUTE_REGEX = Regex("""([A-Z0-9-]+)=(?:"([^"]*)"|([^,\r\n]*))""")
+        private val AUDIO_CODECS = setOf("mp4a", "opus", "vorbis", "ac-3", "ec-3", "flac", "alac")
 
         private val SUBTITLE_REGEX by lazy { Regex("""#EXT-X-MEDIA:TYPE=SUBTITLES.*?NAME="(.*?)".*?URI="(.*?)"""") }
         private val AUDIO_REGEX by lazy { Regex("""#EXT-X-MEDIA:TYPE=AUDIO.*?NAME="(.*?)".*?URI="(.*?)"""") }
