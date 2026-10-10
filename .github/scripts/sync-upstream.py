@@ -582,15 +582,11 @@ def main() -> None:
         upstream_deleted, protected_deletions,
     )
 
-    # Update sync branch to mirror upstream tip
-    if args.push:
-        # Keep this a normal fast-forward push. Refuse to rewrite the published sync history.
-        git("push", "origin", f"{upstream_ref}:refs/heads/{SYNC_BRANCH}")
-    else:
-        print(f"\nWould update origin/{SYNC_BRANCH} from {upstream_ref}")
-
     if not upstream_units and not indirect and not upstream_deleted:
         print("No upstream changes to apply.")
+        if args.push:
+            # Mirror evaluated upstream tip to sync branch so periodic check stays up to date
+            git("push", "origin", f"{upstream_ref}:refs/heads/{SYNC_BRANCH}")
         return
 
     if args.dry_run or not args.push:
@@ -608,6 +604,9 @@ def main() -> None:
     )
     write_step_summary(protected, bumped)
     git("push", "origin", "HEAD:main")
+    if args.push:
+        # Update sync branch to mirror upstream tip ONLY after successful push to main
+        git("push", "origin", f"{upstream_ref}:refs/heads/{SYNC_BRANCH}")
 
 
 if __name__ == "__main__":

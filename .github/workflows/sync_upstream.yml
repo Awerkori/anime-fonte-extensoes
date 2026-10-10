@@ -3,10 +3,7 @@ name: Sync Upstream (Yuzono)
 on:
   workflow_dispatch:
   schedule:
-    - cron: "17 20 * * *"
-      timezone: "America/Sao_Paulo"
-    - cron: "17 21 * * *"
-      timezone: "America/Sao_Paulo"
+    - cron: "*/5 * * * *"
 
 concurrency:
   group: sync-upstream-yuzono
@@ -30,13 +27,53 @@ jobs:
           token: ${{ secrets.BOT_PAT }}
           persist-credentials: true
 
+      - name: Check for upstream updates
+        id: check_upstream
+        env:
+          IS_DISPATCH: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          UPSTREAM_URL="https://github.com/yuzono/anime-extensions.git"
+          UPSTREAM_SHA=$(git ls-remote "$UPSTREAM_URL" refs/heads/master | awk '{print $1}')
+          SYNC_SHA=$(git ls-remote origin refs/heads/sync | awk '{print $1}')
+
+          echo "Upstream master HEAD: ${UPSTREAM_SHA}"
+          echo "Last Synced SHA:     ${SYNC_SHA}"
+          echo "upstream_sha=${UPSTREAM_SHA}" >> "$GITHUB_OUTPUT"
+
+          if [ -z "$UPSTREAM_SHA" ]; then
+            echo "::warning::Failed to query upstream HEAD SHA. Proceeding with sync to ensure no missed updates."
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$IS_DISPATCH" = "true" ]; then
+            echo "Triggered via workflow_dispatch. Proceeding with sync."
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # If the upstream commit matches the synced marker and is already merged in HEAD
+          if [ "$UPSTREAM_SHA" = "$SYNC_SHA" ]; then
+            if git rev-parse -q --verify "${UPSTREAM_SHA}^{commit}" >/dev/null 2>&1 && git merge-base --is-ancestor "$UPSTREAM_SHA" HEAD; then
+              echo "No new updates in upstream. Upstream ${UPSTREAM_SHA} is already synchronized into main."
+              echo "has_changes=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+
+          echo "New upstream changes detected (${UPSTREAM_SHA} != ${SYNC_SHA} or not in main). Proceeding with sync."
+          echo "has_changes=true" >> "$GITHUB_OUTPUT"
+
       - name: Configure Git
+        if: steps.check_upstream.outputs.has_changes == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Test upstream deletion handling
+        if: steps.check_upstream.outputs.has_changes == 'true'
         run: python .github/scripts/test_sync_upstream_deletions.py
 
       - name: Sync upstream (Nox-wins)
+        if: steps.check_upstream.outputs.has_changes == 'true'
         run: python .github/scripts/sync-upstream.py --push

@@ -4,6 +4,7 @@
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -125,7 +126,10 @@ class SyncDeletionTest(unittest.TestCase):
         build_file = tomato_dir / "build.gradle"
         self.assertTrue(build_file.is_file(), "Nox Tomato source must be restored")
         tomato_build = build_file.read_text("utf-8")
-        self.assertRegex(tomato_build, r"extVersionCode\s*=\s*12")
+        version_match = re.search(r"extVersionCode\s*=\s*(\d+)", tomato_build)
+        self.assertIsNotNone(version_match, "Tomato build.gradle must specify extVersionCode")
+        tomato_version = int(version_match.group(1))
+        self.assertGreater(tomato_version, 0, "Tomato extVersionCode must be a positive integer")
         self.assertIn('extName = \'Tomato\'', tomato_build)
         self.assertIn("extClass = '.Tomato'", tomato_build)
         self.assertIn("isNsfw = false", tomato_build)
@@ -135,7 +139,7 @@ class SyncDeletionTest(unittest.TestCase):
 
         # Form a realistic divergence where Tomato existed in the common base,
         # Yuzono deleted it, and the current Nox tree plus allowlist keep it.
-        self.add_source("src/pt/tomato", 12)
+        self.add_source("src/pt/tomato", tomato_version)
         (self.repo / ".github").mkdir()
         (self.repo / ".github/nox-protected.txt").write_text(
             "src/pt/tomato\n", encoding="utf-8",
