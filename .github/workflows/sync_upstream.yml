@@ -2,6 +2,12 @@ name: Sync Upstream (Yuzono)
 
 on:
   workflow_dispatch:
+    inputs:
+      force:
+        description: 'Forçar execução completa mesmo sem novas alterações'
+        required: false
+        type: boolean
+        default: false
   schedule:
     - cron: "*/5 * * * *"
 
@@ -46,8 +52,8 @@ jobs:
             exit 0
           fi
 
-          if [ "$IS_DISPATCH" = "true" ]; then
-            echo "Triggered via workflow_dispatch. Proceeding with sync."
+          if [ "${{ github.event.inputs.force }}" = "true" ]; then
+            echo "Forced sync via input. Proceeding with sync."
             echo "has_changes=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
