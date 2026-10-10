@@ -1,6 +1,7 @@
 package eu.kanade.tachiyomi.animeextension.pt.redetoons
 
 import android.widget.Toast
+import androidx.preference.EditTextPreference
 import androidx.preference.MultiSelectListPreference
 import androidx.preference.PreferenceScreen
 import eu.kanade.tachiyomi.animesource.ConfigurableAnimeSource
@@ -23,6 +24,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Request
 import okhttp3.Response
 
@@ -30,10 +32,13 @@ class RedeToons :
     AnimeHttpSource(),
     ConfigurableAnimeSource {
     override val name = "RedeToons"
-    override val baseUrl = "https://redetoonstv.win"
+    override val baseUrl: String
+        get() = preferences.getString(PREF_DOMAIN_KEY, PREF_DOMAIN_DEFAULT)?.let(::toBaseUrl) ?: DEFAULT_BASE_URL
     override val lang = "pt-BR"
     override val supportsLatest = true
     private val preferences by getPreferencesLazy()
+    private val baseHost: String
+        get() = baseUrl.toHttpUrlOrNull()?.host ?: DEFAULT_BASE_HOST
 
     override fun headersBuilder() = super.headersBuilder()
         .set("Referer", "$baseUrl/")
@@ -48,8 +53,10 @@ class RedeToons :
     override suspend fun getLatestUpdates(page: Int): AnimesPage = catalogPage("recent", page)
 
     override fun searchAnimeRequest(page: Int, query: String, filters: AnimeFilterList): Request {
-        val url = baseUrl.toHttpUrl().newBuilder().addPathSegment("api").addPathSegment("search")
-            .addQueryParameter("q", query.trim()).addQueryParameter("cv", "c2052").build()
+        val url = "$baseUrl/api/search".toHttpUrl().newBuilder()
+            .addQueryParameter("q", query.trim())
+            .addQueryParameter("cv", "c2052")
+            .build()
         return GET(url, headers)
     }
 
@@ -72,6 +79,38 @@ class RedeToons :
     override fun getFilterList() = AnimeFilterList(Filters.Type())
 
     override fun setupPreferenceScreen(screen: PreferenceScreen) {
+        EditTextPreference(screen.context).apply {
+            key = PREF_DOMAIN_KEY
+            title = PREF_DOMAIN_TITLE
+            setDefaultValue(PREF_DOMAIN_DEFAULT)
+            summary = getDomainPrefSummary()
+
+            setOnPreferenceChangeListener { _, newValue ->
+                runCatching {
+                    val raw = (newValue as String).trim()
+                    if (raw.isBlank()) {
+                        preferences.edit().putString(key, PREF_DOMAIN_DEFAULT).commit()
+                        summary = PREF_DOMAIN_DEFAULT
+                        text = PREF_DOMAIN_DEFAULT
+                        false
+                    } else if (isValidUrl(raw)) {
+                        val normalized = normalizeInputUrl(raw)
+                        preferences.edit().putString(key, normalized).commit()
+                        summary = normalized
+                        text = normalized
+                        false
+                    } else {
+                        Toast.makeText(
+                            screen.context,
+                            "URL inválida. Configuração anterior mantida.",
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                        false
+                    }
+                }.getOrDefault(false)
+            }
+        }.also(screen::addPreference)
+
         MultiSelectListPreference(screen.context).apply {
             key = CONTENT_FILTER_KEY
             title = "Filtro de conteúdo"
@@ -92,14 +131,31 @@ class RedeToons :
         }.also(screen::addPreference)
     }
 
-    override fun animeDetailsRequest(anime: SAnime): Request = GET("$baseUrl/api/tmdb/${anime.url}", headers)
-    override fun animeDetailsParse(response: Response): SAnime = response.parseAs<DetailsDto>().toSAnime(response.request.url.toString().substringAfterLast('/'))
+    private fun getDomainPrefSummary(): String = preferences.getString(PREF_DOMAIN_KEY, PREF_DOMAIN_DEFAULT)?.ifBlank { PREF_DOMAIN_DEFAULT } ?: PREF_DOMAIN_DEFAULT
 
-    override fun episodeListRequest(anime: SAnime): Request = if (anime.url.startsWith("movie/")) {
-        GET("$baseUrl/api/play-link?contract=3&tmdbId=${anime.url.substringAfter('/')}&type=movie", headers)
-    } else {
-        GET("$baseUrl/api/series-playable/${anime.url.substringAfter('/')}", headers)
+    override fun getAnimeUrl(anime: SAnime): String = resolveAnimeUrl(anime.url, baseUrl, baseHost)
+
+    override fun animeDetailsRequest(anime: SAnime): Request = GET(resolveAnimeDetailsEndpoint(anime.url, baseUrl, baseHost), headers)
+
+    override fun animeDetailsParse(response: Response): SAnime = response.parseAs<DetailsDto>().toSAnime(
+        response.request.url.pathSegments.let { segments ->
+            if (segments.size >= 2) "${segments[segments.size - 2]}/${segments.last()}" else segments.last()
+        },
+    )
+
+    override fun episodeListRequest(anime: SAnime): Request {
+        val cleanUrl = if (anime.url.startsWith("http://", ignoreCase = true) || anime.url.startsWith("https://", ignoreCase = true)) {
+            anime.url.toHttpUrlOrNull()?.pathSegments?.takeLast(2)?.joinToString("/").orEmpty()
+        } else {
+            anime.url.trimStart('/')
+        }
+        return if (cleanUrl.startsWith("movie/")) {
+            GET("$baseUrl/api/play-link?contract=3&tmdbId=${cleanUrl.substringAfter('/')}&type=movie", headers)
+        } else {
+            GET("$baseUrl/api/series-playable/${cleanUrl.substringAfter('/')}", headers)
+        }
     }
+
     override fun episodeListParse(response: Response): List<SEpisode> {
         if (response.request.url.queryParameter("type") == "movie") {
             val id = response.request.url.queryParameter("tmdbId") ?: return emptyList()
@@ -145,9 +201,10 @@ class RedeToons :
         if (data.missing) return emptyList()
         val variants = data.variants.ifEmpty { listOf(Variant("default", data.url)) }
         return variants.flatMap { variant ->
-            val url = variant.url?.takeIf { it.startsWith("http") } ?: return@flatMap emptyList()
+            val rawUrl = variant.url?.takeIf { it.startsWith("http") } ?: return@flatMap emptyList()
+            val url = rawUrl.toRedeToonsHost(baseHost)
             val quality = variant.quality.orEmpty().replaceFirstChar { it.uppercase() }
-            val urls = (listOf(url) + variant.mirrors).distinct()
+            val urls = (listOf(url) + variant.mirrors.map { it.toRedeToonsHost(baseHost) }).distinct()
             urls.map { stream -> Video(stream, "RedeToons - $quality", stream, headers) }
         }
     }
@@ -155,25 +212,32 @@ class RedeToons :
     override fun videoUrlParse(response: Response): String = throw UnsupportedOperationException()
 
     private fun shelvesRequest(shelf: String = "browse", page: Int = 1) = GET("$baseUrl/api/shelves?shelf=$shelf&page=$page", headers)
+
     private suspend fun catalogPage(kind: String, page: Int): AnimesPage {
         val shelves = client.newCall(shelvesRequest(kind, page)).awaitSuccess().parseAs<ShelvesResponse>().payload
         return shelves.catalogItems(kind).filterBy(selectedContentCategories()).toPage(page)
     }
+
     private fun CatalogItem.toSAnime() = SAnime.create().apply {
         url = "${media_type ?: "tv"}/$id"
-        title = name ?: title ?: id.toString()
-        thumbnail_url = poster_path?.let { "https://image.tmdb.org/t/p/w500$it" }
+        title = this@toSAnime.name ?: this@toSAnime.title ?: id.toString()
+        thumbnail_url = poster_path?.let { toPosterUrl(it) }
     }
+
     private fun ShelfItem.toSAnime() = SAnime.create().apply {
         url = "${media_type ?: "tv"}/$tmdb_id"
-        title = title ?: tmdb_id.toString()
-        thumbnail_url = poster_path
+        title = this@toSAnime.title ?: tmdb_id.toString()
+        thumbnail_url = poster_path?.let { toPosterUrl(it) }
     }
+
+    private fun toPosterUrl(path: String): String = resolvePosterUrl(path, baseHost)
+
     private fun List<CatalogItem>.toPage(page: Int): AnimesPage {
         if (page < 1) return AnimesPage(emptyList(), false)
         val pageItems = distinctBy { it.key }.drop((page - 1) * PAGE_SIZE).take(PAGE_SIZE)
         return AnimesPage(pageItems.map { it.toSAnime() }, pageItems.size == PAGE_SIZE)
     }
+
     private fun ShelvesPayload.catalogItems(kind: String): List<CatalogItem> = listOf(animes, filmes, series)
         .map { shelves ->
             shelves.filter { shelf ->
@@ -182,12 +246,16 @@ class RedeToons :
             }.flatMap { it.items }.map { it.toCatalogItem() }
         }
         .interleave()
+
     private fun ShelfItem.toCatalogItem() = CatalogItem(tmdb_id, tmdb_id, media_type, title, title, poster_path, year)
+
     private fun <T> List<List<T>>.interleave(): List<T> = buildList {
         val largest = this@interleave.maxOfOrNull { it.size } ?: 0
         repeat(largest) { index -> this@interleave.forEach { items -> items.getOrNull(index)?.let(::add) } }
     }
+
     private val CatalogItem.key get() = "${media_type ?: "tv"}/${tmdb_id ?: id}"
+
     private suspend fun List<CatalogItem>.filterBy(categories: Set<ContentCategory>): List<CatalogItem> {
         if (categories.size == ContentCategory.entries.size) return this
         return coroutineScope {
@@ -197,7 +265,9 @@ class RedeToons :
                     gate.withPermit {
                         val type = item.media_type ?: "tv"
                         val details = runCatching {
-                            client.newCall(GET("$baseUrl/api/tmdb/$type/${item.tmdb_id ?: item.id}", headers)).awaitSuccess().parseAs<DetailsDto>()
+                            client.newCall(GET("$baseUrl/api/tmdb/$type/${item.tmdb_id ?: item.id}", headers))
+                                .awaitSuccess()
+                                .parseAs<DetailsDto>()
                         }.getOrNull() ?: return@withPermit null
                         if (categories.any { it.matches(type, details) }) item else null
                     }
@@ -205,10 +275,11 @@ class RedeToons :
             }.awaitAll().filterNotNull()
         }
     }
+
     private fun DetailsDto.toSAnime(path: String) = SAnime.create().apply {
         url = path
-        title = name ?: title ?: original_name ?: original_title ?: id.toString()
-        thumbnail_url = poster_path?.let { "https://image.tmdb.org/t/p/w500$it" }
+        title = this@toSAnime.name ?: this@toSAnime.title ?: original_name ?: original_title ?: id.toString()
+        thumbnail_url = poster_path?.let { toPosterUrl(it) }
         description = overview
         genre = genres.mapNotNull { it.name }.joinToString(", ")
         status = when (state?.lowercase()) {
@@ -226,8 +297,6 @@ class RedeToons :
     }
 
     private fun ContentCategory.matches(mediaType: String, details: DetailsDto): Boolean {
-        // This is RedeToons' own frontend rule: Animation plus Japanese
-        // language or country is an Anime, regardless of movie/tv media type.
         val anime = details.genres.any { it.id == ANIMATION_GENRE_ID } &&
             (details.original_language.equals("ja", true) || details.origin_country.any { it.equals("JP", true) })
         return when (this) {
@@ -240,16 +309,21 @@ class RedeToons :
     private fun selectedContentCategories(): Set<ContentCategory> {
         val saved = preferences.getStringSet(CONTENT_FILTER_KEY, ALL_CONTENT_KEYS).orEmpty()
         val normalized = normalizeContentCategories(saved)
-        if (normalized.map { it.key }.toSet() != saved) preferences.edit().putStringSet(CONTENT_FILTER_KEY, normalized.mapTo(mutableSetOf()) { it.key }).apply()
+        if (normalized.map { it.key }.toSet() != saved) {
+            preferences.edit().putStringSet(CONTENT_FILTER_KEY, normalized.mapTo(mutableSetOf()) { it.key }).apply()
+        }
         return normalized
     }
+
     private fun normalizeContentCategories(values: Set<String>) = ContentCategory.entries.filterTo(mutableSetOf()) { it.key in values }
         .ifEmpty { ContentCategory.entries.toSet() }
+
     private fun allowedCategories(filters: AnimeFilterList): Set<ContentCategory> {
         val global = selectedContentCategories()
         val temporary = filters.firstInstanceOrNull<Filters.Type>()?.category
         return temporary?.let { global.intersect(setOf(it)) } ?: global
     }
+
     private fun contentSummary(categories: Set<ContentCategory>) = when (categories.size) {
         1 -> "Somente ${categories.single().label}"
         else -> categories.joinToString { it.label }
@@ -263,11 +337,115 @@ class RedeToons :
         }
     }
 
-    private companion object {
-        const val ANIMATION_GENRE_ID = 16
-        const val CONTENT_FILTER_KEY = "content_filter"
-        const val PAGE_SIZE = 10
-        val ALL_CONTENT_KEYS = ContentCategory.entries.mapTo(mutableSetOf()) { it.key }
-        val POPULAR_SLUGS = setOf("__top10_a", "__top10_b")
+    companion object {
+        const val PREF_DOMAIN_KEY = "preferred_domain"
+        const val PREF_DOMAIN_TITLE = "Domínio atual (requer reinicialização da app)"
+        const val PREF_DOMAIN_DEFAULT = "https://redetoons.gay/browse"
+        const val DEFAULT_BASE_URL = "https://redetoons.gay"
+        const val DEFAULT_BASE_HOST = "redetoons.gay"
+
+        private const val ANIMATION_GENRE_ID = 16
+        private const val CONTENT_FILTER_KEY = "content_filter"
+        private const val PAGE_SIZE = 10
+        private val ALL_CONTENT_KEYS = ContentCategory.entries.mapTo(mutableSetOf()) { it.key }
+        private val POPULAR_SLUGS = setOf("__top10_a", "__top10_b")
+
+        fun toBaseUrl(raw: String?): String {
+            if (raw.isNullOrBlank()) return DEFAULT_BASE_URL
+            val normalized = normalizeInputUrl(raw)
+            val parsed = normalized.toHttpUrlOrNull() ?: return DEFAULT_BASE_URL
+
+            val pathSegments = parsed.pathSegments.filter { it.isNotEmpty() }
+            val newSegments = if (pathSegments.lastOrNull().equals("browse", ignoreCase = true)) {
+                pathSegments.dropLast(1)
+            } else {
+                pathSegments
+            }
+
+            val scheme = parsed.scheme
+            val host = parsed.host
+            val port = if ((scheme == "http" && parsed.port == 80) || (scheme == "https" && parsed.port == 443)) {
+                ""
+            } else {
+                ":${parsed.port}"
+            }
+            val path = if (newSegments.isEmpty()) "" else "/${newSegments.joinToString("/")}"
+            return "$scheme://$host$port$path"
+        }
+
+        fun isValidUrl(raw: String?): Boolean {
+            if (raw.isNullOrBlank()) return false
+            val trimmed = raw.trim()
+            val withScheme = if (trimmed.contains("://")) trimmed else "https://$trimmed"
+            val parsed = withScheme.toHttpUrlOrNull() ?: return false
+            return (parsed.scheme == "http" || parsed.scheme == "https") &&
+                parsed.host.isNotBlank() &&
+                !parsed.host.contains(" ")
+        }
+
+        fun normalizeInputUrl(raw: String): String {
+            val trimmed = raw.trim()
+            val withScheme = if (trimmed.contains("://")) trimmed else "https://$trimmed"
+            val parsed = withScheme.toHttpUrlOrNull() ?: return withScheme.trimEnd('/')
+            return parsed.newBuilder().build().toString().trimEnd('/')
+        }
+
+        fun resolveAnimeUrl(animeUrl: String, baseUrl: String, baseHost: String): String {
+            val clean = animeUrl.trim()
+            return when {
+                clean.startsWith("http://", ignoreCase = true) || clean.startsWith("https://", ignoreCase = true) ->
+                    clean.toRedeToonsHost(baseHost)
+                clean.startsWith("/") -> "$baseUrl$clean"
+                else -> "$baseUrl/$clean"
+            }
+        }
+
+        fun resolveAnimeDetailsEndpoint(animeUrl: String, baseUrl: String, baseHost: String): String {
+            val clean = animeUrl.trim().trimStart('/')
+            return when {
+                clean.startsWith("http://", ignoreCase = true) || clean.startsWith("https://", ignoreCase = true) -> {
+                    val rewritten = clean.toRedeToonsHost(baseHost)
+                    val parsed = rewritten.toHttpUrlOrNull()
+                    if (parsed != null && parsed.encodedPath.contains("/api/tmdb/")) {
+                        rewritten
+                    } else if (parsed != null) {
+                        val segments = parsed.pathSegments.filter { it.isNotEmpty() }
+                        "$baseUrl/api/tmdb/${segments.joinToString("/")}"
+                    } else {
+                        "$baseUrl/api/tmdb/$clean"
+                    }
+                }
+                clean.startsWith("api/tmdb/") -> "$baseUrl/$clean"
+                else -> "$baseUrl/api/tmdb/$clean"
+            }
+        }
+
+        fun resolvePosterUrl(path: String, baseHost: String): String {
+            val clean = path.trim()
+            return when {
+                clean.startsWith("http://", ignoreCase = true) || clean.startsWith("https://", ignoreCase = true) ->
+                    clean.toRedeToonsHost(baseHost)
+                clean.startsWith("/") -> "https://image.tmdb.org/t/p/w500$clean"
+                else -> "https://image.tmdb.org/t/p/w500/$clean"
+            }
+        }
     }
+}
+
+internal fun String.toRedeToonsHost(baseHost: String): String {
+    val url = toHttpUrlOrNull() ?: return this
+    if (!isLegacyRedeToonsHost(url.host)) return this
+    return url.newBuilder().host(baseHost).build().toString()
+}
+
+internal fun isLegacyRedeToonsHost(host: String): Boolean {
+    val lower = host.lowercase()
+    if (lower == "redetoons.download" || lower.endsWith(".redetoons.download")) {
+        return false
+    }
+    return lower == "redetoons.win" || lower == "www.redetoons.win" ||
+        lower == "redetoonstv.win" || lower == "www.redetoonstv.win" ||
+        lower.endsWith(".redetoons.win") || lower.endsWith(".redetoonstv.win") ||
+        lower == "redetoons.gay" || lower == "www.redetoons.gay" ||
+        lower.endsWith(".redetoons.gay")
 }
