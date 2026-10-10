@@ -9,9 +9,7 @@ then HLS. Direct streams avoid the packed HLS audio timestamp metadata that
 triggers a JSON escaping bug in mpv-android's track-list conversion. HLS-only
 responses still require that player bug to be fixed in the app.
 
-Requires extensions-lib 16. HLS extraction uses PlaylistUtils' opt-in
-`extractFromHlsWithDetails`; existing `extractFromHls` callers keep their
-original parsing and labels.
+Requires extensions-lib 16.
 
 Add `implementation(project(":lib:youtubeextractor"))` to the extension's
 dependencies, then call the suspend API:
