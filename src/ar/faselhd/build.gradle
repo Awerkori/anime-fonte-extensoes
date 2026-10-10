@@ -1,7 +1,7 @@
 ext {
     extName = 'FASELHD'
     extClass = '.FASELHD'
-    extVersionCode = 31
+    extVersionCode = 32
 }
 
 apply plugin: "kei.plugins.extension.legacy"

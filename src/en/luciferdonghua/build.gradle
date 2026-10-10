@@ -3,7 +3,7 @@ ext {
     extClass = '.LuciferDonghua'
     themePkg = 'animestream'
     baseUrl = 'https://luciferdonghua.in'
-    overrideVersionCode = 21
+    overrideVersionCode = 22
 }
 
 apply plugin: "kei.plugins.extension.legacy"

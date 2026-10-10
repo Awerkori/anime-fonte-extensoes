@@ -1,7 +1,7 @@
 ext {
     extName = 'AniPlay'
     extClass = '.AniPlay'
-    extVersionCode = 25
+    extVersionCode = 26
 }
 
 apply plugin: "kei.plugins.extension.legacy"

@@ -3,7 +3,7 @@ ext {
     extClass = '.AnimeOnlineNinja'
     themePkg = 'dooplay'
     baseUrl = 'https://ver.animeonline.ninja'
-    overrideVersionCode = 66
+    overrideVersionCode = 67
 }
 
 apply plugin: "kei.plugins.extension.legacy"

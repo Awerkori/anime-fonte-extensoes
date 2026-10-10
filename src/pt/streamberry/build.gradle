@@ -1,7 +1,7 @@
 ext {
     extName = 'Streamberry'
     extClass = '.Streamberry'
-    extVersionCode = 5
+    extVersionCode = 6
     baseUrl = 'https://streamberry.com.br'
     isNsfw = false
 }

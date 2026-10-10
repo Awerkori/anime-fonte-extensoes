@@ -4,7 +4,7 @@ plugins {
     alias(kei.plugins.multisrc)
 }
 
-baseVersionCode = 16
+baseVersionCode = 17
 
 dependencies {
     api(project(":lib:vudeoextractor"))

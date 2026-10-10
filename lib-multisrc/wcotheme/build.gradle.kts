@@ -8,4 +8,4 @@ dependencies {
     api(project(":lib:playlistutils"))
 }
 
-baseVersionCode = 9
+baseVersionCode = 10
