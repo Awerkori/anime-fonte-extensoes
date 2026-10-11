@@ -4,6 +4,7 @@ import aniyomi.lib.bloggerextractor.BloggerExtractor
 import eu.kanade.tachiyomi.animeextension.pt.animesdrive.extractors.UniversalExtractor
 import eu.kanade.tachiyomi.animesource.model.AnimeFilter
 import eu.kanade.tachiyomi.animesource.model.AnimeFilterList
+import eu.kanade.tachiyomi.animesource.model.AnimesPage
 import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Video
@@ -15,6 +16,9 @@ import keiyoushi.utils.bodyString
 import keiyoushi.utils.parallelCatchingFlatMapBlocking
 import keiyoushi.utils.parseAs
 import keiyoushi.utils.useAsJsoup
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.Serializable
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -24,6 +28,7 @@ import okhttp3.Response
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.util.concurrent.Callable
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorCompletionService
 import java.util.concurrent.Executors
 
@@ -35,12 +40,245 @@ class AnimesDrive :
     ) {
 
     // ============================== Popular ===============================
-    override fun popularAnimeRequest(page: Int) = GET("$baseUrl/anime", headers)
+    override fun popularAnimeSelector() = "article.item.tvshows, article.item.movies, article.item"
+
+    override fun popularAnimeRequest(page: Int): Request {
+        val url = if (page == 1) {
+            "$baseUrl/anime/?catalog_order=views"
+        } else {
+            "$baseUrl/anime/page/$page/?catalog_order=views"
+        }
+        return GET(url, headers)
+    }
+
+    override fun popularAnimeFromElement(element: Element): SAnime = SAnime.create().apply {
+        val href = element.selectFirst("a[href*='/anime/']")?.attr("href")
+            ?: element.selectFirst("a")?.attr("href")
+            ?: element.attr("href")
+        setUrlWithoutDomain(href)
+        val img = element.selectFirst("img")
+        title = element.selectFirst(".data h3, .data a, h3, .title")?.text()?.trim()
+            ?: img?.attr("alt")?.trim()
+            ?: ""
+        thumbnail_url = img?.getImageUrl()
+    }
+
+    override fun popularAnimeNextPageSelector() = "div.pagination > a.arrow_pag > i.fa-caret-right, div.pagination i#nextpagination"
+
+    override fun popularAnimeParse(response: Response): AnimesPage {
+        fetchGenresList()
+        val doc = response.asJsoup()
+        cacheCatalogDoc(doc)
+        val animes = doc.select(popularAnimeSelector()).map(::popularAnimeFromElement)
+        val hasNextPage = doc.selectFirst(popularAnimeNextPageSelector()) != null
+        return AnimesPage(animes, hasNextPage)
+    }
 
     // =============================== Latest ===============================
-    override fun latestUpdatesNextPageSelector() = "div.pagination > a.arrow_pag > i.fa-caret-right"
+    private val catalogPosterCache = ConcurrentHashMap<String, String>()
+
+    private fun cacheCatalogDoc(doc: Document) {
+        val items = doc.select("article.item")
+        for (item in items) {
+            val href = item.selectFirst("a[href*='/anime/']")?.attr("href")
+                ?: item.selectFirst("a")?.attr("href")
+                ?: continue
+            val img = item.selectFirst("div.poster img, img") ?: continue
+            val posterUrl = img.getImageUrl()
+            if (posterUrl.isNotBlank()) {
+                val slug = href.trimEnd('/').substringAfterLast('/')
+                catalogPosterCache[slug] = posterUrl
+                catalogPosterCache[href] = posterUrl
+                catalogPosterCache["/anime/$slug"] = posterUrl
+                catalogPosterCache["$baseUrl/anime/$slug"] = posterUrl
+            }
+        }
+    }
+
+    private fun ensureCatalogPosterCache() {
+        if (catalogPosterCache.isNotEmpty()) return
+        runCatching {
+            runBlocking(Dispatchers.IO) {
+                val viewsDeferred = async {
+                    runCatching { client.newCall(popularAnimeRequest(1)).execute().use { it.asJsoup() } }.getOrNull()
+                }
+                val recentDeferred = async {
+                    runCatching { client.newCall(GET("$baseUrl/anime/", headers)).execute().use { it.asJsoup() } }.getOrNull()
+                }
+                viewsDeferred.await()?.let(::cacheCatalogDoc)
+                recentDeferred.await()?.let(::cacheCatalogDoc)
+            }
+        }
+    }
+
+    private fun fetchCanonicalAnimeInfo(canonUrl: String, episodeUrl: String? = null): Pair<String, String>? {
+        return runCatching {
+            var resp = client.newCall(GET(canonUrl, headers)).execute()
+            var realUrl = canonUrl
+            var doc: Document? = null
+
+            if (resp.code == 404 && canonUrl.contains("-dublado")) {
+                val fallbackUrl = canonUrl.replace("-dublado", "")
+                val fallbackResp = client.newCall(GET(fallbackUrl, headers)).execute()
+                if (fallbackResp.isSuccessful) {
+                    realUrl = fallbackUrl
+                    doc = fallbackResp.asJsoup()
+                }
+            }
+
+            if ((!resp.isSuccessful || resp.code == 404) && doc == null && !episodeUrl.isNullOrBlank()) {
+                val epResp = client.newCall(GET(episodeUrl, headers)).execute()
+                if (epResp.isSuccessful) {
+                    val epDoc = epResp.asJsoup()
+                    val navUrl = epDoc.selectFirst("div.pag_episodes a[href*='/anime/'], .aq-nav-all a[href*='/anime/']")
+                        ?.attr("href")
+                        ?.takeIf(String::isNotBlank)
+                    if (navUrl != null) {
+                        val navResp = client.newCall(GET(navUrl, headers)).execute()
+                        if (navResp.isSuccessful) {
+                            realUrl = navUrl
+                            doc = navResp.asJsoup()
+                        }
+                    }
+                }
+            }
+
+            if (doc == null && resp.isSuccessful) {
+                realUrl = resp.request.url.toString()
+                doc = resp.asJsoup()
+            }
+
+            if (doc == null) return null
+
+            val sheader = doc.selectFirst("div.sheader")
+            val img = sheader?.selectFirst("div.poster > img, div.poster img")
+                ?: doc.selectFirst("div.poster > img, div.poster img")
+            val posterUrl = img?.getImageUrl()
+                ?: doc.selectFirst("meta[property='og:image']")?.attr("content")?.takeIf(String::isNotBlank)
+                ?: return null
+            realUrl to posterUrl
+        }.getOrNull()
+    }
+
+    override fun latestUpdatesSelector() = "article.item.se.episodes, article.item.episodes, article.item"
+
+    override fun latestUpdatesNextPageSelector() = "div.pagination > a.arrow_pag > i.fa-caret-right, div.pagination i#nextpagination"
+
+    override fun latestUpdatesRequest(page: Int): Request {
+        val url = if (page == 1) {
+            "$baseUrl/episodio"
+        } else {
+            "$baseUrl/episodio/page/$page"
+        }
+        return GET(url, headers)
+    }
+
+    override fun latestUpdatesFromElement(element: Element): SAnime = SAnime.create().apply {
+        val epHref = element.selectFirst("a[href*='/episodio/']")?.attr("href")
+            ?: element.selectFirst("a")?.attr("href")
+            ?: ""
+        val animeUrl = if (epHref.contains("-episodio-")) {
+            epHref.substringBeforeLast("-episodio-").replace("/episodio/", "/anime/")
+        } else {
+            epHref
+        }
+        val slug = animeUrl.trimEnd('/').substringAfterLast('/')
+
+        setUrlWithoutDomain(animeUrl)
+        title = element.selectFirst("span.serie")?.text()?.trim()
+            ?.takeIf(String::isNotBlank)
+            ?: element.selectFirst("img")?.attr("alt")?.substringBefore(" Episódio")?.trim()
+            ?: element.selectFirst(".data h3, .data a, h3")?.text()?.trim()
+            ?: ""
+        thumbnail_url = catalogPosterCache[slug]
+            ?: catalogPosterCache[animeUrl]
+            ?: catalogPosterCache["/anime/$slug"]
+    }
+
+    override fun latestUpdatesParse(response: Response): AnimesPage {
+        fetchGenresList()
+        ensureCatalogPosterCache()
+
+        val document = response.asJsoup()
+        val rawAnimes = document.select(latestUpdatesSelector()).mapNotNull { element ->
+            runCatching {
+                val epHref = element.selectFirst("a[href*='/episodio/']")?.attr("href")
+                    ?: element.selectFirst("a")?.attr("href")
+                    ?: return@mapNotNull null
+
+                val animeUrl = if (epHref.contains("-episodio-")) {
+                    epHref.substringBeforeLast("-episodio-").replace("/episodio/", "/anime/")
+                } else {
+                    epHref
+                }
+
+                val title = element.selectFirst("span.serie")?.text()?.trim()
+                    ?.takeIf(String::isNotBlank)
+                    ?: element.selectFirst("img")?.attr("alt")?.substringBefore(" Episódio")?.trim()
+                    ?: element.selectFirst(".data h3, .data a, h3")?.text()?.trim()
+                    ?: ""
+
+                SAnime.create().apply {
+                    setUrlWithoutDomain(animeUrl)
+                    this.title = title
+                } to epHref
+            }.getOrNull()
+        }
+
+        val distinctEntries = rawAnimes.distinctBy { it.first.url }
+
+        runBlocking(Dispatchers.IO) {
+            distinctEntries.map { (anime, epHref) ->
+                async {
+                    val canonUrl = if (anime.url.startsWith("http")) anime.url else "$baseUrl${anime.url}"
+                    val slug = canonUrl.trimEnd('/').substringAfterLast("/")
+
+                    val cachedPoster = catalogPosterCache[anime.url]
+                        ?: catalogPosterCache[slug]
+                        ?: catalogPosterCache[canonUrl]
+                        ?: catalogPosterCache["/anime/$slug"]
+
+                    if (!cachedPoster.isNullOrBlank()) {
+                        anime.thumbnail_url = cachedPoster
+                    } else {
+                        val info = fetchCanonicalAnimeInfo(canonUrl, epHref)
+                        if (info != null) {
+                            val (realUrl, poster) = info
+                            anime.setUrlWithoutDomain(realUrl)
+                            val realSlug = realUrl.trimEnd('/').substringAfterLast("/")
+                            catalogPosterCache[anime.url] = poster
+                            catalogPosterCache[slug] = poster
+                            catalogPosterCache[realSlug] = poster
+                            catalogPosterCache[canonUrl] = poster
+                            catalogPosterCache[realUrl] = poster
+                            catalogPosterCache["/anime/$slug"] = poster
+                            catalogPosterCache["/anime/$realSlug"] = poster
+                            anime.thumbnail_url = poster
+                        }
+                    }
+                }
+            }.awaitAll()
+        }
+
+        val distinctAnimes = distinctEntries.map { it.first }
+        val hasNextPage = document.selectFirst(latestUpdatesNextPageSelector()) != null
+        return AnimesPage(distinctAnimes, hasNextPage)
+    }
 
     // =============================== Search ===============================
+    override fun searchAnimeSelector() = "div.result-item div.image a"
+
+    override fun searchAnimeNextPageSelector() = latestUpdatesNextPageSelector()
+
+    override fun searchAnimeFromElement(element: Element): SAnime = SAnime.create().apply {
+        val href = element.attr("href")
+        setUrlWithoutDomain(href)
+        val img = element.selectFirst("img")
+        val detailsTitle = element.closest("div.result-item")?.selectFirst("div.details div.title a")?.text()?.trim()
+        title = detailsTitle ?: img?.attr("alt")?.trim() ?: ""
+        thumbnail_url = img?.getImageUrl()
+    }
+
     override fun searchAnimeRequest(page: Int, query: String, filters: AnimeFilterList): Request {
         val filterList = if (filters.isEmpty()) getFilterList() else filters
 
@@ -73,13 +311,16 @@ class AnimesDrive :
     override val additionalInfoSelector = "div.wp-content"
 
     override fun Document.getDescription(): String = select("$additionalInfoSelector p")
-        .first { !it.text().contains("Título Alternativo") }
-        ?.let { it.text() + "\n" }
+        .filter { !it.text().contains("Título Alternativo", ignoreCase = true) }
+        .joinToString("\n\n") { it.text().trim() }
+        .takeIf(String::isNotBlank)
+        ?.let { it + "\n" }
         ?: ""
 
     fun Document.getAlternativeTitle(): String = select("$additionalInfoSelector p")
-        .first { it.text().contains("Título Alternativo") }
-        ?.let { it.text() + "\n" }
+        .firstOrNull { it.text().contains("Título Alternativo", ignoreCase = true) }
+        ?.text()
+        ?.let { it + "\n" }
         ?: ""
 
     override fun animeDetailsParse(document: Document): SAnime {
@@ -97,27 +338,31 @@ class AnimesDrive :
         }
         return SAnime.create().apply {
             setUrlWithoutDomain(doc.location())
-            sheader.selectFirst("div.poster > img")!!.let {
-                thumbnail_url = it.getImageUrl()
-                title = it.attr("alt").ifEmpty {
-                    sheader.selectFirst("div.data > h1")!!.text()
+            val posterImg = sheader.selectFirst("div.poster > img, div.poster img")
+            if (posterImg != null) {
+                thumbnail_url = posterImg.getImageUrl()
+                title = posterImg.attr("alt").ifEmpty {
+                    sheader.selectFirst("div.data > h1")?.text().orEmpty()
                 }.trim()
+            } else {
+                title = sheader.selectFirst("div.data > h1")?.text()?.trim().orEmpty()
+                thumbnail_url = doc.selectFirst("meta[property='og:image']")?.attr("content")?.trim()
             }
 
             genre = sheader.select("div.data div.sgeneros > a")
                 .eachText()
                 .joinToString()
 
-            // description = doc.getDescription()
-            doc.selectFirst("div#info")?.let { info ->
-                description = buildString {
-                    append(doc.getDescription())
-                    append(doc.getAlternativeTitle())
+            val info = doc.selectFirst("div#info")
+            description = buildString {
+                append(doc.getDescription())
+                append(doc.getAlternativeTitle())
+                if (info != null) {
                     additionalInfoItems.forEach {
                         info.getInfo(it)?.let(::append)
                     }
                 }
-            }
+            }.trim()
         }
     }
 
@@ -125,6 +370,9 @@ class AnimesDrive :
         val menu = document.selectFirst(animeMenuSelector)
         val explicitUrl = menu?.parent()?.takeIf { !it.hasClass("nonex") }?.attr("href")
             ?.takeIf { it.contains("/anime/") }
+            ?: document.selectFirst("div.pag_episodes a[href*='/anime/'], .aq-nav-all a[href*='/anime/']")
+                ?.attr("href")
+                ?.takeIf { !it.contains("#") && it.contains("/anime/") }
         val animeUrl = explicitUrl ?: document.select("div.pag_episodes a[href*='/episodio/']")
             .map { it.attr("href") }
             .firstOrNull { it.substringAfterLast('/').substringBeforeLast("-episodio-") == document.location().substringAfterLast('/').substringBeforeLast("-episodio-") }
