@@ -1,5 +1,6 @@
 package eu.kanade.tachiyomi.animeextension.pt.animesroll
 
+import android.util.Base64
 import android.util.Log
 import androidx.preference.ListPreference
 import androidx.preference.PreferenceScreen
@@ -21,6 +22,7 @@ import keiyoushi.utils.useAsJsoup
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Request
 import okhttp3.Response
+import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.text.SimpleDateFormat
@@ -258,22 +260,49 @@ class AnimesROLL :
     // ============================ Video Links =============================
 
     override fun videoListParse(response: Response): List<Video> {
-        Log.d(VIDEO_DEBUG_TAG, "episode=${response.request.url}")
         val document = response.useAsJsoup()
+        val episodeUrl = response.request.url.toString()
+        Log.d(VIDEO_DEBUG_TAG, "episode=$episodeUrl")
+
+        val servers = mutableListOf<Pair<String, String>>()
+
+        val mirrorTabs = document.select("ul.mirror-tabs li.mirror-tab, li.mirror-tab")
+        for (tab in mirrorTabs) {
+            val serverName = tab.text().trim()
+            val dataEmbed = tab.attr("data-embed")
+            if (dataEmbed.isNotBlank()) {
+                val decoded = runCatching {
+                    String(Base64.decode(dataEmbed, Base64.DEFAULT), Charsets.UTF_8)
+                }.getOrNull()
+                if (decoded != null) {
+                    val iframeSrc = Jsoup.parse(decoded).selectFirst("iframe[src]")?.attr("src")
+                    if (!iframeSrc.isNullOrBlank()) {
+                        servers.add(serverName to iframeSrc)
+                    }
+                }
+            }
+        }
+
         val iframes = document.select("div#pembed iframe[src], div.ep-player-inner iframe[src], iframe[src]")
-        Log.d(VIDEO_DEBUG_TAG, "iframes=${iframes.size}")
+        for (iframe in iframes) {
+            val src = iframe.attr("abs:src")
+            if (src.isNotBlank()) {
+                val serverName = if ("prime" in src) "PRIME" else "EMBED"
+                servers.add(serverName to src)
+            }
+        }
 
-        val iframeUrls = iframes.mapNotNull { it.attr("abs:src").takeIf(String::isNotBlank) }.distinct()
-        Log.d(VIDEO_DEBUG_TAG, "iframeUrls=${iframeUrls.joinToString { it.substringBefore('?') }}")
+        val distinctServers = servers.distinctBy { it.second }
+        Log.d(VIDEO_DEBUG_TAG, "servers=${distinctServers.size}")
 
-        return iframeUrls.parallelCatchingFlatMapBlocking { iframeUrl ->
+        return distinctServers.parallelCatchingFlatMapBlocking { (serverName, iframeUrl) ->
             when {
-                "anidrive.click" in iframeUrl -> runCatching {
-                    val videos = animesrollExtractor.videosFromUrl(iframeUrl, referer = response.request.url.toString())
-                    Log.d(VIDEO_DEBUG_TAG, "provider=anidrive videos=${videos.size}")
+                "anidrive" in iframeUrl -> runCatching {
+                    val videos = animesrollExtractor.videosFromUrl(iframeUrl, serverName, referer = episodeUrl)
+                    Log.d(VIDEO_DEBUG_TAG, "provider=anidrive server=$serverName videos=${videos.size}")
                     videos
                 }.getOrElse { error ->
-                    Log.w(VIDEO_DEBUG_TAG, "provider=anidrive failed=${error::class.simpleName}:${error.message}")
+                    Log.w(VIDEO_DEBUG_TAG, "provider=anidrive server=$serverName failed=${error::class.simpleName}:${error.message}")
                     emptyList()
                 }
                 else -> {
