@@ -132,7 +132,10 @@ class AnimeIto :
     override fun videoListSelector() = "ul.tabs_videos li"
 
     override suspend fun getHosterUrl(element: Element): String {
-        val encodedData = element.attr("value")
+        val encodedData = element.attr("value").ifBlank { element.attr("data-src") }
+        if (encodedData.isBlank()) {
+            return element.selectFirst("iframe")?.attr("src").orEmpty()
+        }
 
         return getHosterUrl(encodedData)
     }
@@ -144,9 +147,9 @@ class AnimeIto :
         Log.d(VIDEO_DEBUG_TAG, "episode=${response.request.url} hosters=${items.size}")
         return items.parallelCatchingFlatMapBlocking { element ->
             val name = element.text()
-            val url = getHosterUrl(element)
-            Log.d(VIDEO_DEBUG_TAG, "hoster=${name.trim()} url=${url.substringBefore('?')}")
             runCatching {
+                val url = getHosterUrl(element)
+                Log.d(VIDEO_DEBUG_TAG, "hoster=${name.trim()} url=${url.substringBefore('?')}")
                 getVideoList(url, name, response.request.url.toString())
             }.getOrElse { error ->
                 Log.w(VIDEO_DEBUG_TAG, "provider failed=${error::class.simpleName}:${error.message}")
@@ -156,7 +159,7 @@ class AnimeIto :
     }
 
     private suspend fun getVideoList(url: String, name: String, referer: String): List<Video> = when {
-        "anidrive.click" in url -> animeitoExtractor.videosFromUrl(url, name.trim(), referer)
+        "anidrive" in url -> animeitoExtractor.videosFromUrl(url, name.trim(), referer)
         else -> {
             Log.d(VIDEO_DEBUG_TAG, "unsupported provider=${url.substringBefore('/')}")
             emptyList()

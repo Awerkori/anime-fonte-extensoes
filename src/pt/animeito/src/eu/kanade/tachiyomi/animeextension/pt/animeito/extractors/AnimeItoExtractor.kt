@@ -36,9 +36,16 @@ class AnimeItoExtractor(private val client: OkHttpClient, private val headers: H
 
     suspend fun videosFromUrl(url: String, serverName: String = "", referer: String = ""): List<Video> {
         val qualityPrefix = qualityPrefix(serverName)
+        val userAgent = headers["User-Agent"]?.takeIf { it.isNotBlank() } ?: DEFAULT_USER_AGENT
         val playerHeaders = headers.newBuilder()
+            .set("User-Agent", userAgent)
             .set("Referer", referer.takeIf { it.isNotBlank() } ?: headers["Referer"].orEmpty())
             .set("Origin", "https://animesonline.io")
+            .set("Sec-Fetch-Dest", "iframe")
+            .set("Sec-Fetch-Mode", "navigate")
+            .set("Sec-Fetch-Site", "cross-site")
+            .set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
+            .set("Upgrade-Insecure-Requests", "1")
             .build()
         val playerDoc = client.newCall(GET(url, playerHeaders)).awaitSuccess().useAsJsoup()
 
@@ -90,27 +97,72 @@ class AnimeItoExtractor(private val client: OkHttpClient, private val headers: H
     private fun extractVideosFromScript(script: String, pageUrl: String, qualityPrefix: String): List<Video> {
         val sourcesBlock = extractSourcesBlock(script)
         if (sourcesBlock != null) {
-            val directVideos = videosFromSourceText(sourcesBlock, pageUrl, qualityPrefix)
+            val directVideos = extractVideosFromSourcesBlock(sourcesBlock, pageUrl, qualityPrefix)
             if (directVideos.isNotEmpty()) {
                 return directVideos
             }
         }
 
         if ("videoplayback" in script) {
-            return videosFromSourceText(script, pageUrl, qualityPrefix)
+            val directVideos = videosFromSourceText(script, pageUrl, qualityPrefix)
+            if (directVideos.isNotEmpty()) {
+                return directVideos
+            }
         }
 
         val masterPlaylistUrl = extractHlsUrl(script)
         if (masterPlaylistUrl != null) {
             Log.d(tag, "HLS master URL: $masterPlaylistUrl")
+            val videoHeaders = buildVideoHeaders(pageUrl)
             return playlistUtils.extractFromHls(
                 masterPlaylistUrl,
                 pageUrl,
+                masterHeadersGen = { _, _ -> videoHeaders },
+                videoHeadersGen = { _, _, _ -> videoHeaders },
                 videoNameGen = { "$qualityPrefix - $it" },
             )
         }
 
         return emptyList()
+    }
+
+    private fun extractVideosFromSourcesBlock(sourcesBlock: String, pageUrl: String, qualityPrefix: String): List<Video> {
+        val videoHeaders = buildVideoHeaders(pageUrl)
+        val videos = mutableListOf<Video>()
+
+        val jsonItems = runCatching {
+            Json.parseToJsonElement(sourcesBlock).jsonArray
+        }.getOrNull()
+
+        if (jsonItems != null && jsonItems.isNotEmpty()) {
+            for (element in jsonItems) {
+                val item = element.jsonObject
+                val rawUrl = item["file"]?.jsonPrimitive?.content ?: item["url"]?.jsonPrimitive?.content
+                if (rawUrl.isNullOrBlank()) continue
+                val videoUrl = normalizeStreamUrl(rawUrl)
+                if (!isPlayableUrl(videoUrl)) continue
+                val label = item["label"]?.jsonPrimitive?.content?.takeIf { it.isNotBlank() } ?: "Video"
+                val type = item["type"]?.jsonPrimitive?.content.orEmpty()
+
+                if (type == "hls" || type == "m3u8" || ".m3u8" in videoUrl) {
+                    videos += playlistUtils.extractFromHls(
+                        videoUrl,
+                        pageUrl,
+                        masterHeadersGen = { _, _ -> videoHeaders },
+                        videoHeadersGen = { _, _, _ -> videoHeaders },
+                        videoNameGen = { "$qualityPrefix - $it" },
+                    )
+                } else {
+                    Log.d(tag, "Found direct video: $label - ${videoUrl.take(80)}...")
+                    videos += Video(videoUrl, "$qualityPrefix - $label", videoUrl, videoHeaders)
+                }
+            }
+            if (videos.isNotEmpty()) {
+                return videos
+            }
+        }
+
+        return videosFromSourceText(sourcesBlock, pageUrl, qualityPrefix)
     }
 
     private fun videosFromSourceText(text: String, pageUrl: String, qualityPrefix: String): List<Video> {
@@ -127,6 +179,8 @@ class AnimeItoExtractor(private val client: OkHttpClient, private val headers: H
                     ".m3u8" in videoUrl -> playlistUtils.extractFromHls(
                         videoUrl,
                         pageUrl,
+                        masterHeadersGen = { _, _ -> videoHeaders },
+                        videoHeadersGen = { _, _, _ -> videoHeaders },
                         videoNameGen = { "$qualityPrefix - $it" },
                     ).asSequence()
                     else -> sequenceOf(Video(videoUrl, "$qualityPrefix - $quality", videoUrl, videoHeaders))
@@ -169,7 +223,7 @@ class AnimeItoExtractor(private val client: OkHttpClient, private val headers: H
         url
     }
 
-    private fun isPlayableUrl(url: String): Boolean = url.contains("videoplayback") || url.contains(".m3u8") || url.contains(".mp4")
+    private fun isPlayableUrl(url: String): Boolean = url.isNotBlank() && !url.contains("no-video.mp4") && (url.contains("videoplayback") || url.contains(".m3u8") || url.contains(".mp4"))
 
     @SuppressLint("SetJavaScriptEnabled")
     private suspend fun videosFromWebView(url: String, qualityPrefix: String): List<Video> = withContext(Dispatchers.IO) {
@@ -183,7 +237,13 @@ class AnimeItoExtractor(private val client: OkHttpClient, private val headers: H
         val latch = CountDownLatch(1)
         var webView: WebView? = null
         var jsResult = ""
-        val loadHeaders = headers.toMultimap().mapValues { entry -> entry.value.getOrNull(0) ?: "" }
+        val userAgent = headers["User-Agent"]?.takeIf { it.isNotBlank() } ?: DEFAULT_USER_AGENT
+        val loadHeaders = headers.newBuilder()
+            .set("User-Agent", userAgent)
+            .set("Referer", "https://animesonline.io/")
+            .set("Origin", "https://animesonline.io")
+            .build()
+            .toMultimap().mapValues { entry -> entry.value.getOrNull(0) ?: "" }
         val jsInterface = PlayerJSInterface(latch) { jsResult = it }
 
         try {
@@ -194,7 +254,7 @@ class AnimeItoExtractor(private val client: OkHttpClient, private val headers: H
                     javaScriptEnabled = true
                     domStorageEnabled = true
                     databaseEnabled = true
-                    userAgentString = headers["User-Agent"]
+                    userAgentString = userAgent
                 }
                 newView.addJavascriptInterface(jsInterface, "Android")
                 newView.webViewClient = object : WebViewClient() {
@@ -258,6 +318,8 @@ class AnimeItoExtractor(private val client: OkHttpClient, private val headers: H
                     videos += playlistUtils.extractFromHls(
                         videoUrl,
                         pageUrl,
+                        masterHeadersGen = { _, _ -> videoHeaders },
+                        videoHeadersGen = { _, _, _ -> videoHeaders },
                         videoNameGen = { "$qualityPrefix - $it" },
                     )
                 }
@@ -278,7 +340,9 @@ class AnimeItoExtractor(private val client: OkHttpClient, private val headers: H
     private fun buildVideoHeaders(pageUrl: String): Headers {
         val httpUrl = pageUrl.toHttpUrlOrNull() ?: return headers
         val siteOrigin = "${httpUrl.scheme}://${httpUrl.host}"
+        val userAgent = headers["User-Agent"]?.takeIf { it.isNotBlank() } ?: DEFAULT_USER_AGENT
         return headers.newBuilder()
+            .set("User-Agent", userAgent)
             .set("Referer", "$siteOrigin/")
             .set("Origin", siteOrigin)
             .build()
@@ -389,6 +453,8 @@ class AnimeItoExtractor(private val client: OkHttpClient, private val headers: H
     }
 
     companion object {
+        private const val DEFAULT_USER_AGENT =
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         private val WEB_VIEW_LOCK = Any()
         private const val TIMEOUT_SEC: Long = 15
         private const val SOURCES_MARKER = "\"sources\":["
