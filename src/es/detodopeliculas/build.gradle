@@ -3,7 +3,7 @@ ext {
     extClass = '.DeTodoPeliculas'
     themePkg = 'dooplay'
     baseUrl = 'https://detodopeliculas.nu'
-    overrideVersionCode = 25
+    overrideVersionCode = 26
 }
 
 apply plugin: "kei.plugins.extension.legacy"

@@ -3,7 +3,7 @@ ext {
     extClass = '.AnimeYTES'
     themePkg = 'animestream'
     baseUrl = 'https://animeyt.pro'
-    overrideVersionCode = 27
+    overrideVersionCode = 28
 }
 
 apply plugin: "kei.plugins.extension.legacy"

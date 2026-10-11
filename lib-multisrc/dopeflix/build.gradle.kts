@@ -4,7 +4,7 @@ plugins {
     alias(kei.plugins.multisrc)
 }
 
-baseVersionCode = 28
+baseVersionCode = 29
 
 dependencies {
     api(project(":lib:dopeflixextractor"))

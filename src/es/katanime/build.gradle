@@ -1,7 +1,7 @@
 ext {
     extName = 'Katanime'
     extClass = '.Katanime'
-    extVersionCode = 28
+    extVersionCode = 29
 }
 
 apply plugin: "kei.plugins.extension.legacy"
