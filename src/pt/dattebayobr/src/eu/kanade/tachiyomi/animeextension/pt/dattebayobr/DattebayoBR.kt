@@ -1,5 +1,6 @@
 package eu.kanade.tachiyomi.animeextension.pt.dattebayobr
 
+import eu.kanade.tachiyomi.animesource.model.AnimeFilter
 import eu.kanade.tachiyomi.animesource.model.AnimeFilterList
 import eu.kanade.tachiyomi.animesource.model.AnimesPage
 import eu.kanade.tachiyomi.animesource.model.SAnime
@@ -12,6 +13,7 @@ import keiyoushi.utils.bodyString
 import keiyoushi.utils.parallelCatchingFlatMapBlocking
 import keiyoushi.utils.tryParse
 import keiyoushi.utils.useAsJsoup
+import okhttp3.Headers
 import okhttp3.Request
 import okhttp3.Response
 import org.json.JSONArray
@@ -25,83 +27,70 @@ class DattebayoBR : AnimeHttpLegacySource() {
     override val lang = "pt-BR"
     override val supportsLatest = true
 
-    override fun headersBuilder(): okhttp3.Headers.Builder = okhttp3.Headers.Builder()
-        .add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
-        .add("Accept", "*/*")
+    override fun headersBuilder(): Headers.Builder = super.headersBuilder()
+        .add("Referer", "$baseUrl/")
         .add("Accept-Language", "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7")
-        .add("X-Requested-With", "XMLHttpRequest")
 
-    // Popular
-    override fun popularAnimeRequest(page: Int): Request = GET(baseUrl, headers)
+    // ============================== Popular ==============================
+    override fun popularAnimeRequest(page: Int): Request = GET("$baseUrl/animes/page/$page", headers)
 
     override fun popularAnimeParse(response: Response): AnimesPage {
         val document = response.useAsJsoup()
-
-        val animes = document
-            .select("div.ultimosAnimesHomeItem")
-            .map { element ->
-                SAnime.create().apply {
-                    val anchor = element.selectFirst("a")!!
-
-                    title = element
-                        .selectFirst(".ultimosAnimesHomeItemInfosNome")
-                        ?.text()
-                        ?.trim()
-                        ?: "Sem título"
-
-                    setUrlWithoutDomain(anchor.attr("href"))
-
-                    thumbnail_url = element
-                        .selectFirst(".ultimosAnimesHomeItemImg img")
-                        ?.attr("abs:src")
-                }
-            }
-        return AnimesPage(animes, hasNextPage = true)
+        val animes = document.select("div.ultimosAnimesHomeItem").mapNotNull(::animeFromElement)
+        val hasNextPage = document.selectFirst("div.letterBox a:contains(»)") != null
+        return AnimesPage(animes, hasNextPage)
     }
 
-    // Latest
-    override fun latestUpdatesRequest(page: Int): Request = popularAnimeRequest(page)
+    // ============================== Latest ===============================
+    override fun latestUpdatesRequest(page: Int): Request = GET(baseUrl, headers)
 
-    override fun latestUpdatesParse(response: Response): AnimesPage = popularAnimeParse(response)
+    override fun latestUpdatesParse(response: Response): AnimesPage {
+        val document = response.useAsJsoup()
+        val animes = document.select("div.ultimosAnimesHomeItem").mapNotNull(::animeFromElement)
+        return AnimesPage(animes, hasNextPage = false)
+    }
 
-    // Search
+    // ============================== Search ===============================
     override fun searchAnimeRequest(
         page: Int,
         query: String,
         filters: AnimeFilterList,
-    ): Request = GET("$baseUrl/busca?busca=$query&page=$page", headers)
+    ): Request {
+        if (query.isNotBlank()) {
+            val encodedQuery = java.net.URLEncoder.encode(query, "UTF-8")
+            return GET("$baseUrl/busca?busca=$encodedQuery&page=$page", headers)
+        }
 
-    override fun searchAnimeParse(response: Response): AnimesPage {
-        val document = response.useAsJsoup()
+        var letterPath = ""
+        var categoryPath = "animes"
 
-        val animes = document
-            .select("div.ultimosAnimesHomeItem")
-            .map { element ->
-                SAnime.create().apply {
-                    val anchor = element.selectFirst("a")!!
-
-                    title = element
-                        .selectFirst(".ultimosAnimesHomeItemInfosNome")
-                        ?.text()
-                        ?.trim()
-                        ?: "Sem título"
-
-                    setUrlWithoutDomain(anchor.attr("href"))
-
-                    thumbnail_url = element
-                        .selectFirst(".ultimosAnimesHomeItemImg img")
-                        ?.attr("abs:src")
+        for (filter in filters) {
+            when (filter) {
+                is LetterFilter -> {
+                    val value = filter.toPath()
+                    if (value.isNotBlank()) {
+                        letterPath = value
+                    }
                 }
+                is CategoryFilter -> {
+                    categoryPath = filter.toPath()
+                }
+                else -> {}
             }
+        }
 
-        val hasNextPage = document.selectFirst("div.letterBox a:contains(»)")
-            ?.attr("href")
-            ?.contains("page=") == true
+        val url = if (letterPath.isNotBlank()) {
+            "$baseUrl/animes/letra/$letterPath/page/$page"
+        } else {
+            "$baseUrl/$categoryPath/page/$page"
+        }
 
-        return AnimesPage(animes, hasNextPage)
+        return GET(url, headers)
     }
 
-    // Details
+    override fun searchAnimeParse(response: Response): AnimesPage = popularAnimeParse(response)
+
+    // ============================== Details ==============================
     override fun animeDetailsParse(response: Response): SAnime {
         val document = response.useAsJsoup()
 
@@ -124,26 +113,32 @@ class DattebayoBR : AnimeHttpLegacySource() {
                 .select(".aniInfosSingleGeneros span")
                 .joinToString { it.text() }
 
-            status = when (
-                document.selectFirst(".anime_status span")
-                    ?.text()
-                    ?.lowercase()
-            ) {
-                "completo" -> SAnime.COMPLETED
-                else -> SAnime.UNKNOWN
+            author = document
+                .selectFirst(".aniInfosSingleInfoItem:has(b:contains(Autor)) span")
+                ?.text()
+                ?.trim()
+
+            artist = document
+                .selectFirst(".aniInfosSingleInfoItem:has(b:contains(Estúdio)) span")
+                ?.text()
+                ?.trim()
+
+            status = when {
+                document.selectFirst(".anime_status span")?.text()?.contains("Completo", ignoreCase = true) == true -> SAnime.COMPLETED
+                else -> SAnime.ONGOING
             }
 
             initialized = true
         }
     }
 
-    // Episodes
+    // ============================== Episodes =============================
     private fun parseEpisodeElement(element: Element): SEpisode? {
         try {
             val anchor = element.selectFirst("a") ?: return null
             val episodeNumText = element.selectFirst(".ultimosEpisodiosHomeItemInfosNum")
                 ?.text()
-                ?.replace("Episódio", "")
+                ?.replace("Episódio", "", ignoreCase = true)
                 ?.trim()
                 ?: return null
 
@@ -178,22 +173,19 @@ class DattebayoBR : AnimeHttpLegacySource() {
         var currentPage = 1
 
         while (true) {
-            val pageUrl = if (currentPage == 1) {
-                baseAnimeUrl
+            val pageUrl = if (currentPage == 1) baseAnimeUrl else "$baseAnimeUrl/page/$currentPage"
+            val document = if (currentPage == 1) {
+                response.useAsJsoup()
             } else {
-                "$baseAnimeUrl/page/$currentPage"
+                client.newCall(GET(pageUrl, headers)).execute().useAsJsoup()
             }
-
-            val responsePage = client.newCall(GET(pageUrl, headers)).execute()
-            val document = responsePage.useAsJsoup()
 
             val pageEpisodes = document.select("div.ultimosEpisodiosHomeItem")
             if (pageEpisodes.isEmpty()) break
 
             var addedAny = false
-
-            pageEpisodes.forEach { element ->
-                val episode = parseEpisodeElement(element) ?: return@forEach
+            for (element in pageEpisodes) {
+                val episode = parseEpisodeElement(element) ?: continue
                 if (seenUrls.add(episode.url)) {
                     episodes.add(episode)
                     addedAny = true
@@ -201,6 +193,9 @@ class DattebayoBR : AnimeHttpLegacySource() {
             }
 
             if (!addedAny) break
+
+            val hasNextPage = document.selectFirst("div.letterBox a:contains(»)") != null
+            if (!hasNextPage) break
 
             currentPage++
         }
@@ -220,34 +215,38 @@ class DattebayoBR : AnimeHttpLegacySource() {
             }
     }
 
-    private val dateFormatter by lazy { SimpleDateFormat("dd/MM/yyyy 'às' HH:mm", Locale("pt", "BR")) }
-
-    // Videos
+    // =============================== Videos ==============================
     override fun videoListParse(response: Response): List<Video> {
         val document = response.useAsJsoup()
         val episodeUrl = response.request.url.toString()
 
-        // 1. Select only the tabs that exist in HTML. This prevents the code from attempting to process “id 2” if it does not exist in AbasBox.
         val activeAbas = document.select("div.AbasBox div.Aba")
 
-        return activeAbas.parallelCatchingFlatMapBlocking { aba ->
-            val abaType = aba.attr("aba-type")
-            val qualityName = aba.text()
+        val playerTargets = if (activeAbas.isNotEmpty()) {
+            activeAbas.mapNotNull { aba ->
+                val abaType = aba.attr("aba-type").ifBlank { aba.attr("data-target") }
+                val qualityName = aba.text().trim().ifBlank { "Padrão" }
+                val container = document.getElementById(abaType)
+                if (container != null) Pair(qualityName, container) else null
+            }
+        } else {
+            document.select("div.playerContainer").mapIndexed { index, container ->
+                Pair("Servidor ${index + 1}", container)
+            }
+        }
 
-            // 2. Locate the player container corresponding to that tab.
-            val container = document.getElementById(abaType) ?: return@parallelCatchingFlatMapBlocking emptyList()
-
-            // 3. Extract the specific script from this container.
+        val candidates = playerTargets.parallelCatchingFlatMapBlocking { (qualityName, container) ->
             val scriptData = container.selectFirst("script")?.data() ?: ""
             val vidRegex = """var vid\s*=\s*['"](.*?)['"]""".toRegex()
-            val urlQualidade = vidRegex.find(scriptData)?.groupValues?.get(1) ?: return@parallelCatchingFlatMapBlocking emptyList()
+            val urlQualidade = vidRegex.find(scriptData)?.groupValues?.get(1)
+                ?: return@parallelCatchingFlatMapBlocking emptyList()
 
             val encodedUrl = java.net.URLEncoder.encode(urlQualidade, "UTF-8")
             val adUrl = "https://ads.animeyabu.net?url=$encodedUrl"
 
-            val adHeaders = headersBuilder()
-                .add("Referer", episodeUrl)
-                .add("Origin", "https://www.dattebayo-br.com")
+            val adHeaders = headers.newBuilder()
+                .set("Referer", episodeUrl)
+                .set("Origin", "https://www.dattebayo-br.com")
                 .build()
 
             val adRequest = Request.Builder().url(adUrl).headers(adHeaders).build()
@@ -262,12 +261,129 @@ class DattebayoBR : AnimeHttpLegacySource() {
 
                     if (assinatura.isNotBlank()) {
                         val urlFinal = urlQualidade + assinatura
-                        return@parallelCatchingFlatMapBlocking Video(urlFinal, qualityName, urlFinal, headers = adHeaders).let(::listOf)
+                        val videoHeaders = headers.newBuilder()
+                            .set("Referer", episodeUrl)
+                            .build()
+
+                        val probeRequest = Request.Builder()
+                            .url(urlFinal)
+                            .headers(videoHeaders)
+                            .header("Range", "bytes=0-0")
+                            .build()
+
+                        val isPlayable = runCatching {
+                            client.newCall(probeRequest).execute().use { probeResponse ->
+                                probeResponse.isSuccessful
+                            }
+                        }.getOrDefault(false)
+
+                        return@parallelCatchingFlatMapBlocking listOf(
+                            Pair(Video(urlFinal, qualityName, urlFinal, headers = videoHeaders), isPlayable),
+                        )
                     }
                 }
             }
             emptyList()
         }
-            .sortedByDescending { it.videoTitle }
+
+        val playable = candidates.filter { it.second }.map { it.first }
+        val streamsToUse = if (playable.isNotEmpty()) playable else candidates.map { it.first }
+
+        return streamsToUse
+            .sortedByDescending { qualityPriority(it.videoTitle) }
+            .distinctBy { it.videoUrl }
+    }
+
+    private fun qualityPriority(quality: String): Int {
+        val q = quality.uppercase()
+        return when {
+            q.contains("FULL") || q.contains("1080") -> 100
+            q.contains("HD") || q.contains("720") -> 80
+            q.contains("SD") || q.contains("480") || q.contains("360") -> 50
+            else -> 10
+        }
+    }
+
+    // =============================== Filters =============================
+    override fun getFilterList(): AnimeFilterList = AnimeFilterList(
+        CategoryFilter(),
+        LetterFilter(),
+    )
+
+    private class CategoryFilter :
+        AnimeFilter.Select<String>(
+            "Categoria",
+            CATEGORIES.map { it.first }.toTypedArray(),
+        ) {
+        fun toPath(): String = CATEGORIES[state].second
+    }
+
+    private class LetterFilter :
+        AnimeFilter.Select<String>(
+            "Letra inicial",
+            LETTERS.map { it.first }.toTypedArray(),
+        ) {
+        fun toPath(): String = LETTERS[state].second
+    }
+
+    // =============================== Helpers =============================
+    private fun animeFromElement(element: Element): SAnime? {
+        val anchor = element.selectFirst("a") ?: return null
+        val title = element.selectFirst(".ultimosAnimesHomeItemInfosNome")
+            ?.text()
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?: return null
+
+        return SAnime.create().apply {
+            this.title = title
+            setUrlWithoutDomain(anchor.attr("href"))
+            thumbnail_url = element
+                .selectFirst(".ultimosAnimesHomeItemImg img")
+                ?.attr("abs:src")
+        }
+    }
+
+    private val dateFormatter by lazy { SimpleDateFormat("dd/MM/yyyy 'às' HH:mm", Locale("pt", "BR")) }
+
+    companion object {
+        private val CATEGORIES = arrayOf(
+            Pair("Todos", "animes"),
+            Pair("Animes Dublados", "anime-dublado"),
+            Pair("Tokusatsus", "tokusatsus"),
+            Pair("Doramas", "doramas"),
+            Pair("Donghuas", "donghua"),
+        )
+
+        private val LETTERS = arrayOf(
+            Pair("Todas", ""),
+            Pair("0-9", "numeros"),
+            Pair("A", "a"),
+            Pair("B", "b"),
+            Pair("C", "c"),
+            Pair("D", "d"),
+            Pair("E", "e"),
+            Pair("F", "f"),
+            Pair("G", "g"),
+            Pair("H", "h"),
+            Pair("I", "i"),
+            Pair("J", "j"),
+            Pair("K", "k"),
+            Pair("L", "l"),
+            Pair("M", "m"),
+            Pair("N", "n"),
+            Pair("O", "o"),
+            Pair("P", "p"),
+            Pair("Q", "q"),
+            Pair("R", "r"),
+            Pair("S", "s"),
+            Pair("T", "t"),
+            Pair("U", "u"),
+            Pair("V", "v"),
+            Pair("W", "w"),
+            Pair("X", "x"),
+            Pair("Y", "y"),
+            Pair("Z", "z"),
+        )
     }
 }
