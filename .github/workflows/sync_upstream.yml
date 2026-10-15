@@ -58,13 +58,11 @@ jobs:
             exit 0
           fi
 
-          # If the upstream commit matches the synced marker and is already merged in HEAD
+          # If the upstream commit matches the synced marker, no new upstream changes exist
           if [ "$UPSTREAM_SHA" = "$SYNC_SHA" ]; then
-            if git rev-parse -q --verify "${UPSTREAM_SHA}^{commit}" >/dev/null 2>&1 && git merge-base --is-ancestor "$UPSTREAM_SHA" HEAD; then
-              echo "No new updates in upstream. Upstream ${UPSTREAM_SHA} is already synchronized into main."
-              echo "has_changes=false" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
+            echo "No new updates in upstream. Upstream ${UPSTREAM_SHA} is already synchronized."
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
           echo "New upstream changes detected (${UPSTREAM_SHA} != ${SYNC_SHA} or not in main). Proceeding with sync."
