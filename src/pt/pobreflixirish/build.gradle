@@ -1,7 +1,7 @@
 ext {
     extName = 'Pobreflix Irish'
     extClass = '.PobreflixIrish'
-    extVersionCode = 4
+    extVersionCode = 5
     isNsfw = true
 }
 
