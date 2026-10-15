@@ -1,7 +1,7 @@
 ext {
     extName = 'Startflix'
     extClass = '.Startflix'
-    extVersionCode = 4
+    extVersionCode = 5
     baseUrl = 'https://www.startflix.biz'
     isNsfw = false
 }

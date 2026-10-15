@@ -3,7 +3,7 @@ ext {
     extClass = '.FlixLatam'
     themePkg = 'dooplay'
     baseUrl = 'https://flixlatam.com'
-    overrideVersionCode = 31
+    overrideVersionCode = 32
 }
 
 apply plugin: "kei.plugins.extension.legacy"
