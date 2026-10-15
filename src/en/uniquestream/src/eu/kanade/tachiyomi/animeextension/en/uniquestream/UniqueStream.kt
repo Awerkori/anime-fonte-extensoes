@@ -175,7 +175,7 @@ class UniqueStream : AnimeHttpLegacySource() {
                     }.toList()
                 }
             }.getOrElse { listOfNotNull(singleVideo(originalLabel, hls)) }
-        } ?: emptyList<Video>()
+        } ?: emptyList()
 
         val videos = originalVideos +
             hls.hardSubs.orEmpty().mapNotNull { sub -> singleVideo(hardSubLabel(sub.locale), sub) } +

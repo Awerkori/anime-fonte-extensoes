@@ -1,11 +1,12 @@
 ext {
     extName = 'UniqueStream'
     extClass = '.UniqueStream'
-    extVersionCode = 8
+    extVersionCode = 9
 }
 
 apply plugin: "kei.plugins.extension.legacy"
 
 dependencies {
+    implementation(project(":lib:hlssegment"))
     implementation("com.github.komikku-app.nanohttpd:nanohttpd:gradle-upgrade-SNAPSHOT")
 }

@@ -1,6 +1,7 @@
 package eu.kanade.tachiyomi.animeextension.en.gotaku
 
 import android.util.Base64
+import keiyoushi.utils.decodeHex
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -34,9 +35,7 @@ object Crypto {
         167, 208, 189, 122, 150, 242, 60, 1, 70, 177, 253, 150, 158, 124, 253, 47,
     ).map { it.toByte() }.toByteArray()
 
-    private val MANIFEST_SEED = hexToBytes(
-        "458e5403c40a73332706df406193dd6b040a2ea97a6bb59b52b294a61006e6ef",
-    )
+    private val MANIFEST_SEED = "458e5403c40a73332706df406193dd6b040a2ea97a6bb59b52b294a61006e6ef".decodeHex()
 
     /** HKDF-SHA256(ikm=API_SEED, salt=∅, info="api-seal|v1", L=32) — derived once. */
     private val apiKeySpec by lazy {
@@ -266,6 +265,4 @@ object Crypto {
     } catch (_: Exception) {
         null
     }
-
-    fun hexToBytes(hex: String): ByteArray = ByteArray(hex.length / 2) { i -> hex.substring(i * 2, i * 2 + 2).toInt(16).toByte() }
 }
