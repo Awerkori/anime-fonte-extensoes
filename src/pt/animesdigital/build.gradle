@@ -1,7 +1,8 @@
 ext {
+    libVersion = 16
     extName = 'Animes Digital'
     extClass = '.AnimesDigital'
-    extVersionCode = 12
+    extVersionCode = 13
 }
 
 apply plugin: "kei.plugins.extension.legacy"

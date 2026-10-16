@@ -1,7 +1,14 @@
 package eu.kanade.tachiyomi.animeextension.en.hexawatch
 
+import keiyoushi.utils.parseAs
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonPrimitive
 
 // ============================== General ===============================
 
@@ -109,20 +116,43 @@ data class EpisodeDto(
 // ============================ Video Extractor ===========================
 
 @Serializable
-data class ExtractorResponseDto(
-    val result: ExtractorResultDto,
-)
+class ServerTimeDto(val timestamp: Long)
 
 @Serializable
-data class ExtractorResultDto(
-    val sources: List<ExtractorSourceDto> = emptyList(),
-)
+class DecryptionRequestDto(val text: String, val key: String)
 
 @Serializable
-data class ExtractorSourceDto(
-    val server: String,
-    val url: String,
+class ExtractorResponseDto(
+    val result: JsonElement = JsonNull,
+    val error: String? = null,
 )
+
+/**
+ * Decrypted source payload. The server list response carries `sources` as a list (URLs may be
+ * empty) and/or a `servers` map; a per-server response carries `sources` as a list or as an
+ * object with `file`/`url`.
+ */
+@Serializable
+class ExtractorResultDto(
+    val sources: JsonElement? = null,
+    val servers: Map<String, JsonElement> = emptyMap(),
+) {
+    fun sourceUrls(): Map<String, String> {
+        val list = sources?.toSourceList()
+        if (list != null) return list.filter { it.url.isNotBlank() }.associate { it.server to it.url }
+        val obj = sources as? JsonObject ?: return emptyMap()
+        val url = (obj["file"] ?: obj["url"])?.jsonPrimitive?.contentOrNull
+        return if (url.isNullOrBlank()) emptyMap() else mapOf("" to url)
+    }
+}
+
+@Serializable
+class ExtractorSourceDto(
+    val server: String = "",
+    val url: String = "",
+)
+
+fun JsonElement.toSourceList(): List<ExtractorSourceDto>? = (this as? JsonArray)?.map { it.parseAs<ExtractorSourceDto>() }
 
 // ============================== Subtitles ===============================
 

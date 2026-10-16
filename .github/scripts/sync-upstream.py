@@ -50,6 +50,10 @@ _THEME_PKG_RE = re.compile(r"""themePkg\s*=\s*['"]([^'"]+)['"]""")
 #   baseVersionCode = <N>
 _BASE_VERSION_CODE_RE = re.compile(r"baseVersionCode\s*=\s*(\d+)")
 
+# In extension build.gradle (Groovy):
+#   libVersion = <N>
+_LIB_VERSION_RE = re.compile(r"libVersion\s*=\s*(\d+)")
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Git helpers
@@ -348,17 +352,33 @@ def effective_version(ref: str | None, unit: str) -> tuple[int, int, int] | None
         return raw, 0, raw
 
 
+def read_lib_version(ref: str | None, unit: str) -> int:
+    """Read libVersion from <unit>/build.gradle. Defaults to 14 if omitted."""
+    content = read_file_at(ref, f"{unit}/build.gradle")
+    if not content:
+        return 14
+    m = _LIB_VERSION_RE.search(content)
+    return int(m.group(1)) if m else 14
+
+
 def bump_version_if_needed(
-    unit: str, upstream_ref: str
+    unit: str,
+    upstream_ref: str,
+    pre_sync_effective: tuple[int, int, int] | None = None,
+    pre_sync_lib: int | None = None,
 ) -> tuple[int, int, int, int, int, int, int] | None:
     """
-    If upstream effective >= local effective, bump local version so that
-    local effective = upstream effective + 1.
+    Ensure local version code and libVersion are monotonically ahead of upstream.
+
+    If upstream effective >= local effective OR upstream_lib > local_lib,
+    bump local version so that:
+      local effective = max(upstream effective + 1, local effective + 1)
+      local libVersion = max(local_lib, upstream_lib)
 
     Returns (loc_raw, loc_base, loc_eff, up_raw, up_base, up_eff, new_raw) if bumped.
     Rewrites the file on disk. Caller must git add.
     """
-    local = effective_version(None, unit)
+    local = pre_sync_effective if pre_sync_effective is not None else effective_version(None, unit)
     upstream = effective_version(upstream_ref, unit)
 
     if local is None or upstream is None:
@@ -367,25 +387,48 @@ def bump_version_if_needed(
     loc_raw, loc_base, loc_eff = local
     up_raw, up_base, up_eff = upstream
 
-    if up_eff < loc_eff:
-        return None  # local is already ahead
+    loc_lib = pre_sync_lib if pre_sync_lib is not None else read_lib_version(None, unit)
+    up_lib = read_lib_version(upstream_ref, unit)
 
-    new_raw = (up_eff + 1) - loc_base
+    needs_vc_bump = up_eff >= loc_eff
+    needs_lib_upgrade = up_lib > loc_lib
+
+    if not needs_vc_bump and not needs_lib_upgrade:
+        return None  # local is already ahead on both version code and lib
+
+    target_eff = max(up_eff + 1, loc_eff + 1)
     build_file = Path(f"{unit}/build.gradle")
-    text = build_file.read_text()
+    text = build_file.read_text(encoding="utf-8")
 
-    # Replace in multisrc: overrideVersionCode
-    # Replace in standalone: extVersionCode
-    if _THEME_PKG_RE.search(text):
-        new_text = _OVERRIDE_VERSION_CODE_RE.sub(
-            lambda m: m.group(0).replace(str(loc_raw), str(new_raw), 1), text
-        )
+    theme_match = _THEME_PKG_RE.search(text)
+    cur_base = read_base_version_code(None, theme_match.group(1)) if theme_match else 0
+    new_raw = target_eff - cur_base
+
+    target_lib = max(loc_lib, up_lib)
+    if target_lib > 14:
+        if _LIB_VERSION_RE.search(text):
+            text = _LIB_VERSION_RE.sub(f"libVersion = {target_lib}", text)
+        else:
+            text = re.sub(r"(ext\s*\{)", rf"\1\n    libVersion = {target_lib}", text, count=1)
+
+    if theme_match:
+        if _OVERRIDE_VERSION_CODE_RE.search(text):
+            text = _OVERRIDE_VERSION_CODE_RE.sub(
+                lambda m: m.group(0).replace(re.search(r"\d+", m.group(0)).group(0), str(new_raw), 1),
+                text,
+            )
+        else:
+            text = re.sub(r"(ext\s*\{)", rf"\1\n    overrideVersionCode = {new_raw}", text, count=1)
     else:
-        new_text = _EXT_VERSION_CODE_RE.sub(
-            lambda m: m.group(0).replace(str(loc_raw), str(new_raw), 1), text
-        )
+        if _EXT_VERSION_CODE_RE.search(text):
+            text = _EXT_VERSION_CODE_RE.sub(
+                lambda m: m.group(0).replace(re.search(r"\d+", m.group(0)).group(0), str(new_raw), 1),
+                text,
+            )
+        else:
+            text = re.sub(r"(ext\s*\{)", rf"\1\n    extVersionCode = {new_raw}", text, count=1)
 
-    build_file.write_text(new_text)
+    build_file.write_text(text, encoding="utf-8")
     return loc_raw, loc_base, loc_eff, up_raw, up_base, up_eff, new_raw
 
 
@@ -451,10 +494,16 @@ def print_plan(
             continue
         loc_raw, loc_base, loc_eff = local
         up_raw, up_base, up_eff = up
+        loc_lib = read_lib_version(None, u)
+        up_lib = read_lib_version(upstream_ref, u)
         print(f"  {u}:")
-        print(f"    local  raw={loc_raw} base={loc_base} eff={loc_eff}")
-        print(f"    upstream raw={up_raw} base={up_base} eff={up_eff}")
-        if up_eff >= loc_eff:
+        print(f"    local  raw={loc_raw} base={loc_base} eff={loc_eff} lib={loc_lib}")
+        print(f"    upstream raw={up_raw} base={up_base} eff={up_eff} lib={up_lib}")
+        if up_lib > loc_lib:
+            target_eff = max(up_eff + 1, loc_eff + 1)
+            new_raw = target_eff - loc_base
+            print(f"    action: MIGRATE lib {loc_lib} → {up_lib} and BUMP raw {loc_raw} → {new_raw}")
+        elif up_eff >= loc_eff:
             new_raw = (up_eff + 1) - loc_base
             print(f"    action: BUMP raw {loc_raw} → {new_raw}")
         else:
@@ -473,6 +522,15 @@ def apply_units(
     upstream_deleted: list[str] | None = None,
     protected_deletions: list[str] | None = None,
 ) -> list[str]:
+    # Record pre-sync state BEFORE git merge / restore modifies files on disk
+    pre_sync_effective: dict[str, tuple[int, int, int]] = {}
+    pre_sync_lib: dict[str, int] = {}
+    for unit in set(protected) | set(upstream_units):
+        eff = effective_version(None, unit)
+        if eff is not None:
+            pre_sync_effective[unit] = eff
+        pre_sync_lib[unit] = read_lib_version(None, unit)
+
     git("merge", "--no-ff", "--no-commit", "-s", "ours", upstream_ref)
 
     deleted_set = set(upstream_deleted or [])
@@ -486,15 +544,32 @@ def apply_units(
             print(f"Preserving explicitly protected upstream deletion: {unit}")
             continue
         if unit in conflict_set:
-            continue  # Nox wins — skip upstream version of this unit
-        print(f"Applying {unit}")
-        git("rm", "-r", "--ignore-unmatch", "--quiet", "--", unit)
-        if path_exists(upstream_ref, unit):
-            git("restore", f"--source={upstream_ref}", "--staged", "--worktree", "--", unit)
+            up_lib = read_lib_version(upstream_ref, unit)
+            loc_lib = pre_sync_lib.get(unit, 14)
+            if up_lib > loc_lib:
+                # Structural migration upstream (e.g. 14 -> 16).
+                # Protected units CANNOT freeze on old lib!
+                print(f"Applying upstream structural lib migration {loc_lib} -> {up_lib} for {unit}")
+                git("rm", "-r", "--ignore-unmatch", "--quiet", "--", unit)
+                if path_exists(upstream_ref, unit):
+                    git("restore", f"--source={upstream_ref}", "--staged", "--worktree", "--", unit)
+            else:
+                continue  # Nox wins on regular conflict
+        else:
+            print(f"Applying {unit}")
+            git("rm", "-r", "--ignore-unmatch", "--quiet", "--", unit)
+            if path_exists(upstream_ref, unit):
+                git("restore", f"--source={upstream_ref}", "--staged", "--worktree", "--", unit)
 
     bumped: list[str] = []
-    for unit in protected:
-        res = bump_version_if_needed(unit, upstream_ref)
+    guard_units = sorted(set(protected) | {u for u in upstream_units if read_lib_version(upstream_ref, u) > pre_sync_lib.get(u, 14)})
+    for unit in guard_units:
+        res = bump_version_if_needed(
+            unit,
+            upstream_ref,
+            pre_sync_effective=pre_sync_effective.get(unit),
+            pre_sync_lib=pre_sync_lib.get(unit),
+        )
         if res is not None:
             loc_raw, _, _, _, _, _, new_raw = res
             git("add", "--", f"{unit}/build.gradle")

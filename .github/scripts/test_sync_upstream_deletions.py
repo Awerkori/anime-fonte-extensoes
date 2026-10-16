@@ -346,6 +346,75 @@ class SyncDeletionTest(unittest.TestCase):
         )
         self.assertFalse((self.repo / "src/tr/turkanime").exists())
 
+    def test_upstream_lib16_migration_applies_and_bumps_when_in_conflict(self):
+        # Nox has custom edit with versionCode 24 on lib 14
+        # Upstream migrates to lib 16 with versionCode 18
+        def upstream_migrate():
+            (self.repo / "src/pt/conflict/build.gradle").write_text(
+                "ext {\n    libVersion = 16\n    extVersionCode = 18\n}\n",
+                encoding="utf-8",
+            )
+            (self.repo / "src/pt/conflict/UpstreamLib16.kt").write_text("package pt\nclass UpstreamLib16\n")
+
+        def nox_custom():
+            (self.repo / "src/pt/conflict/build.gradle").write_text(
+                "ext {\n    extVersionCode = 24\n}\n",
+                encoding="utf-8",
+            )
+            (self.repo / "src/pt/conflict/NoxLegacy.kt").write_text("package pt\nclass NoxLegacy\n")
+
+        upstream_ref, up_units, main_units = self.create_divergence(upstream_migrate, nox_custom)
+        upstream_only, conflicts, nox_only, deleted, protected_del = self.classify(
+            upstream_ref, up_units, main_units
+        )
+        self.assertIn("src/pt/conflict", conflicts)
+
+        bumped = sync.apply_units(
+            upstream_ref,
+            sorted(set(up_units) | set(deleted) | set(protected_del)),
+            set(conflicts),
+            conflicts,
+            deleted,
+            protected_del,
+        )
+
+        build_text = (self.repo / "src/pt/conflict/build.gradle").read_text(encoding="utf-8")
+        self.assertIn("libVersion = 16", build_text)
+        self.assertIn("extVersionCode = 25", build_text)
+        self.assertTrue((self.repo / "src/pt/conflict/UpstreamLib16.kt").exists())
+
+    def test_upstream_lib16_migration_when_upstream_eff_is_higher(self):
+        # Nox was at 10 on lib 14
+        # Upstream migrates to lib 16 with versionCode 21
+        def upstream_migrate():
+            (self.repo / "src/pt/conflict/build.gradle").write_text(
+                "ext {\n    libVersion = 16\n    extVersionCode = 21\n}\n",
+                encoding="utf-8",
+            )
+
+        def nox_custom():
+            (self.repo / "src/pt/conflict/build.gradle").write_text(
+                "ext {\n    extVersionCode = 10\n}\n",
+                encoding="utf-8",
+            )
+
+        upstream_ref, up_units, main_units = self.create_divergence(upstream_migrate, nox_custom)
+        upstream_only, conflicts, nox_only, deleted, protected_del = self.classify(
+            upstream_ref, up_units, main_units
+        )
+        bumped = sync.apply_units(
+            upstream_ref,
+            sorted(set(up_units) | set(deleted) | set(protected_del)),
+            set(conflicts),
+            conflicts,
+            deleted,
+            protected_del,
+        )
+
+        build_text = (self.repo / "src/pt/conflict/build.gradle").read_text(encoding="utf-8")
+        self.assertIn("libVersion = 16", build_text)
+        self.assertIn("extVersionCode = 22", build_text)
+
 
 def shutil_rmtree(path: Path) -> None:
     import shutil

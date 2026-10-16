@@ -1,12 +1,12 @@
-package eu.kanade.tachiyomi.animeextension.en.hexawatch
+package eu.kanade.tachiyomi.animeextension.en.mapple
 
 import eu.kanade.tachiyomi.animesource.model.AnimeFilter
 import eu.kanade.tachiyomi.animesource.model.AnimeFilterList
 
-object HexaWatchFilters {
+object Filters {
 
+    // Standard Filters
     class TypeFilter : AnimeFilter.Select<String>("Type", arrayOf("Movie", "TV Show"))
-
     class SortFilter :
         AnimeFilter.Sort(
             "Sort By",
@@ -14,10 +14,11 @@ object HexaWatchFilters {
             Selection(0, false),
         )
 
+    // Genre Filters
     private class GenreCheckBox(name: String) : AnimeFilter.CheckBox(name)
     class GenreFilter(name: String, genres: Array<String>) : AnimeFilter.Group<AnimeFilter.CheckBox>(name, genres.map { GenreCheckBox(it) })
 
-    // Combined list for the UI
+    // Combined list of genres for the UI, sorted alphabetically
     val ALL_GENRES = arrayOf(
         "Action", "Action & Adventure", "Adventure", "Animation", "Comedy", "Crime",
         "Documentary", "Drama", "Family", "Fantasy", "History", "Horror", "Kids",
@@ -26,7 +27,7 @@ object HexaWatchFilters {
         "War & Politics", "Western",
     ).sortedArray()
 
-    // Separate maps for looking up the correct ID
+    // Map of genres to their TMDB IDs for movies
     val MOVIE_GENRE_MAP = mapOf(
         "Action" to "28", "Adventure" to "12", "Animation" to "16", "Comedy" to "35",
         "Crime" to "80", "Documentary" to "99", "Drama" to "18", "Family" to "10751",
@@ -35,6 +36,7 @@ object HexaWatchFilters {
         "TV Movie" to "10770", "Thriller" to "53", "War" to "10752", "Western" to "37",
     )
 
+    // Map of genres to their TMDB IDs for TV shows
     val TV_GENRE_MAP = mapOf(
         "Action & Adventure" to "10759", "Animation" to "16", "Comedy" to "35",
         "Crime" to "80", "Documentary" to "99", "Drama" to "18", "Family" to "10751",

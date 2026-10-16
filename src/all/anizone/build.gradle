@@ -1,7 +1,8 @@
 ext {
     extName = 'AniZone'
     extClass = '.AniZone'
-    extVersionCode = 19
+    libVersion = 16
+    extVersionCode = 20
     isNsfw = false
 }
 
