@@ -602,9 +602,60 @@ def write_step_summary(protected: list[str], bumped: list[str]) -> None:
         f.writelines(lines)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Main
-# ──────────────────────────────────────────────────────────────────────────────
+def print_observability_header(
+    project: str,
+    trigger: str,
+    local_head: str,
+    upstream_remote: str,
+    upstream_branch: str,
+    upstream_head: str,
+    last_synced_upstream: str,
+    new_units: list[str],
+    updated_units: list[str],
+    removed_units: list[str],
+    core_changed: bool,
+    multisrc_changed: bool,
+    no_changes: bool,
+) -> None:
+    print("==================================================")
+    print("PROJECT NOX — UPSTREAM SYNC")
+    print("==================================================")
+    print(f"SYNC_PROJECT={project}")
+    print(f"SYNC_TRIGGER={trigger}")
+    print(f"LOCAL_HEAD={local_head}")
+    print(f"UPSTREAM_REMOTE={upstream_remote}")
+    print(f"UPSTREAM_BRANCH={upstream_branch}")
+    print(f"UPSTREAM_HEAD={upstream_head}")
+    print(f"LAST_SYNCED_UPSTREAM={last_synced_upstream}")
+    print(f"NEW_COUNT={len(new_units)}")
+    print(f"UPDATED_COUNT={len(updated_units)}")
+    print(f"REMOVED_COUNT={len(removed_units)}")
+    print(f"CORE_CHANGED={str(core_changed).lower()}")
+    print(f"MULTISRC_CHANGED={str(multisrc_changed).lower()}")
+    print(f"NO_CHANGES={str(no_changes).lower()}")
+    print("==================================================")
+    if not no_changes:
+        print("Detected units:")
+        if new_units:
+            print(f"  NEW ({len(new_units)}): {', '.join(sorted(new_units))}")
+        if updated_units:
+            print(f"  UPDATED ({len(updated_units)}): {', '.join(sorted(updated_units))}")
+        if removed_units:
+            print(f"  REMOVED ({len(removed_units)}): {', '.join(sorted(removed_units))}")
+        print("==================================================")
+
+
+def print_observability_footer(
+    sync_result: str,
+    push_result: str,
+    publication_result: str,
+) -> None:
+    print("==================================================")
+    print(f"SYNC_RESULT={sync_result}")
+    print(f"PUSH_RESULT={push_result}")
+    print(f"PUBLICATION_RESULT={publication_result}")
+    print("==================================================")
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Project Nox Anime — Sync Yuzono upstream")
@@ -657,15 +708,54 @@ def main() -> None:
         upstream_deleted, protected_deletions,
     )
 
+    new_units = [u for u in upstream_only if not path_exists(base, u)]
+    updated_units = [u for u in upstream_only if path_exists(base, u)] + conflict_units
+    removed_units = sorted(set(upstream_deleted) | set(protected_deletions))
+
+    core_changed = any(
+        path in {"core", "common", "extractor"} or path.startswith(("core/", "common/", "extractor/"))
+        for _, paths in upstream_entries
+        for path in paths
+    )
+    multisrc_changed = any(
+        path.startswith("lib-multisrc/")
+        for _, paths in upstream_entries
+        for path in paths
+    )
+    no_changes = (not upstream_units and not indirect and not upstream_deleted)
+
+    trigger = os.environ.get("GITHUB_EVENT_NAME", "workflow_dispatch")
+    local_head = git("rev-parse", "HEAD").strip()
+    upstream_head = git("rev-parse", upstream_ref).strip()
+    last_synced = git("rev-parse", f"origin/{SYNC_BRANCH}", check=False).strip() or base
+
+    print_observability_header(
+        project="anime",
+        trigger=trigger,
+        local_head=local_head,
+        upstream_remote=UPSTREAM_URL,
+        upstream_branch=UPSTREAM_BRANCH,
+        upstream_head=upstream_head,
+        last_synced_upstream=last_synced,
+        new_units=new_units,
+        updated_units=updated_units,
+        removed_units=removed_units,
+        core_changed=core_changed,
+        multisrc_changed=multisrc_changed,
+        no_changes=no_changes,
+    )
+
     if not upstream_units and not indirect and not upstream_deleted:
         print("No upstream changes to apply.")
         if args.push:
             # Mirror evaluated upstream tip to sync branch so periodic check stays up to date
             git("push", "origin", f"{upstream_ref}:refs/heads/{SYNC_BRANCH}")
+        print_observability_footer("NO_CHANGES", "SKIPPED", "SKIPPED")
         return
 
     if args.dry_run or not args.push:
         print("Dry run — no changes applied.")
+        print_observability_footer("SUCCESS", "SKIPPED", "SKIPPED")
         return
 
     units_to_apply = sorted(set(upstream_units) | set(upstream_deleted) | set(protected_deletions))
@@ -682,6 +772,7 @@ def main() -> None:
     if args.push:
         # Update sync branch to mirror upstream tip ONLY after successful push to main
         git("push", "origin", f"{upstream_ref}:refs/heads/{SYNC_BRANCH}")
+    print_observability_footer("SUCCESS", "SUCCESS", "TRIGGERED")
 
 
 if __name__ == "__main__":
