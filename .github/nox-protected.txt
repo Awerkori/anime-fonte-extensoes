@@ -5,3 +5,4 @@
 src/pt/tomato
 src/pt/anikyuu
 src/pt/animesroll
+src/pt/animesgratis
