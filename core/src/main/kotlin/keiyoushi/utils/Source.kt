@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 import android.os.Handler
 import android.os.Looper
 import android.widget.Toast
+import androidx.preference.PreferenceScreen
 import eu.kanade.tachiyomi.animesource.ConfigurableAnimeSource
 import eu.kanade.tachiyomi.animesource.model.AnimeFilterList
 import eu.kanade.tachiyomi.animesource.model.Hoster
@@ -33,6 +34,9 @@ abstract class Source :
             Toast.makeText(context, message, length).show()
         }
     }
+
+    // A concrete default, so code generated for a `source { }` mirror or custom URL can call super
+    override fun setupPreferenceScreen(screen: PreferenceScreen) {}
 
     override fun popularAnimeRequest(page: Int) = throw UnsupportedOperationException()
     override fun popularAnimeParse(response: Response) = throw UnsupportedOperationException()
