@@ -415,6 +415,148 @@ class SyncDeletionTest(unittest.TestCase):
         self.assertIn("libVersion = 16", build_text)
         self.assertIn("extVersionCode = 22", build_text)
 
+    def _seed_real_darkmahou(self) -> dict[str, bytes]:
+        import shutil
+        run("git", "switch", "main", cwd=self.repo)
+        real_dir = ROOT / "src/pt/darkmahou"
+        self.assertTrue(real_dir.is_dir(), "Real src/pt/darkmahou must exist")
+        target_dir = self.repo / "src/pt/darkmahou"
+        if target_dir.exists():
+            shutil.rmtree(target_dir)
+        shutil.copytree(real_dir, target_dir)
+        (self.repo / ".github").mkdir(exist_ok=True)
+        shutil.copy2(ROOT / ".github/nox-protected.txt", self.repo / ".github/nox-protected.txt")
+        run("git", "add", "-A", cwd=self.repo)
+        run("git", "commit", "-m", "Seed Nox DarkMahou", cwd=self.repo)
+        self.base = run("git", "rev-parse", "HEAD", cwd=self.repo)
+        run("git", "branch", "-f", "upstream", self.base, cwd=self.repo)
+        run("git", "switch", "upstream", cwd=self.repo)
+        return self._snapshot_unit("src/pt/darkmahou")
+
+    def _snapshot_unit(self, unit: str) -> dict[str, bytes]:
+        root = self.repo / unit
+        if not root.exists():
+            return {}
+        return {
+            str(p.relative_to(root)): p.read_bytes()
+            for p in sorted(root.rglob("*"))
+            if p.is_file()
+        }
+
+    def test_darkmahou_shield_against_upstream_deletion(self):
+        before = self._seed_real_darkmahou()
+        self.assertIn("build.gradle", before)
+        self.assertIn(
+            "src/eu/kanade/tachiyomi/animeextension/pt/darkmahou/DarkMahou.kt",
+            before,
+        )
+        self.assertIn(
+            "src/eu/kanade/tachiyomi/animeextension/pt/darkmahou/extractors/DarkMahouExtractor.kt",
+            before,
+        )
+        self.assertIn(
+            b"https://darkmahou.io",
+            before["src/eu/kanade/tachiyomi/animeextension/pt/darkmahou/DarkMahou.kt"],
+        )
+
+        upstream_ref, up_units, main_units = self.create_divergence(
+            lambda: shutil_rmtree(self.repo / "src/pt/darkmahou"),
+        )
+        protections = sync.get_explicit_delete_protections()
+        self.assertIn("src/pt/darkmahou", protections)
+        upstream_only, conflicts, nox_only, deleted, protected_del = sync.classify_sync_units(
+            self.base, upstream_ref, up_units, main_units, protections,
+        )
+        self.assertIn("src/pt/darkmahou", protected_del)
+        self.assertNotIn("src/pt/darkmahou", deleted)
+
+        protected = sync.get_nox_protected_units(self.base, upstream_ref)
+        sync.apply_units(
+            upstream_ref,
+            sorted(set(up_units) | set(deleted) | set(protected_del)),
+            set(conflicts),
+            protected,
+            deleted,
+            protected_del,
+        )
+        after = self._snapshot_unit("src/pt/darkmahou")
+        self.assertEqual(before, after)
+
+    def test_darkmahou_shield_against_upstream_updates(self):
+        before = self._seed_real_darkmahou()
+
+        def upstream_update():
+            (self.repo / "src/pt/darkmahou/build.gradle").write_text(
+                "ext {\n    extName = 'DarkMahou'\n    overrideVersionCode = 99\n}\n",
+                encoding="utf-8",
+            )
+            (self.repo / "src/pt/darkmahou/src/eu/kanade/tachiyomi/animeextension/pt/darkmahou/DarkMahou.kt").write_text(
+                "package eu.kanade.tachiyomi.animeextension.pt.darkmahou\n// upstream overwrite https://darkmahou.org\n",
+                encoding="utf-8",
+            )
+            (self.repo / "src/pt/darkmahou/src/eu/kanade/tachiyomi/animeextension/pt/darkmahou/extractors/DarkMahouExtractor.kt").unlink()
+            (self.repo / "src/pt/darkmahou/res/mipmap-hdpi/ic_launcher.png").write_bytes(b"upstream-icon")
+
+        # Notice nox_change=None: simulates sync after prior merge where Nox made no new edits since base
+        upstream_ref, up_units, main_units = self.create_divergence(upstream_update)
+        protections = sync.get_explicit_delete_protections()
+        upstream_only, conflicts, nox_only, deleted, protected_del = sync.classify_sync_units(
+            self.base, upstream_ref, up_units, main_units, protections,
+        )
+        self.assertNotIn("src/pt/darkmahou", upstream_only)
+        self.assertIn("src/pt/darkmahou", conflicts)
+
+        protected = sync.get_nox_protected_units(self.base, upstream_ref)
+        self.assertNotIn("src/pt/darkmahou", protected)
+        sync.apply_units(
+            upstream_ref,
+            sorted(set(up_units) | set(deleted) | set(protected_del)),
+            set(conflicts),
+            protected,
+            deleted,
+            protected_del,
+        )
+        after = self._snapshot_unit("src/pt/darkmahou")
+        self.assertEqual(before, after)
+
+    def test_darkmahou_shield_against_gradle_and_libversion_migration(self):
+        before = self._seed_real_darkmahou()
+
+        def upstream_structural_migration():
+            (self.repo / "src/pt/darkmahou/build.gradle").write_text(
+                "ext {\n    libVersion = 16\n    overrideVersionCode = 50\n}\n",
+                encoding="utf-8",
+            )
+            (self.repo / "src/pt/darkmahou/build.gradle.kts").write_text(
+                'plugins { alias(kei.plugins.extension) }\nyuzono { libVersion = "16" }\n',
+                encoding="utf-8",
+            )
+            (self.repo / "src/pt/darkmahou/src/eu/kanade/tachiyomi/animeextension/pt/darkmahou/DarkMahou.kt").write_text(
+                "// upstream lib 16 rewrite\n",
+                encoding="utf-8",
+            )
+
+        upstream_ref, up_units, main_units = self.create_divergence(upstream_structural_migration)
+        protections = sync.get_explicit_delete_protections()
+        upstream_only, conflicts, nox_only, deleted, protected_del = sync.classify_sync_units(
+            self.base, upstream_ref, up_units, main_units, protections,
+        )
+        self.assertNotIn("src/pt/darkmahou", upstream_only)
+        self.assertIn("src/pt/darkmahou", conflicts)
+
+        protected = sync.get_nox_protected_units(self.base, upstream_ref)
+        sync.apply_units(
+            upstream_ref,
+            sorted(set(up_units) | set(deleted) | set(protected_del)),
+            set(conflicts),
+            protected,
+            deleted,
+            protected_del,
+        )
+        after = self._snapshot_unit("src/pt/darkmahou")
+        self.assertEqual(before, after)
+        self.assertFalse((self.repo / "src/pt/darkmahou/build.gradle.kts").exists())
+
 
 def shutil_rmtree(path: Path) -> None:
     import shutil

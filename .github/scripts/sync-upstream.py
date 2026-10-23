@@ -148,6 +148,9 @@ def collect_units(entries: list[tuple[str, list[str]]]) -> tuple[list[str], list
     return sorted(units), sorted(preserved)
 
 
+EXPLICIT_LOCKED_UNITS = frozenset({"src/pt/darkmahou"})
+
+
 def get_explicit_delete_protections() -> list[str]:
     """Read units that Nox intentionally keeps after upstream deletion.
 
@@ -168,6 +171,19 @@ def get_explicit_delete_protections() -> list[str]:
     return sorted(set(protected))
 
 
+def get_explicit_code_protections(
+    explicit_delete_protections: list[str] | None = None,
+) -> set[str]:
+    """Return units whose custom Nox code and build structure are locked against
+    both upstream deletions and upstream updates/migrations."""
+    base_list = (
+        explicit_delete_protections
+        if explicit_delete_protections is not None
+        else get_explicit_delete_protections()
+    )
+    return set(base_list) | set(EXPLICIT_LOCKED_UNITS)
+
+
 def upstream_historical_units(upstream_ref: str) -> set[str]:
     """Return source units that were added at some point in upstream history.
 
@@ -177,11 +193,11 @@ def upstream_historical_units(upstream_ref: str) -> set[str]:
     """
     paths = git(
         "log", "--diff-filter=A", "--name-only", "--format=",
-        upstream_ref, "--", "src/*/*/build.gradle",
+        upstream_ref, "--", "src/*/*/build.gradle", "src/*/*/build.gradle.kts",
     ).splitlines()
     return {
         unit for path in paths
-        if path.endswith("/build.gradle")
+        if path.endswith(("/build.gradle", "/build.gradle.kts"))
         if (unit := sync_unit(path)) is not None and unit.startswith("src/")
     }
 
@@ -191,7 +207,7 @@ def classify_sync_units(
     upstream_ref: str,
     upstream_units: list[str],
     main_units: list[str],
-    explicit_delete_protections: list[str],
+    explicit_delete_protections: list[str] | None = None,
 ) -> tuple[list[str], list[str], list[str], list[str], list[str]]:
     """Separate normal updates/conflicts from true upstream source deletions."""
     upstream_set = set(upstream_units)
@@ -205,10 +221,14 @@ def classify_sync_units(
         and path_exists("HEAD", unit)
         and not path_exists(upstream_ref, unit)
     }
-    explicitly_protected = set(explicit_delete_protections)
+    explicitly_protected = get_explicit_code_protections(explicit_delete_protections)
     deleted_protected = sorted(deleted & explicitly_protected)
     deleted_remove = sorted(deleted - explicitly_protected)
-    conflicts = sorted((upstream_set & main_set) - deleted)
+    protected_updates = {
+        unit for unit in (upstream_set & explicitly_protected) - deleted
+        if path_exists("HEAD", unit)
+    }
+    conflicts = sorted(((upstream_set & main_set) | protected_updates) - deleted)
     upstream_only = sorted(upstream_set - set(conflicts) - deleted)
     nox_only = sorted(main_set - upstream_set - deleted)
     return upstream_only, conflicts, nox_only, deleted_remove, deleted_protected
@@ -438,12 +458,14 @@ def get_nox_protected_units(base: str, upstream_ref: str) -> list[str]:
     These are 'protected' — Nox wins on conflict, version guard applies.
     Detection is automatic (no manual list).
     """
+    explicit = get_explicit_code_protections()
     main_entries = changed_entries(base, "HEAD")
     main_units, _ = collect_units(main_entries)
     return [
         u
         for u in sorted(main_units)
         if u.startswith("src/")
+        and u not in explicit
         and path_exists(upstream_ref, f"{u}/build.gradle")
     ]
 
@@ -535,13 +557,17 @@ def apply_units(
 
     deleted_set = set(upstream_deleted or [])
     deletion_protection_set = set(protected_deletions or [])
+    explicit_protection_set = deletion_protection_set | get_explicit_code_protections()
     for unit in upstream_units:
+        if unit in deletion_protection_set:
+            print(f"Preserving explicitly protected upstream deletion: {unit}")
+            continue
+        if unit in explicit_protection_set:
+            print(f"Preserving explicitly protected Nox unit: {unit}")
+            continue
         if unit in deleted_set:
             print(f"Removing upstream-deleted unit: {unit}")
             git("rm", "-r", "--ignore-unmatch", "--quiet", "--", unit)
-            continue
-        if unit in deletion_protection_set:
-            print(f"Preserving explicitly protected upstream deletion: {unit}")
             continue
         if unit in conflict_set:
             up_lib = read_lib_version(upstream_ref, unit)
@@ -562,7 +588,13 @@ def apply_units(
                 git("restore", f"--source={upstream_ref}", "--staged", "--worktree", "--", unit)
 
     bumped: list[str] = []
-    guard_units = sorted(set(protected) | {u for u in upstream_units if read_lib_version(upstream_ref, u) > pre_sync_lib.get(u, 14)})
+    guard_units = sorted(
+        (
+            set(protected)
+            | {u for u in upstream_units if read_lib_version(upstream_ref, u) > pre_sync_lib.get(u, 14)}
+        )
+        - explicit_protection_set
+    )
     for unit in guard_units:
         res = bump_version_if_needed(
             unit,
