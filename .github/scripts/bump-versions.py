@@ -8,8 +8,7 @@ import subprocess
 import sys
 from collections import deque # Add this import
 
-VERSION_STR = "VersionCode ="
-VERSION_REGEX = re.compile(f"{VERSION_STR} (\\d+)")
+VERSION_REGEX = re.compile(r"\b(extVersionCode =|overrideVersionCode =|versionCode =|baseVersionCode =) (\d+)")
 BUMPED_FILES: list[Path] = []
 
 def has_match(query: str, file: Path) -> tuple[Path, bool]:
@@ -27,7 +26,7 @@ def find_libs_with_match(query: str, lib_name_regex: re.Pattern) -> list[str]:
         return [match.group(1) for match in filter(None, (lib_name_regex.search(str(lib_path_obj)) for lib_path_obj in lib_path_list))]
 
 def find_files_with_match(query: str, include_multisrc: bool = True) -> list[Path]:
-    files = Path("src").glob("*/*/build.gradle")
+    files = itertools.chain(Path("src").glob("*/*/build.gradle"), Path("src").glob("*/*/build.gradle.kts"))
     if include_multisrc:
         files = itertools.chain(files, Path("lib-multisrc").glob("*/build.gradle.kts"))
 
@@ -41,9 +40,9 @@ def find_files_with_match(query: str, include_multisrc: bool = True) -> list[Pat
         return [path for path, result in results if result]
 
 def replace_version(match: re.Match) -> str:
-    version = int(match[1])
+    version = int(match[2])
     print(f"{version} -> {version + 1}")
-    return f"{VERSION_STR} {version + 1}"
+    return f"{match[1]} {version + 1}"
 
 def bump_version(file: Path):
     BUMPED_FILES.append(file)
@@ -55,7 +54,10 @@ def bump_version(file: Path):
         f.write(text)
 
 def bump_lib_multisrc(theme: str, should_bump: bool = True) -> list[Path]:
-    matched_files = find_files_with_match(f"themePkg = '{theme}'", include_multisrc=False)
+    matched_files = (
+        find_files_with_match(f"themePkg = '{theme}'", include_multisrc=False)
+        + find_files_with_match(f'theme = "{theme}"', include_multisrc=False)
+    )
     target_file = Path("lib-multisrc") / theme / "build.gradle.kts"
     if should_bump and target_file.exists():
         bump_version(target_file)
