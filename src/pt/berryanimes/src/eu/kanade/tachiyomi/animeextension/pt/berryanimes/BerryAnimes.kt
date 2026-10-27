@@ -111,14 +111,56 @@ class BerryAnimes :
     override suspend fun getEpisodeList(anime: SAnime): List<SEpisode> {
         val doc = client.newCall(episodeListRequest(anime)).awaitSuccess().asJsoup()
         val episodes = parseEpisodes(doc).toMutableList()
-        val currentSeason = doc.selectFirst("a.episode-card")?.selectFirst(".episode-card-meta")?.text()
-            ?.substringBefore(" | ")?.removePrefix("T")
-        val seasons = doc.select("a[href*=temporada=]").map { it.absUrl("href").toHttpUrl() }
-            .filter { it.queryParameter("tab") == null && it.queryParameter("temporada") != currentSeason }
-            .distinctBy { it.queryParameter("temporada") }
-        for (season in seasons) {
-            episodes += parseEpisodes(client.newCall(GET(season, headers)).awaitSuccess().asJsoup())
+
+        val currentSeasonNumber = episodes.firstOrNull()?.name?.substringAfter("T")?.substringBefore(" ")?.toIntOrNull()
+            ?: doc.selectFirst("button[role=option][aria-selected=true]")?.text()?.let {
+                Regex("""Temporada\s+(\d+)""", RegexOption.IGNORE_CASE).find(it)?.groupValues?.get(1)?.toIntOrNull()
+            }
+            ?: doc.selectFirst("a.episode-card")?.selectFirst(".episode-card-meta")?.text()
+                ?.substringBefore(" | ")?.removePrefix("T")?.toIntOrNull()
+            ?: 1
+
+        val otherSeasons = mutableSetOf<Int>()
+
+        // 1. Season buttons in HTML (current Next.js):
+        doc.select("button[role=option], button.AnimeDetail_seasonTrigger__MXufI, [aria-label=Temporada] button").forEach { btn ->
+            val num = Regex("""Temporada\s+(\d+)""", RegexOption.IGNORE_CASE).find(btn.text())?.groupValues?.get(1)?.toIntOrNull()
+            if (num != null && num != currentSeasonNumber) {
+                otherSeasons.add(num)
+            }
         }
+
+        // 2. Legacy season links:
+        doc.select("a[href*=temporada=]").forEach { link ->
+            val num = link.absUrl("href").toHttpUrl().queryParameter("temporada")?.toIntOrNull()
+            if (num != null && num != currentSeasonNumber) {
+                otherSeasons.add(num)
+            }
+        }
+
+        // 3. StructuredData JSON-LD numberOfSeasons:
+        val numSeasonsLd = doc.selectFirst("script[type=application/ld+json]")?.data()
+            ?.let { runCatching { it.parseAs<StructuredData>() }.getOrNull() }
+            ?.graph?.firstOrNull { it.type in listOf("TVSeries", "Movie") }?.numberOfSeasons
+        if (numSeasonsLd != null && numSeasonsLd > 1) {
+            for (s in 1..numSeasonsLd) {
+                if (s != currentSeasonNumber) {
+                    otherSeasons.add(s)
+                }
+            }
+        }
+
+        for (season in otherSeasons.sorted()) {
+            val seasonUrl = absolute(anime.url).toHttpUrl().newBuilder()
+                .setQueryParameter("temporada", season.toString())
+                .build()
+            try {
+                val seasonDoc = client.newCall(GET(seasonUrl, headers)).awaitSuccess().asJsoup()
+                episodes += parseEpisodes(seasonDoc)
+            } catch (_: Exception) {
+            }
+        }
+
         return episodes.distinctBy { it.url }.sortedWith(
             compareByDescending<SEpisode> { it.name.substringAfter("T").substringBefore(" ").toIntOrNull() ?: 0 }
                 .thenByDescending { it.episode_number },
@@ -144,19 +186,37 @@ class BerryAnimes :
                     },
                 )
             }
+            val htmlCards = doc.select("a.episode-card[href*=/watch/]")
+            if (htmlCards.isNotEmpty()) {
+                return htmlCards.map { card ->
+                    val href = card.attr("href")
+                    val title = card.selectFirst("h3")?.text()?.trim().orEmpty()
+                    val metaText = card.selectFirst(".episode-card-meta")?.text()?.trim().orEmpty()
+                    val hasSub = card.selectFirst(".lucide-captions, svg[aria-label*=Legendas]") != null
+                    val hasDub = metaText.contains("Dub", ignoreCase = true)
+                    parseEpisodeCard(
+                        EpisodeCard(
+                            href = href,
+                            title = title,
+                            meta = metaText.takeIf { it.contains("|") },
+                            hasSubtitles = hasSub,
+                            hasDub = hasDub,
+                        ),
+                    )
+                }
+            }
             error("A lista completa de episódios não está disponível")
         }
-        return grid.episodes.map { card ->
-            val meta = card.meta.split(" | ")
-            SEpisode.create().apply {
-                url = card.href
-                val season = meta.firstOrNull { it.startsWith("T") }.orEmpty()
-                name = "$season ${card.title}".trim()
-                episode_number = meta.firstOrNull { it.startsWith("E") }?.removePrefix("E")?.toFloatOrNull() ?: -1F
-                scanlator = meta.filter { it == "Dub" || it == "Leg" }.joinToString(" / ") {
-                    if (it == "Dub") "Dublado" else "Legendado"
-                }.ifEmpty { null }
-            }
+        return grid.episodes.map(::parseEpisodeCard)
+    }
+
+    internal fun parseEpisodeCard(card: EpisodeCard): SEpisode {
+        val info = BerryAnimesHelper.parseCardInfo(card)
+        return SEpisode.create().apply {
+            url = info.url
+            name = info.name
+            episode_number = info.episodeNumber
+            this.scanlator = info.scanlator
         }
     }
 
@@ -172,12 +232,8 @@ class BerryAnimes :
         }
         check(it.isSuccessful) { "Playback Berry indisponível (HTTP ${it.code})" }
         val watch = it.parseAs<Watch>()
-        check(watch.error == null) { "O site recusou a reprodução. Verifique sua sessão no site." }
-        val ads = watch.ads ?: error("Não foi possível verificar a autorização de anúncios")
-        check(ads.adFree?.active == true || (!ads.preRoll && !ads.postRoll)) {
-            "Este episódio exige anúncio no player oficial. A extensão não contorna essa etapa."
-        }
-        val player = watch.player ?: error("O site não disponibilizou o player")
+        BerryAnimesHelper.checkPlaybackAuthorization(watch)
+        val player = watch.player!!
         if (player.provider == "blogger" || player.streamUrl.isNullOrBlank()) {
             val embeds = listOfNotNull(player.externalEmbedUrl, player.bloggerUrl, player.embedUrl, player.fallbackBloggerUrl)
                 .mapNotNull { it.toHttpUrlOrNull() }

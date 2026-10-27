@@ -1,7 +1,7 @@
 ext {
     extName = 'Berry Animes'
     extClass = '.BerryAnimes'
-    extVersionCode = 5
+    extVersionCode = 6
     isNsfw = false
 }
 
@@ -10,4 +10,10 @@ apply plugin: "kei.plugins.extension.legacy"
 dependencies {
     implementation(project(':lib:playlistutils'))
     implementation(project(':lib:bloggerextractor'))
+
+    testImplementation(libs.junit)
+    testImplementation(libs.bundles.common)
 }
+
+android.sourceSets.test.java.srcDirs = ["test"]
+android.sourceSets.test.kotlin.srcDirs = ["test"]

@@ -19,16 +19,40 @@ internal class Rail(val title: String, val items: List<Card>)
 internal class EpisodeGrid(val episodes: List<EpisodeCard>)
 
 @Serializable
-internal class EpisodeCard(val href: String, val title: String, val meta: String)
+internal class EpisodeCard(
+    val href: String,
+    val title: String,
+    val meta: String? = null,
+    val hasSubtitles: Boolean? = null,
+    val subtitlesLabel: String? = null,
+    val hasDub: Boolean? = null,
+    val dubLabel: String? = null,
+    val season: Int? = null,
+    val number: Float? = null,
+    val duration: String? = null,
+    val thumbnailUrl: String? = null,
+    val synopsis: String? = null,
+    val ageRating: String? = null,
+    val releaseDate: String? = null,
+    val releaseDateIso: String? = null,
+)
 
 @Serializable
 internal class Watch(val player: Player? = null, val ads: Ads? = null, val error: String? = null)
 
 @Serializable
-internal class Ads(val preRoll: Boolean = true, val postRoll: Boolean = true, val adFree: AdFree? = null)
+internal class Ads(
+    val preRoll: Boolean? = null,
+    val postRoll: Boolean? = null,
+    val adFree: AdFree? = null,
+    val required: Boolean? = null,
+    val mandatory: Boolean? = null,
+    val blocking: Boolean? = null,
+    val enabled: Boolean? = null,
+)
 
 @Serializable
-internal class AdFree(val active: Boolean = false)
+internal class AdFree(val active: Boolean? = null)
 
 @Serializable
 internal class Player(
