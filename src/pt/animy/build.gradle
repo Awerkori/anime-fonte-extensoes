@@ -1,0 +1,18 @@
+ext {
+    extName = 'Animy'
+    extClass = '.Animy'
+    extVersionCode = 1
+    libVersion = 16
+    isNsfw = false
+}
+
+apply plugin: "kei.plugins.extension.legacy"
+
+dependencies {
+    implementation(project(':lib:playlistutils'))
+    testImplementation(libs.junit)
+    testImplementation(libs.bundles.common)
+}
+
+android.sourceSets.test.java.srcDirs = ["test"]
+android.sourceSets.test.kotlin.srcDirs = ["test"]

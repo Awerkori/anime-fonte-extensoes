@@ -8,3 +8,4 @@ src/pt/animesroll
 src/pt/animesgratis
 src/pt/darkmahou
 src/pt/berryanimes
+src/pt/animy
