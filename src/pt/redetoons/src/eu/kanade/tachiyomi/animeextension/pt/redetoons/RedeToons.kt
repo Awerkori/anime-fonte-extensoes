@@ -33,7 +33,16 @@ class RedeToons :
     ConfigurableAnimeSource {
     override val name = "RedeToons"
     override val baseUrl: String
-        get() = preferences.getString(PREF_DOMAIN_KEY, PREF_DOMAIN_DEFAULT)?.let(::toBaseUrl) ?: DEFAULT_BASE_URL
+        get() {
+            val prefDomain = preferences.getString(PREF_DOMAIN_KEY, PREF_DOMAIN_DEFAULT)
+            val url = prefDomain?.let(::toBaseUrl) ?: DEFAULT_BASE_URL
+            val host = url.toHttpUrlOrNull()?.host.orEmpty().lowercase()
+            return if (host == "redetoons.gay" || host == "www.redetoons.gay") {
+                DEFAULT_BASE_URL
+            } else {
+                url
+            }
+        }
     override val lang = "pt-BR"
     override val supportsLatest = true
     private val preferences by getPreferencesLazy()
@@ -181,16 +190,7 @@ class RedeToons :
 
     override fun seasonListParse(response: Response): List<SAnime> = emptyList()
 
-    override fun hosterListRequest(episode: SEpisode): Request {
-        val parts = episode.url.split('|')
-        val id = if (parts[0] == "movie") parts[1] else parts[0]
-        val query = if (parts[0] == "movie") {
-            "contract=3&tmdbId=$id&type=movie"
-        } else {
-            "contract=3&tmdbId=$id&type=tv&season=${parts[1]}&episode=${parts[2]}"
-        }
-        return GET("$baseUrl/api/play-link?$query", headers)
-    }
+    override fun hosterListRequest(episode: SEpisode): Request = GET(buildHosterUrl(baseUrl, episode.url), headers)
 
     override fun hosterListParse(response: Response): List<Hoster> = listOf(
         Hoster(videoList = videos(response)),
@@ -200,12 +200,27 @@ class RedeToons :
         val data = response.parseAs<PlayLinkResponse>()
         if (data.missing) return emptyList()
         val variants = data.variants.ifEmpty { listOf(Variant("default", data.url)) }
+        val vidHeaders = videoHeaders(response.request.url, headers)
+        val now = System.currentTimeMillis() / 1000
+
         return variants.flatMap { variant ->
             val rawUrl = variant.url?.takeIf { it.startsWith("http") } ?: return@flatMap emptyList()
             val url = rawUrl.toRedeToonsHost(baseHost)
             val quality = variant.quality.orEmpty().replaceFirstChar { it.uppercase() }
-            val urls = (listOf(url) + variant.mirrors.map { it.toRedeToonsHost(baseHost) }).distinct()
-            urls.map { stream -> Video(stream, "RedeToons - $quality", stream, headers) }
+            val rawMirrors = variant.mirrors.map { it.toRedeToonsHost(baseHost) }
+
+            val candidateUrls = (listOf(url) + rawMirrors).distinct()
+            val unexpiredUrls = candidateUrls.filterNot { isExpiredSignedUrl(it, now) }
+            val finalUrls = unexpiredUrls.ifEmpty { listOf(url) }
+
+            finalUrls.mapIndexed { index, stream ->
+                val label = if (finalUrls.size > 1 && index > 0) {
+                    "RedeToons - $quality (Espelho $index)"
+                } else {
+                    "RedeToons - $quality"
+                }
+                Video(stream, label, stream, vidHeaders)
+            }
         }
     }
 
@@ -340,9 +355,9 @@ class RedeToons :
     companion object {
         const val PREF_DOMAIN_KEY = "preferred_domain"
         const val PREF_DOMAIN_TITLE = "Domínio atual (requer reinicialização da app)"
-        const val PREF_DOMAIN_DEFAULT = "https://redetoons.gay/browse"
-        const val DEFAULT_BASE_URL = "https://redetoons.gay"
-        const val DEFAULT_BASE_HOST = "redetoons.gay"
+        const val PREF_DOMAIN_DEFAULT = "https://redetoons.my/browse"
+        const val DEFAULT_BASE_URL = "https://redetoons.my"
+        const val DEFAULT_BASE_HOST = "redetoons.my"
 
         private const val ANIMATION_GENRE_ID = 16
         private const val CONTENT_FILTER_KEY = "content_filter"
@@ -429,6 +444,40 @@ class RedeToons :
                 else -> "https://image.tmdb.org/t/p/w500/$clean"
             }
         }
+
+        fun videoHeaders(requestUrl: okhttp3.HttpUrl, baseHeaders: okhttp3.Headers): okhttp3.Headers {
+            val requestHost = requestUrl.host
+            val effectiveHost = if (!isLegacyRedeToonsHost(requestHost)) {
+                requestHost
+            } else {
+                DEFAULT_BASE_HOST
+            }
+            val effectiveScheme = requestUrl.scheme.ifBlank { "https" }
+            val referer = "$effectiveScheme://$effectiveHost/"
+            val origin = "$effectiveScheme://$effectiveHost"
+            return baseHeaders.newBuilder()
+                .set("Referer", referer)
+                .set("Origin", origin)
+                .removeAll("Accept")
+                .build()
+        }
+
+        fun isExpiredSignedUrl(url: String, currentTimeSeconds: Long = System.currentTimeMillis() / 1000): Boolean {
+            val httpUrl = url.toHttpUrlOrNull() ?: return false
+            val exp = httpUrl.queryParameter("exp")?.toLongOrNull() ?: return false
+            return exp <= (currentTimeSeconds - 10)
+        }
+
+        fun buildHosterUrl(baseUrl: String, episodeUrl: String): String {
+            val parts = episodeUrl.split('|')
+            val id = if (parts[0] == "movie") parts[1] else parts[0]
+            val query = if (parts[0] == "movie") {
+                "contract=3&tmdbId=$id&type=movie"
+            } else {
+                "contract=3&tmdbId=$id&type=tv&season=${parts[1]}&episode=${parts[2]}"
+            }
+            return "$baseUrl/api/play-link?$query"
+        }
     }
 }
 
@@ -440,12 +489,23 @@ internal fun String.toRedeToonsHost(baseHost: String): String {
 
 internal fun isLegacyRedeToonsHost(host: String): Boolean {
     val lower = host.lowercase()
-    if (lower == "redetoons.download" || lower.endsWith(".redetoons.download")) {
+    if (lower == "redetoons.download" || lower.endsWith(".redetoons.download") ||
+        lower == "radiogaucha.fun" || lower.endsWith(".radiogaucha.fun") ||
+        lower == "8r5v1p.shop" || lower.endsWith(".8r5v1p.shop")
+    ) {
         return false
     }
     return lower == "redetoons.win" || lower == "www.redetoons.win" ||
         lower == "redetoonstv.win" || lower == "www.redetoonstv.win" ||
         lower.endsWith(".redetoons.win") || lower.endsWith(".redetoonstv.win") ||
         lower == "redetoons.gay" || lower == "www.redetoons.gay" ||
-        lower.endsWith(".redetoons.gay")
+        lower.endsWith(".redetoons.gay") ||
+        lower == "redetoons.icu" || lower == "www.redetoons.icu" ||
+        lower.endsWith(".redetoons.icu") ||
+        lower == "redetoons.bond" || lower == "www.redetoons.bond" ||
+        lower.endsWith(".redetoons.bond") ||
+        lower == "redetoons.beer" || lower == "www.redetoons.beer" ||
+        lower.endsWith(".redetoons.beer") ||
+        lower == "redetoons.my" || lower == "www.redetoons.my" ||
+        lower.endsWith(".redetoons.my")
 }
