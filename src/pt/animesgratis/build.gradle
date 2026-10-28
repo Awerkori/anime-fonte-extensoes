@@ -3,7 +3,7 @@ ext {
     extClass = '.Q1N'
     themePkg = 'dooplay'
     baseUrl = 'https://topanimes.net'
-    overrideVersionCode = 47
+    overrideVersionCode = 48
 }
 
 apply plugin: "kei.plugins.extension.legacy"
