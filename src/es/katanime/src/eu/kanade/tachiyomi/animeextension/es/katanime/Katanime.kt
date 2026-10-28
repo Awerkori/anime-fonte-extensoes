@@ -22,6 +22,7 @@ import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.POST
 import eu.kanade.tachiyomi.network.awaitSuccess
+import keiyoushi.annotation.Source
 import keiyoushi.lib.cryptoaes.CryptoAES
 import keiyoushi.utils.AnimeHttpLegacySource
 import keiyoushi.utils.addEditTextPreference
@@ -41,15 +42,10 @@ import java.util.Calendar
 import java.util.Locale
 import kotlin.math.ceil
 
-class Katanime :
+@Source
+abstract class Katanime :
     AnimeHttpLegacySource(),
     ConfigurableAnimeSource {
-
-    override val name = "Katanime"
-
-    override val baseUrl = "https://katanime.net"
-
-    override val lang = "es"
 
     override val supportsLatest = true
 
@@ -94,7 +90,7 @@ class Katanime :
         val document = response.useAsJsoup()
         return SAnime.create().apply {
             title = document.selectFirst(".comics-title")?.ownText() ?: ""
-            description = document.selectFirst("#sinopsis p")?.ownText()
+            description = document.selectFirst(".anime-synopsis")?.ownText()
             genre = document.select(".anime-genres a").joinToString { it.text() }
             status = with(document.select(".details-by #estado").text()) {
                 when {

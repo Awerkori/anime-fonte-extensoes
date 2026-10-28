@@ -29,13 +29,10 @@ import keiyoushi.utils.useAsJsoup
 import kotlinx.serialization.json.Json
 import org.jsoup.nodes.Element
 import uy.kohesive.injekt.injectLazy
-import kotlin.getValue
 
 abstract class PelisPlus :
     ParsedAnimeHttpLegacySource(),
     ConfigurableAnimeSource {
-
-    override val lang = "es"
 
     override val supportsLatest = false
 

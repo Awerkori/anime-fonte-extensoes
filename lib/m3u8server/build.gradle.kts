@@ -3,5 +3,5 @@ plugins {
 }
 
 dependencies {
-    implementation("org.nanohttpd:nanohttpd:2.3.1")
+    implementation("com.github.komikku-app.nanohttpd:nanohttpd:gradle-upgrade-SNAPSHOT")
 }

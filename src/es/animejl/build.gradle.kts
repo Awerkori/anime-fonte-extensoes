@@ -1,0 +1,27 @@
+plugins {
+    alias(kei.plugins.extension)
+}
+
+yuzono {
+    name = "Animejl"
+    versionCode = 31
+    contentWarning = ContentWarning.NSFW
+    libVersion = "14"
+
+    source {
+        lang = "es"
+        baseUrl = "https://www.anime-jl.net"
+    }
+}
+
+dependencies {
+    implementation(project(":lib:youruploadextractor"))
+    implementation(project(":lib:streamtapeextractor"))
+    implementation(project(":lib:okruextractor"))
+    implementation(project(":lib:voeextractor"))
+    implementation(project(":lib:streamwishextractor"))
+    implementation(project(":lib:vidhideextractor"))
+    implementation(project(":lib:universalextractor"))
+    implementation(project(":lib:uqloadextractor"))
+    implementation(project(":lib:mp4uploadextractor"))
+}

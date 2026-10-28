@@ -13,6 +13,7 @@ import eu.kanade.tachiyomi.animesource.model.Track
 import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.util.asJsoup
+import keiyoushi.annotation.Source
 import keiyoushi.utils.ParsedAnimeHttpLegacySource
 import keiyoushi.utils.getPreferencesLazy
 import keiyoushi.utils.parallelCatchingFlatMapBlocking
@@ -22,15 +23,10 @@ import okhttp3.Response
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 
-class Cimaleek :
+@Source
+abstract class Cimaleek :
     ParsedAnimeHttpLegacySource(),
     ConfigurableAnimeSource {
-
-    override val name = "سيما ليك"
-
-    override val baseUrl = "https://m.cimaleek.to"
-
-    override val lang = "ar"
 
     override val supportsLatest = true
 
@@ -69,7 +65,7 @@ class Cimaleek :
             }
             episodes.add(episode)
         } else {
-            document.select(seasonListSelector()).parallelCatchingFlatMapBlocking { sElement ->
+            document.select(seasonsListSelector()).parallelCatchingFlatMapBlocking { sElement ->
                 val seasonNum = sElement.select("span.se-a").text()
                 val seasonUrl = sElement.attr("href")
                 val seasonPage = client.newCall(GET(seasonUrl, headers)).execute().asJsoup()
@@ -92,7 +88,7 @@ class Cimaleek :
 
     override fun episodeListSelector(): String = "div.season-a ul.episodios li.episodesList a"
 
-    override fun seasonListSelector(): String = "div.season-a ul.seas-list li.sealist a"
+    private fun seasonsListSelector(): String = "div.season-a ul.seas-list li.sealist a"
 
     // =========================== Anime Details ============================
     override fun animeDetailsParse(document: Document): SAnime {

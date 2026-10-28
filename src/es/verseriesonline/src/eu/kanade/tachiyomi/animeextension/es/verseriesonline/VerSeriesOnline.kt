@@ -18,6 +18,7 @@ import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.awaitSuccess
 import eu.kanade.tachiyomi.util.asJsoup
+import keiyoushi.annotation.Source
 import keiyoushi.utils.ParsedAnimeHttpLegacySource
 import keiyoushi.utils.bodyString
 import keiyoushi.utils.getPreferencesLazy
@@ -32,15 +33,10 @@ import org.json.JSONObject
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 
-class VerSeriesOnline :
+@Source
+abstract class VerSeriesOnline :
     ParsedAnimeHttpLegacySource(),
     ConfigurableAnimeSource {
-
-    override val name = "VerSeriesOnline"
-
-    override val baseUrl = "https://www.verseriesonline.net"
-
-    override val lang = "es"
 
     override val supportsLatest = false
 
@@ -146,7 +142,7 @@ class VerSeriesOnline :
 
     override fun episodeFromElement(element: Element): SEpisode = throw UnsupportedOperationException()
 
-    override fun seasonListSelector(): String = "div.floats a"
+    private fun seasonsListSelector(): String = "div.floats a"
 
     private fun seasonEpisodesSelector(): String = "#dle-content > article > div > div:nth-child(3) > div > div > a"
 
@@ -154,7 +150,7 @@ class VerSeriesOnline :
         val document = response.asJsoup()
         val episodeList = mutableListOf<SEpisode>()
 
-        document.select(seasonListSelector()).forEach { seasonElement ->
+        document.select(seasonsListSelector()).forEach { seasonElement ->
             val seasonUrl = seasonElement.attr("href")
             val seasonNumber = Regex("temporada-(\\d+)").find(seasonUrl)?.groups?.get(1)?.value?.toIntOrNull() ?: 1
             val seasonDocument = client.newCall(GET(seasonUrl)).execute().useAsJsoup()
@@ -221,7 +217,7 @@ class VerSeriesOnline :
 
                 if (dataHash.isNotEmpty()) {
                     val request = Request.Builder()
-                        .url("https://www.verseriesonline.net/hashembedlink")
+                        .url("$baseUrl/hashembedlink")
                         .post(
                             FormBody.Builder()
                                 .add("hash", dataHash)
@@ -234,7 +230,7 @@ class VerSeriesOnline :
                         .addHeader("Referer", response.request.url.toString())
                         .addHeader("Accept", "application/json, text/plain, */*")
                         .addHeader("Accept-Language", "es-ES,es;q=0.9")
-                        .addHeader("Origin", "https://www.verseriesonline.net")
+                        .addHeader("Origin", baseUrl)
                         .addHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36")
                         .addHeader("sec-ch-ua", "\"Google Chrome\";v=\"119\", \"Chromium\";v=\"119\", \"Not?A_Brand\";v=\"24\"")
                         .addHeader("sec-ch-ua-mobile", "?0")

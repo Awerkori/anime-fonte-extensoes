@@ -19,6 +19,7 @@ import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.network.awaitSuccess
+import keiyoushi.annotation.Source
 import keiyoushi.utils.AnimeHttpLegacySource
 import keiyoushi.utils.getPreferencesLazy
 import keiyoushi.utils.parallelCatchingFlatMapBlocking
@@ -37,17 +38,12 @@ import okhttp3.Response
 import java.text.SimpleDateFormat
 import java.util.Locale
 
-open class MhdFlix :
+@Source
+abstract class MhdFlix :
     AnimeHttpLegacySource(),
     ConfigurableAnimeSource {
 
-    override val name = "MhdFlix"
-
-    override val baseUrl = "https://ww1.mhdflix.com"
-
     private val apiUrl = "https://core.mhdflix.com"
-
-    override val lang = "es"
 
     override val supportsLatest = true
 
@@ -315,11 +311,9 @@ open class MhdFlix :
         val uniqueLinks = payload.data.distinctBy { it.link }
         if (uniqueLinks.isEmpty()) return emptyList()
 
-        val videos = uniqueLinks.parallelCatchingFlatMapBlocking { link ->
+        return uniqueLinks.parallelCatchingFlatMapBlocking { link ->
             link.toVideos()
         }.distinctBy { it.videoUrl }
-
-        return videos.sortVideos()
     }
 
     private suspend fun fetchMediaSummary(mediaId: Int): MediaDto? {

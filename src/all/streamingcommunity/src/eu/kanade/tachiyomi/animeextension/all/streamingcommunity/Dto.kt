@@ -4,21 +4,23 @@ import eu.kanade.tachiyomi.animesource.model.SAnime
 import keiyoushi.lib.i18n.Intl
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonPrimitive
 import kotlin.math.roundToInt
-
-@Serializable
-data class ShowsResponse(
-    val props: PropObject,
-    val version: String, // x-inertia-version
-)
 
 @Suppress("PropertyName")
 @Serializable
-data class PropObject(
-    val titles: List<TitleObject>,
-    val scws_url: String?, // https://vixcloud.co (not available in API call)
-    val cdn_url: String?, // https://cdn.streamingunity.to (not available in API call)
-)
+data class BrowseResponse(
+    val props: BrowseObject,
+    val version: String? = null,
+) {
+    @Serializable
+    data class BrowseObject(
+        val titles: List<TitleObject> = emptyList(),
+        val totalCount: Int? = null,
+        val scws_url: String? = null, // https://vixcloud.co
+        val cdn_url: String? = null, // https://cdn.streamingunity.vip
+    )
+}
 
 @Serializable
 data class TitleObject(
@@ -67,35 +69,35 @@ data class SingleShowResponse(
     data class SingleShowObject(
         val title: ShowObject? = null,
         val loadedSeason: LoadedSeasonObject? = null,
-        val sliders: List<RelatedObject>?,
+        val sliders: List<RelatedObject>? = null,
     ) {
         @Serializable
         data class ShowObject(
             val id: Int,
             val name: String,
-            val original_name: String,
+            val original_name: String? = null,
             val type: String,
             val plot: String? = null,
-            val quality: String, // HD
+            val quality: String? = null, // HD
             val status: String? = null,
-            val runtime: Int?,
-            val score: String?, // 7.7
-            val tmdb_id: Int?,
-            val imdb_id: String?, // tt20969586
-            val release_date: String?, // "2018-01-07",
-            val last_air_date: String?, // "2025-01-01"
-            val age: Int?, // 16
-            val seasons_count: Int, // 0 or 1,2,3...
-            val seasons: List<SeasonObject>, // could be empty
-            val trailers: List<TrailerObject>,
+            val runtime: Int? = null,
+            val score: String? = null, // 7.7
+            val tmdb_id: Int? = null,
+            val imdb_id: String? = null, // tt20969586
+            val release_date: String? = null, // "2018-01-07",
+            val last_air_date: String? = null, // "2025-01-01"
+            val age: Int? = null, // 16
+            val seasons_count: Int = 0, // 0 or 1,2,3...
+            val seasons: List<SeasonObject> = emptyList(), // could be empty
+            val trailers: List<TrailerObject> = emptyList(),
             val genres: List<GenreObject>? = null,
-            val main_actors: List<ActorObject>,
-            val main_directors: List<ActorObject>,
-            val preview: PreviewObject?,
-            val images: List<ImageObject>,
-            val keywords: List<KeywordObject>,
-            val created_at: String?, // "2023-08-21T19:51:07.000000Z",
-            val updated_at: String?, // "2025-05-12T12:33:33.000000Z"
+            val main_actors: List<ActorObject> = emptyList(),
+            val main_directors: List<ActorObject> = emptyList(),
+            val preview: PreviewObject? = null,
+            val images: List<ImageObject> = emptyList(),
+            val keywords: List<KeywordObject> = emptyList(),
+            val created_at: String? = null, // "2023-08-21T19:51:07.000000Z",
+            val updated_at: String? = null, // "2025-05-12T12:33:33.000000Z"
         ) {
             @Serializable
             data class SeasonObject(
@@ -208,4 +210,13 @@ data class SingleShowResponse(
             )
         }
     }
+}
+
+@Serializable
+class StreamServer(
+    val url: String,
+    private val active: JsonPrimitive? = null,
+) {
+    // `active` is not always a keyword - live pages emit the number 1 for the selected mirror.
+    val isActive get() = active?.content == "true" || active?.content == "1"
 }

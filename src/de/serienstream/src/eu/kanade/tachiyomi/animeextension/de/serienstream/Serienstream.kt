@@ -12,6 +12,7 @@ import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.network.GET
+import keiyoushi.annotation.Source
 import keiyoushi.utils.ParsedAnimeHttpLegacySource
 import keiyoushi.utils.UrlUtils
 import keiyoushi.utils.addListPreference
@@ -21,6 +22,7 @@ import keiyoushi.utils.delegate
 import keiyoushi.utils.getPreferencesLazy
 import keiyoushi.utils.parallelCatchingFlatMapBlocking
 import keiyoushi.utils.parallelMapNotNullBlocking
+import keiyoushi.utils.toHex
 import keiyoushi.utils.useAsJsoup
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -38,15 +40,10 @@ import uy.kohesive.injekt.injectLazy
 import java.net.URLEncoder
 import java.security.MessageDigest
 
-class Serienstream :
+@Source
+abstract class Serienstream :
     ParsedAnimeHttpLegacySource(),
     ConfigurableAnimeSource {
-
-    override val name = "Serienstream"
-
-    override val baseUrl = "https://serienstream.to"
-
-    override val lang = "de"
 
     override val supportsLatest = true
 
@@ -443,7 +440,7 @@ class Serienstream :
         }
         for (i in 0..maxnumber) {
             val hash = md.digest((salt + i.toString()).toByteArray())
-            val hex = hash.joinToString("") { "%02x".format(it.toInt() and 0xFF) }
+            val hex = hash.toHex()
             if (hex == challenge) return i
             md.reset()
         }

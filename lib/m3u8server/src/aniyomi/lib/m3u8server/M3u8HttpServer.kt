@@ -1,7 +1,7 @@
 package aniyomi.lib.m3u8server
 
 import android.util.Log
-import fi.iki.elonen.NanoHTTPD
+import keiyoushi.utils.decodeHex
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
@@ -9,6 +9,11 @@ import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.nanohttpd.protocols.http.IHTTPSession
+import org.nanohttpd.protocols.http.NanoHTTPD
+import org.nanohttpd.protocols.http.response.Response
+import org.nanohttpd.protocols.http.response.Response.newFixedLengthResponse
+import org.nanohttpd.protocols.http.response.Status
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.IOException
@@ -67,7 +72,7 @@ class M3u8HttpServer(
 
     fun isRunning(): Boolean = isRunning
 
-    override fun serve(session: IHTTPSession): Response {
+    override fun handle(session: IHTTPSession): Response {
         val uri = session.uri
         val method = session.method
 
@@ -79,7 +84,7 @@ class M3u8HttpServer(
             uri.startsWith("/health") -> handleHealthRequest()
             else -> {
                 Log.w(tag, "Unknown endpoint: $uri")
-                newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "Not Found")
+                newFixedLengthResponse(Status.NOT_FOUND, MIME_PLAINTEXT, "Not Found")
             }
         }
 
@@ -88,9 +93,9 @@ class M3u8HttpServer(
     }
 
     private fun handleM3u8Request(session: IHTTPSession): Response {
-        val url = session.parms["url"]
-        val fallbackReferer = session.parms["referer"]
-        val fallbackUserAgent = session.parms["useragent"]
+        val url = session.parameters["url"]?.first()
+        val fallbackReferer = session.parameters["referer"]?.first()
+        val fallbackUserAgent = session.parameters["useragent"]?.first()
         val headers = extractHeadersFromSession(session, fallbackReferer, fallbackUserAgent)
 
         Log.d(tag, "Processing M3U8 request for URL: $url")
@@ -98,29 +103,29 @@ class M3u8HttpServer(
 
         if (url.isNullOrBlank()) {
             Log.w(tag, "Missing URL parameter in M3U8 request")
-            return newFixedLengthResponse(Response.Status.BAD_REQUEST, MIME_PLAINTEXT, "Missing url parameter")
+            return newFixedLengthResponse(Status.BAD_REQUEST, MIME_PLAINTEXT, "Missing url parameter")
         }
 
         return try {
             Log.d(tag, "Starting M3U8 processing for: $url")
             val processedContent = runBlocking { processM3u8Content(url, headers) }
             Log.d(tag, "M3U8 processing completed successfully, content length: ${processedContent.length}")
-            newFixedLengthResponse(Response.Status.OK, "application/vnd.apple.mpegurl", processedContent)
+            newFixedLengthResponse(Status.OK, "application/vnd.apple.mpegurl", processedContent)
         } catch (e: UpstreamStatusException) {
             Log.w(tag, "Upstream HTTP ${e.code} for $url: ${e.message}")
             passThroughStatus(e)
         } catch (e: Exception) {
             Log.e(tag, "Error processing M3U8: ${e.message}", e)
-            newFixedLengthResponse(Response.Status.INTERNAL_ERROR, MIME_PLAINTEXT, "Error: ${e.message}")
+            newFixedLengthResponse(Status.INTERNAL_ERROR, MIME_PLAINTEXT, "Error: ${e.message}")
         }
     }
 
     private fun handleSegmentRequest(session: IHTTPSession): Response {
-        val url = session.parms["url"]
-        val keyUrl = session.parms["key"]
-        val iv = session.parms["iv"]
-        val fallbackReferer = session.parms["referer"]
-        val fallbackUserAgent = session.parms["useragent"]
+        val url = session.parameters["url"]?.first()
+        val keyUrl = session.parameters["key"]?.first()
+        val iv = session.parameters["iv"]?.first()
+        val fallbackReferer = session.parameters["referer"]?.first()
+        val fallbackUserAgent = session.parameters["useragent"]?.first()
         val headers = extractHeadersFromSession(session, fallbackReferer, fallbackUserAgent)
 
         Log.d(tag, "Processing segment request for URL: $url (key=${keyUrl != null}, iv=${iv != null})")
@@ -128,7 +133,7 @@ class M3u8HttpServer(
 
         if (url.isNullOrBlank()) {
             Log.w(tag, "Missing URL parameter in segment request")
-            return newFixedLengthResponse(Response.Status.BAD_REQUEST, MIME_PLAINTEXT, "Missing url parameter")
+            return newFixedLengthResponse(Status.BAD_REQUEST, MIME_PLAINTEXT, "Missing url parameter")
         }
 
         val hasAes = keyUrl != null && iv != null
@@ -139,13 +144,18 @@ class M3u8HttpServer(
             }
             Log.d(tag, "Segment processing completed successfully, data size: ${segmentData.size} bytes")
             val inputStream = ByteArrayInputStream(segmentData)
-            newChunkedResponse(Response.Status.OK, "video/mp2t", inputStream)
+            newFixedLengthResponse(
+                Status.OK,
+                "video/mp2t",
+                inputStream,
+                segmentData.size.toLong(),
+            )
         } catch (e: UpstreamStatusException) {
             Log.w(tag, "Upstream segment HTTP ${e.code} for $url: ${e.message}")
             passThroughStatus(e)
         } catch (e: Exception) {
             Log.e(tag, "Error processing segment: ${e.message}", e)
-            newFixedLengthResponse(Response.Status.INTERNAL_ERROR, MIME_PLAINTEXT, "Error: ${e.message}")
+            newFixedLengthResponse(Status.INTERNAL_ERROR, MIME_PLAINTEXT, "Error: ${e.message}")
         }
     }
 
@@ -158,14 +168,14 @@ class M3u8HttpServer(
      */
     private fun passThroughStatus(e: UpstreamStatusException): Response {
         val nanoStatus = when (e.code) {
-            401 -> Response.Status.UNAUTHORIZED
-            403 -> Response.Status.FORBIDDEN
-            404 -> Response.Status.NOT_FOUND
-            429 -> Response.Status.TOO_MANY_REQUESTS
-            in 400..499 -> Response.Status.BAD_REQUEST
-            500 -> Response.Status.INTERNAL_ERROR
-            503 -> Response.Status.SERVICE_UNAVAILABLE
-            else -> Response.Status.INTERNAL_ERROR
+            401 -> Status.UNAUTHORIZED
+            403 -> Status.FORBIDDEN
+            404 -> Status.NOT_FOUND
+            429 -> Status.TOO_MANY_REQUESTS
+            in 400..499 -> Status.BAD_REQUEST
+            500 -> Status.INTERNAL_ERROR
+            503 -> Status.SERVICE_UNAVAILABLE
+            else -> Status.INTERNAL_ERROR
         }
         val body = "Upstream ${e.code} for ${e.url}\n${e.message}"
         return newFixedLengthResponse(nanoStatus, MIME_PLAINTEXT, body)
@@ -175,7 +185,7 @@ class M3u8HttpServer(
         Log.d(tag, "Health check requested")
         val status = getHealthStatus()
         Log.d(tag, "Health status: $status")
-        return newFixedLengthResponse(Response.Status.OK, MIME_PLAINTEXT, status)
+        return newFixedLengthResponse(Status.OK, MIME_PLAINTEXT, status)
     }
 
     /**
@@ -202,10 +212,11 @@ class M3u8HttpServer(
     ): Map<String, String> {
         val headers = mutableMapOf<String, String>()
 
+        // Let OkHttp negotiate compression and decode upstream playlists and segments.
         session.headers.forEach { (key, value) ->
             when (key.lowercase()) {
                 "user-agent", "referer", "origin", "accept", "accept-language",
-                "accept-encoding", "connection", "cache-control", "pragma",
+                "connection", "cache-control", "pragma",
                 -> {
                     headers[key.lowercase()] = value
                 }
@@ -352,28 +363,27 @@ class M3u8HttpServer(
         if (normalizedIv.length != 32) {
             throw IOException("Invalid AES-128 IV length: ${normalizedIv.length}")
         }
+        val ivBytes = try {
+            normalizedIv.decodeHex()
+        } catch (e: IllegalArgumentException) {
+            throw IOException("Invalid AES-128 IV", e)
+        }
         return try {
             val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
             cipher.init(
                 Cipher.DECRYPT_MODE,
                 SecretKeySpec(key, "AES"),
-                IvParameterSpec(normalizedIv.hexToByteArray()),
+                IvParameterSpec(ivBytes),
             )
             cipher.doFinal(data)
         } catch (e: GeneralSecurityException) {
             throw IOException("Failed to decrypt AES-128 segment", e)
-        } catch (e: NumberFormatException) {
-            throw IOException("Invalid AES-128 IV", e)
         }
     }
 
     private fun Long.toHlsIv(): String = toString(16).padStart(32, '0')
 
     private fun String.normalizeHlsIv(): String = removePrefix("0x").removePrefix("0X").padStart(32, '0')
-
-    private fun String.hexToByteArray(): ByteArray = ByteArray(length / 2) { index ->
-        substring(index * 2, index * 2 + 2).toInt(16).toByte()
-    }
 
     /**
      * Health check
@@ -581,7 +591,7 @@ class M3u8HttpServer(
         it.groupValues[1] to it.groupValues[2].trim('"')
     }
 
-    private fun resolveHlsUrl(baseHttpUrl: okhttp3.HttpUrl?, uri: String): String = baseHttpUrl?.resolve(uri)?.toString() ?: uri
+    private fun resolveHlsUrl(baseHttpUrl: HttpUrl?, uri: String): String = baseHttpUrl?.resolve(uri)?.toString() ?: uri
 
     private fun createLocalSegmentUrl(
         serverPort: Int,

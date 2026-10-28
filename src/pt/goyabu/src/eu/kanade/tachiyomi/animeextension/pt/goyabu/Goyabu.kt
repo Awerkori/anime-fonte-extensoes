@@ -1,10 +1,6 @@
-@file:SuppressLint("NewApi")
-
 package eu.kanade.tachiyomi.animeextension.pt.goyabu
 
-import android.annotation.SuppressLint
 import android.util.Base64
-import android.util.Log
 import androidx.preference.ListPreference
 import androidx.preference.PreferenceScreen
 import aniyomi.lib.bloggerextractor.BloggerExtractor
@@ -16,6 +12,7 @@ import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.awaitSuccess
+import keiyoushi.annotation.Source
 import keiyoushi.utils.ParsedAnimeHttpLegacySource
 import keiyoushi.utils.getPreferencesLazy
 import keiyoushi.utils.parallelCatchingFlatMapBlocking
@@ -26,6 +23,7 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Request
 import okhttp3.Response
 import org.jsoup.nodes.Document
@@ -37,15 +35,10 @@ private val DATE_FORMATTER by lazy {
     SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.ENGLISH)
 }
 
-class Goyabu :
+@Source
+abstract class Goyabu :
     ParsedAnimeHttpLegacySource(),
     ConfigurableAnimeSource {
-
-    override val name = "Goyabu"
-
-    override val baseUrl = "https://goyabu.io"
-
-    override val lang = "pt-BR"
 
     override val supportsLatest = true
 
@@ -88,11 +81,7 @@ class Goyabu :
     override fun latestUpdatesFromElement(element: Element) = SAnime.create().apply {
         setUrlWithoutDomain(element.attr("href"))
         title = element.selectFirst("div.title")!!.text()
-        thumbnail_url = element.selectFirst("img")?.let { image ->
-            image.attr("data-src").takeIf(String::isNotBlank)
-                ?: image.attr("data-lazy-src").takeIf(String::isNotBlank)
-                ?: image.attr("src").takeIf(String::isNotBlank)
-        }
+        thumbnail_url = element.selectFirst("figure")?.attr("data-thumb")
     }
 
     override fun latestUpdatesParse(response: Response): AnimesPage {
@@ -118,9 +107,9 @@ class Goyabu :
         query: String,
         filters: AnimeFilterList,
     ): AnimesPage {
-        if (query.startsWith("https://")) {
-            val url = query.toHttpUrl()
-            if (url.host != baseUrl.toHttpUrl().host) {
+        val url = query.toHttpUrlOrNull()
+        if (url != null) {
+            if (url.host != baseUrl.toHttpUrl().host && url.host !in LEGACY_HOSTS) {
                 throw Exception("Unsupported url")
             }
             val searchQuery = if (url.pathSegments.size > 1) {
@@ -185,25 +174,21 @@ class Goyabu :
 
     // ============================== Episodes ==============================
     override fun episodeListParse(response: Response): List<SEpisode> {
-        val contentType = response.header("Content-Type").orEmpty()
-        val rawBody = response.peekBody(MAX_PEEK_BODY_BYTES).string()
-        Log.d(
-            TAG,
-            "EPISODES request=${response.request.url} http=${response.code} " +
-                "contentType=${contentType.take(80)} payload=${payloadType(rawBody)} " +
-                "prefix=${rawBody.take(LOG_PREFIX_LENGTH).sanitizeForLog()}",
-        )
-
         val document = getRealDoc(response.useAsJsoup())
-        val payload = extractEpisodesLiteral(rawBody)
-            ?: document.select("script").asSequence()
-                .map { it.data() }
-                .mapNotNull(::extractEpisodesLiteral)
-                .firstOrNull()
-            ?: error("Goyabu episodes payload did not contain const allEpisodes")
+        val script = document.selectFirst("script:containsData(const allEpisodes)")
+            ?: return emptyList()
 
-        val episodes = payload.parseAs<List<EpisodeDto>>(json)
-        Log.d(TAG, "EPISODES parsed=${episodes.size}")
+        val afterName = script.data()
+            .substringAfter("const allEpisodes", missingDelimiterValue = "")
+            .trimStart()
+        if (!afterName.startsWith("=")) return emptyList()
+
+        val jsonString = afterName.substringAfter("=")
+            .substringBefore(";")
+            .trim()
+        if (jsonString.isEmpty()) return emptyList()
+
+        val episodes = jsonString.parseAs<List<EpisodeDto>>(json)
         return episodes.reversed().map { it.toSEpisode() }
     }
 
@@ -270,11 +255,11 @@ class Goyabu :
     }
 
     companion object {
-        private const val TAG = "Goyabu"
-        private const val LOG_PREFIX_LENGTH = 48
-        private const val MAX_PEEK_BODY_BYTES = 2L * 1024L * 1024L
-        private const val EPISODES_MARKER = "const allEpisodes"
         const val PREFIX_SEARCH = "path:"
+
+        // Old domains: keep in sync with their deeplink in build.gradle.kts
+        private val LEGACY_HOSTS = setOf("goyabu.to")
+
         private val REGEX_QUALITY by lazy { Regex("""(\d+)p""") }
 
         private const val PREF_QUALITY_KEY = "preferred_quality"
@@ -282,47 +267,6 @@ class Goyabu :
         private const val PREF_QUALITY_DEFAULT = "720p"
         private val PREF_QUALITY_VALUES = arrayOf("360p", "720p", "1080p")
     }
-
-    private fun extractEpisodesLiteral(source: String): String? {
-        val markerStart = source.indexOf(EPISODES_MARKER)
-        if (markerStart < 0) return null
-        val equals = source.indexOf('=', markerStart + EPISODES_MARKER.length)
-        if (equals < 0) return null
-        val start = source.indexOf('[', equals + 1)
-        if (start < 0) return null
-
-        var depth = 0
-        var quoted = false
-        var escaped = false
-        for (index in start until source.length) {
-            val char = source[index]
-            if (quoted) {
-                if (escaped) {
-                    escaped = false
-                } else if (char == '\\') {
-                    escaped = true
-                } else if (char == '"') {
-                    quoted = false
-                }
-                continue
-            }
-            when (char) {
-                '"' -> quoted = true
-                '[' -> depth++
-                ']' -> if (--depth == 0) return source.substring(start, index + 1)
-            }
-        }
-        return null
-    }
-
-    private fun payloadType(body: String): String = when {
-        body.trimStart().startsWith("[") || body.trimStart().startsWith("{") -> "JSON"
-        body.trimStart().startsWith("<") -> "HTML"
-        else -> "JS"
-    }
-
-    private fun String.sanitizeForLog(): String = replace(Regex("[\\r\\n\\t]+"), " ")
-        .replace(Regex("[A-Za-z0-9_-]{24,}"), "<redacted>")
 
     @Serializable
     data class EpisodeDto(
