@@ -4,7 +4,7 @@ plugins {
 
 yuzono {
     name = "Oploverz"
-    versionCode = 34
+    versionCode = 35
     contentWarning = ContentWarning.SAFE
     libVersion = "16"
 

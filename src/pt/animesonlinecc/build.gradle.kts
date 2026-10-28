@@ -4,7 +4,7 @@ plugins {
 
 yuzono {
     name = "Animes Online CC"
-    versionCode = 5
+    versionCode = 6
     contentWarning = ContentWarning.NSFW
     libVersion = "14"
     theme = "dooplay"
