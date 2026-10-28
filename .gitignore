@@ -12,3 +12,6 @@ gen
 generated-src/
 .kotlin
 *.jks
+
+__pycache__/
+*.pyc
