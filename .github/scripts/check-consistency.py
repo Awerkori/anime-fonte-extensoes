@@ -82,6 +82,17 @@ def get_local_source_modules() -> set[str]:
     return modules
 
 
+def load_sync_module():
+    import importlib.util
+    script_path = Path(".github/scripts/sync-upstream.py")
+    if not script_path.exists():
+        return None
+    spec = importlib.util.spec_from_file_location("sync_upstream_mod", str(script_path))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def check_consistency(check_pending: bool = False) -> int:
     upstream_head = get_upstream_head()
     sync_head = get_sync_branch_head()
@@ -102,19 +113,18 @@ def check_consistency(check_pending: bool = False) -> int:
                 unit = f"src/{parts[0]}/{parts[1]}"
                 deployed_by_unit[unit] = item
 
-    # Check pending upstream differences
-    protected = get_protected_units()
+    # Check pending upstream differences via sync module logic
     upstream_ref = "upstream/master"
-    diff_output = git("diff", "--name-only", "HEAD", upstream_ref, check=False)
-    diff_units = set()
-    for line in diff_output.splitlines():
-        if line.startswith("src/"):
-            diff_units.add("/".join(line.split("/")[:3]))
-
-    pending_units = [
-        u for u in sorted(diff_units)
-        if u not in protected
-    ]
+    sync_mod = load_sync_module()
+    if sync_mod:
+        base = sync_mod.git("merge-base", "HEAD", upstream_ref).strip()
+        diff_entries = sync_mod.changed_entries("HEAD", upstream_ref)
+        diff_units, _ = sync_mod.collect_units(diff_entries)
+        protected = sync_mod.get_nox_protected_units(base, upstream_ref)
+        pending_units = sync_mod.pending_sync_units(diff_units, protected, upstream_ref, base=base)
+    else:
+        protected = get_protected_units()
+        pending_units = []
 
     # Build Markdown summary
     lines = [

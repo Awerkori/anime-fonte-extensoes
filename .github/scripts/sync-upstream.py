@@ -103,8 +103,18 @@ def parse_name_status(output: str) -> list[tuple[str, list[str]]]:
 
 
 def is_preserved(path: str) -> bool:
-    """Paths that must NEVER be overwritten by upstream (our CI/scripts)."""
-    return path == ".github" or path.startswith(".github/")
+    """Paths that must NEVER be overwritten by upstream (our CI/scripts/build logic)."""
+    if path == ".github" or path.startswith(".github/"):
+        return True
+    if path.startswith("gradle/build-logic/"):
+        return True
+    if path in {
+        "gradle/build-logic",
+        "gradle/kei.versions.toml",
+        "settings.gradle.kts",
+    }:
+        return True
+    return False
 
 
 def sync_unit(path: str) -> str | None:
@@ -284,7 +294,7 @@ def pending_sync_units(
     base: str | None = None,
 ) -> list[str]:
     """Return HEAD/upstream differences which still need a sync attempt."""
-    protected = set(protected_units)
+    protected = set(protected_units) | get_explicit_code_protections()
     pending = []
     for unit in diff_units:
         if unit in protected:

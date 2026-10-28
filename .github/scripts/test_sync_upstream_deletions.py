@@ -620,6 +620,15 @@ class SyncDeletionTest(unittest.TestCase):
         pending = sync.pending_sync_units(diff_units, [], upstream_ref, base=base)
         self.assertIn("src/en/unapplied", pending)
 
+    def test_is_preserved_protects_build_logic_and_settings(self):
+        self.assertTrue(sync.is_preserved(".github/workflows/ci.yml"))
+        self.assertTrue(sync.is_preserved("gradle/build-logic/build.gradle.kts"))
+        self.assertTrue(sync.is_preserved("gradle/build-logic/src/main/kotlin/PluginExtensionLegacy.kt"))
+        self.assertTrue(sync.is_preserved("gradle/kei.versions.toml"))
+        self.assertTrue(sync.is_preserved("settings.gradle.kts"))
+        self.assertFalse(sync.is_preserved("src/en/anidb/build.gradle.kts"))
+        self.assertFalse(sync.is_preserved("gradle/wrapper/gradle-wrapper.properties"))
+
 
 
 def shutil_rmtree(path: Path) -> None:
