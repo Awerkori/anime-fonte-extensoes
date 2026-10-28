@@ -225,3 +225,9 @@ jobs:
           message: "${{ needs.prepare.outputs.latestCommitMessage }}"
           cwd: "./repo"
 
+      - name: Purge CDN cache
+        if: steps.bootstrap-guard.outputs.skip_deploy != 'true'
+        run: |
+          curl -s "https://purge.jsdelivr.net/gh/Awerkori/anime-extensoes@repo/index.json" || true
+          curl -s "https://purge.jsdelivr.net/gh/Awerkori/anime-extensoes@repo/index.min.json" || true
+

@@ -58,19 +58,9 @@ jobs:
         env:
           IS_DISPATCH: ${{ github.event_name == 'workflow_dispatch' }}
         run: |
-          UPSTREAM_URL="https://github.com/yuzono/anime-extensions.git"
-          UPSTREAM_SHA=$(git ls-remote "$UPSTREAM_URL" refs/heads/master | awk '{print $1}')
-          SYNC_SHA=$(git ls-remote origin refs/heads/sync | awk '{print $1}')
-
-          echo "Upstream master HEAD: ${UPSTREAM_SHA}"
-          echo "Last Synced SHA:     ${SYNC_SHA}"
-          echo "upstream_sha=${UPSTREAM_SHA}" >> "$GITHUB_OUTPUT"
-
-          if [ -z "$UPSTREAM_SHA" ]; then
-            echo "::warning::Failed to query upstream HEAD SHA. Proceeding with sync to ensure no missed updates."
-            echo "has_changes=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+          git config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
+          git fetch origin
+          git fetch https://github.com/yuzono/anime-extensions.git master:refs/remotes/upstream/master
 
           if [ "${{ github.event.inputs.force }}" = "true" ]; then
             echo "Forced sync via input. Proceeding with sync."
@@ -78,38 +68,18 @@ jobs:
             exit 0
           fi
 
-          # If the upstream commit matches the synced marker, no new upstream changes exist
-          if [ "$UPSTREAM_SHA" = "$SYNC_SHA" ]; then
-            LOCAL_HEAD=$(git rev-parse HEAD)
-            echo "=================================================="
-            echo "PROJECT NOX — UPSTREAM SYNC"
-            echo "=================================================="
-            echo "SYNC_PROJECT=anime"
-            echo "SYNC_TRIGGER=${{ github.event_name }}"
-            echo "LOCAL_HEAD=${LOCAL_HEAD}"
-            echo "UPSTREAM_REMOTE=${UPSTREAM_URL}"
-            echo "UPSTREAM_BRANCH=master"
-            echo "UPSTREAM_HEAD=${UPSTREAM_SHA}"
-            echo "LAST_SYNCED_UPSTREAM=${SYNC_SHA}"
-            echo "NEW_COUNT=0"
-            echo "UPDATED_COUNT=0"
-            echo "REMOVED_COUNT=0"
-            echo "CORE_CHANGED=false"
-            echo "MULTISRC_CHANGED=false"
-            echo "NO_CHANGES=true"
-            echo "=================================================="
-            echo "No new updates in upstream. Upstream ${UPSTREAM_SHA} is already synchronized."
-            echo "=================================================="
-            echo "SYNC_RESULT=NO_CHANGES"
-            echo "PUSH_RESULT=SKIPPED"
-            echo "PUBLICATION_RESULT=SKIPPED"
-            echo "=================================================="
-            echo "has_changes=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+          set +e
+          python .github/scripts/check-consistency.py --check-pending
+          CONSISTENCY_EXIT=$?
+          set -e
 
-          echo "New upstream changes detected (${UPSTREAM_SHA} != ${SYNC_SHA} or not in main). Proceeding with sync."
-          echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          if [ "$CONSISTENCY_EXIT" -eq 2 ]; then
+            echo "Pending upstream updates or divergences detected. Proceeding with sync."
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "All extensions are in sync with upstream."
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Configure Git
         if: steps.guard.conclusion == 'success' && steps.guard.outputs.should_run_sync == 'true' && steps.check_upstream.outputs.has_changes == 'true'
@@ -125,7 +95,24 @@ jobs:
         if: steps.guard.conclusion == 'success' && steps.guard.outputs.should_run_sync == 'true' && steps.check_upstream.outputs.has_changes == 'true'
         env:
           GITHUB_EVENT_NAME: ${{ github.event_name }}
-        run: python .github/scripts/sync-upstream.py --push
+        run: |
+          MAX_ATTEMPTS=3
+          for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
+            echo "::group::Sync upstream — Tentativa $attempt de $MAX_ATTEMPTS"
+            if python .github/scripts/sync-upstream.py --push; then
+              echo "::endgroup::"
+              break
+            fi
+            echo "::endgroup::"
+            if [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then
+              echo "Waiting 10s before retry..."
+              sleep 10
+              git fetch origin
+            else
+              echo "::error::Sync upstream failed after $MAX_ATTEMPTS attempts."
+              exit 1
+            fi
+          done
 
       - name: Trigger next check (24/7 cloud pulse)
         if: always() && !cancelled() && steps.guard.conclusion == 'success' && steps.guard.outputs.should_run_sync == 'true'

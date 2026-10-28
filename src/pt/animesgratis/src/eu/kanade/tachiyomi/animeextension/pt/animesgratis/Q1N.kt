@@ -31,12 +31,10 @@ import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 
-class Q1N :
-    DooPlay(
-        "pt-BR",
-        "TopAnimes",
-        "https://topanimes.net",
-    ) {
+class Q1N : DooPlay() {
+    override val lang = "pt-BR"
+    override val name = "TopAnimes"
+    override val baseUrl = "https://topanimes.net"
 
     private val tag by lazy { javaClass.simpleName }
     private val json = Json { ignoreUnknownKeys = true }

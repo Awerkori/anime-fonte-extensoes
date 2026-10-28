@@ -112,14 +112,18 @@ def resolve_ext(multisrcs: set[str], libs: set[str]) -> set[tuple[str, str]]:
     extensions = set()
 
     for lang in Path("src").iterdir():
+        if not lang.is_dir():
+            continue
         for extension in lang.iterdir():
-            build_file = extension / "build.gradle"
+            if not extension.is_dir():
+                continue
+            build_file = extension / "build.gradle.kts"
             if not build_file.is_file():
-                build_file = extension / "build.gradle.kts"
+                build_file = extension / "build.gradle"
             if not build_file.is_file():
                 continue
 
-            content = build_file.read_text("utf-8")
+            content = build_file.read_text("utf-8", errors="ignore")
 
             if regex.search(content):
                 extensions.add((lang.name, extension.name))
@@ -191,8 +195,14 @@ def get_module_list(ref: str) -> tuple[list[str], list[str]]:
 def get_all_modules() -> tuple[list[str], list[str]]:
     modules = []
     deleted = []
+    if not Path("src").is_dir():
+        return modules, deleted
     for lang in Path("src").iterdir():
+        if not lang.is_dir():
+            continue
         for extension in lang.iterdir():
+            if not extension.is_dir():
+                continue
             modules.append(f":src:{lang.name}:{extension.name}")
             deleted.append(f"{lang.name}.{extension.name}")
     return modules, deleted

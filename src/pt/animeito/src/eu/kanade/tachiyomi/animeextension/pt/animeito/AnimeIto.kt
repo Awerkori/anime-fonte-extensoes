@@ -16,12 +16,10 @@ import okhttp3.Response
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 
-class AnimeIto :
-    AnimeStream(
-        "pt-BR",
-        "Animeito",
-        "https://animesonline.io",
-    ) {
+class AnimeIto : AnimeStream() {
+    override val lang = "pt-BR"
+    override val name = "Animeito"
+    override val baseUrl = "https://animesonline.io"
     override fun headersBuilder() = super.headersBuilder().add("Referer", baseUrl)
 
     // ============================ Filters =================================

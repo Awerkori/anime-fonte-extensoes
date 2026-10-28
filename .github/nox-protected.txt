@@ -1,7 +1,6 @@
-# Explicit exceptions to upstream extension deletions only.
-# Add one source unit per line (for example: src/pt/example).
-# Ordinary upstream edits still use the automatic Nox-wins conflict policy;
-# historical local edits or version bumps do not preserve deleted sources.
+# Explicitly protected Nox Anime extensions.
+# These units preserve Nox customizations against upstream overwrite.
+# Nox-exclusive extensions (never existed upstream) are protected automatically.
 src/pt/tomato
 src/pt/anikyuu
 src/pt/animesroll
@@ -9,3 +8,7 @@ src/pt/animesgratis
 src/pt/darkmahou
 src/pt/berryanimes
 src/pt/animy
+src/pt/animefire
+src/pt/animeito
+src/pt/animesdrive
+src/pt/dattebayobr

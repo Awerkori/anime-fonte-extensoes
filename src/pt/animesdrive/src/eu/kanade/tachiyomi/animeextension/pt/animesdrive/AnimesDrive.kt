@@ -32,12 +32,10 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorCompletionService
 import java.util.concurrent.Executors
 
-class AnimesDrive :
-    DooPlay(
-        "pt-BR",
-        "Animes Drive",
-        "https://animesdrive.online",
-    ) {
+class AnimesDrive : DooPlay() {
+    override val name = "Animes Drive"
+    override val baseUrl = "https://animesdrive.online"
+    override val lang = "pt-BR"
 
     // ============================== Popular ===============================
     override fun popularAnimeSelector() = "article.item.tvshows, article.item.movies, article.item"

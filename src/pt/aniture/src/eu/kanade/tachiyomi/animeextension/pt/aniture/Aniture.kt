@@ -29,7 +29,10 @@ import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.TimeZone
 
-class Aniture : DooPlay("pt-BR", "Aniture PT", "https://aniture-pt.com.br") {
+class Aniture : DooPlay() {
+    override val lang = "pt-BR"
+    override val name = "Aniture PT"
+    override val baseUrl = "https://aniture-pt.com.br"
     override val fetchGenres = false
 
     override fun headersBuilder() = super.headersBuilder().set("Referer", "$baseUrl/")

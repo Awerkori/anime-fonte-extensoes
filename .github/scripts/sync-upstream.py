@@ -1,26 +1,25 @@
 #!/usr/bin/env python3
 """
-Project Nox Anime — Sync Upstream (Yuzono Nox-Wins)
+Project Nox Anime — Sync Upstream (Yuzono Nox-Wins & Full Propagation)
 
-Regras:
-  - upstream normal (não tocado pelo Nox) → entra normalmente
-  - extensão Nox modificada + upstream não tocou → Nox permanece
-  - conflito (ambos modificaram mesma unidade) → Nox vence (código Nox fica, versão é guardada)
-  - upstream efetivo >= Nox efetivo → mantém código Nox, sobe versão para upstream_efetivo + 1
-  - extensão exclusiva Nox → preservada
-  - nova extensão Yuzono → importada
-  - mudança indireta (lib/lib-multisrc/core/common/extractor) → detectada via grafo de dependências
+Rules:
+  - Normal upstream updates (not protected by Nox) → applied completely to main
+  - Nox-exclusive extensions (never existed upstream) → fully preserved
+  - Nox-protected extensions (.github/nox-protected.txt) → Nox code preserved, monotonic version guard applied
+  - Upstream deletions:
+      - Protected / Nox-exclusive → preserved
+      - Non-protected upstream extensions → deleted from source tree & catalog
+  - Indirect impacts (lib, lib-multisrc) → detected via dependency graph and built
+  - Version monotonicity → effective versionCode strictly > max(upstream, local, deployed)
+  - Self-healing → if main is behind upstream (e.g. from prior failed builds or skipped sync),
+    pending diffs are detected and applied automatically even if the sync ref matches upstream HEAD.
 
-Versionamento real do anime (Yuzono):
-  Standalone:  versionCode = extVersionCode (em build.gradle)
-  Multisrc:    versionCode = baseVersionCode (theme) + overrideVersionCode (extension)
-  Efetivo:     standalone → extVersionCode
-               multisrc   → baseVersionCode + overrideVersionCode
-
-Upstream definitivo: https://github.com/yuzono/anime-extensions (branch master)
+Upstream repository: https://github.com/yuzono/anime-extensions (branch master)
 """
 
 import argparse
+import datetime
+import json
 import os
 import re
 import subprocess
@@ -31,28 +30,18 @@ UPSTREAM_REMOTE = "upstream"
 UPSTREAM_URL = "https://github.com/yuzono/anime-extensions.git"
 UPSTREAM_BRANCH = "master"
 SYNC_BRANCH = "sync"
+SYNC_STATE_FILE = Path(".github/sync-state.json")
+NOX_PROTECTED_FILE = Path(".github/nox-protected.txt")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Versioning patterns — anime/Yuzono architecture
+# Versioning regex patterns — Groovy & Kotlin DSL
 # ──────────────────────────────────────────────────────────────────────────────
-# In standalone extensions (build.gradle Groovy):
-#   extVersionCode = <N>
 _EXT_VERSION_CODE_RE = re.compile(r"extVersionCode\s*=\s*(\d+)")
-
-# In multisrc extensions (build.gradle Groovy):
-#   overrideVersionCode = <N>
 _OVERRIDE_VERSION_CODE_RE = re.compile(r"overrideVersionCode\s*=\s*(\d+)")
-
-# themePkg in extension build.gradle
-_THEME_PKG_RE = re.compile(r"""themePkg\s*=\s*['"]([^'"]+)['"]""")
-
-# In lib-multisrc/<theme>/build.gradle.kts (Kotlin):
-#   baseVersionCode = <N>
+_KTS_VERSION_CODE_RE = re.compile(r"(?:versionCode|overrideVersionCode)\s*=\s*(\d+)")
+_THEME_RE = re.compile(r"""(?:theme|themePkg)\s*=\s*['"]([^'"]+)['"]""")
 _BASE_VERSION_CODE_RE = re.compile(r"baseVersionCode\s*=\s*(\d+)")
-
-# In extension build.gradle (Groovy):
-#   libVersion = <N>
-_LIB_VERSION_RE = re.compile(r"libVersion\s*=\s*(\d+)")
+_LIB_VERSION_RE = re.compile(r"""libVersion\s*=\s*['"]?(\d+)['"]?""")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -89,7 +78,7 @@ def path_exists(ref: str, path: str) -> bool:
 def read_file_at(ref: str | None, path: str) -> str | None:
     if ref is None:
         p = Path(path)
-        return p.read_text() if p.exists() else None
+        return p.read_text(encoding="utf-8", errors="ignore") if p.exists() else None
     result = subprocess.run(
         ["git", "show", f"{ref}:{path}"], capture_output=True, text=True
     )
@@ -97,7 +86,7 @@ def read_file_at(ref: str | None, path: str) -> str | None:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Diff helpers
+# Diff & Unit helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
 def parse_name_status(output: str) -> list[tuple[str, list[str]]]:
@@ -148,25 +137,25 @@ def collect_units(entries: list[tuple[str, list[str]]]) -> tuple[list[str], list
     return sorted(units), sorted(preserved)
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Nox Protection & Exclusivity
+# ──────────────────────────────────────────────────────────────────────────────
+
 EXPLICIT_LOCKED_UNITS = frozenset({"src/pt/darkmahou"})
+_UPSTREAM_HISTORY_CACHE: dict[tuple[str, str, str], bool] = {}
 
 
 def get_explicit_delete_protections() -> list[str]:
-    """Read units that Nox intentionally keeps after upstream deletion.
-
-    This is deliberately separate from automatic conflict protection: a historical
-    Nox edit or version bump must not prevent an upstream removal.
-    """
-    protection_file = Path(".github/nox-protected.txt")
-    if not protection_file.exists():
+    """Read units explicitly listed in .github/nox-protected.txt."""
+    if not NOX_PROTECTED_FILE.exists():
         return []
     protected = []
-    for raw_line in protection_file.read_text("utf-8").splitlines():
+    for raw_line in NOX_PROTECTED_FILE.read_text("utf-8").splitlines():
         unit = raw_line.split("#", 1)[0].strip()
         if not unit:
             continue
         if not re.fullmatch(r"src/[^/]+/[^/]+", unit):
-            raise ValueError(f"Invalid upstream-delete protection entry: {unit}")
+            raise ValueError(f"Invalid protection entry: {unit}")
         protected.append(unit)
     return sorted(set(protected))
 
@@ -174,8 +163,7 @@ def get_explicit_delete_protections() -> list[str]:
 def get_explicit_code_protections(
     explicit_delete_protections: list[str] | None = None,
 ) -> set[str]:
-    """Return units whose custom Nox code and build structure are locked against
-    both upstream deletions and upstream updates/migrations."""
+    """Return all explicitly protected units."""
     base_list = (
         explicit_delete_protections
         if explicit_delete_protections is not None
@@ -184,13 +172,59 @@ def get_explicit_code_protections(
     return set(base_list) | set(EXPLICIT_LOCKED_UNITS)
 
 
-def upstream_historical_units(upstream_ref: str) -> set[str]:
-    """Return source units that were added at some point in upstream history.
+def get_nox_protected_units(base: str, upstream_ref: str) -> list[str]:
+    """Protected Nox extensions: Read from .github/nox-protected.txt (excluding explicitly locked units)."""
+    return [u for u in get_explicit_delete_protections() if u not in EXPLICIT_LOCKED_UNITS]
 
-    The sync workflow uses an `ours` merge, so the current merge-base can already
-    contain an upstream deletion while the Nox tree still has the deleted unit.
-    History distinguishes that stale tree entry from a Nox-only source.
-    """
+
+def unit_existed_in_upstream_history(
+    unit: str,
+    upstream_ref: str,
+    base: str | None = None,
+) -> bool:
+    """Check if unit ever existed in upstream history."""
+    repo_key = os.path.abspath(".")
+    rev_key = git("rev-parse", upstream_ref, check=False).strip()
+    cache_key = (repo_key, rev_key, unit)
+    if cache_key in _UPSTREAM_HISTORY_CACHE:
+        return _UPSTREAM_HISTORY_CACHE[cache_key]
+
+    if path_exists(upstream_ref, unit):
+        _UPSTREAM_HISTORY_CACHE[cache_key] = True
+        return True
+
+    if base and path_exists(base, unit):
+        _UPSTREAM_HISTORY_CACHE[cache_key] = True
+        return True
+
+    output = git("rev-list", "-1", upstream_ref, "--", unit, check=False).strip()
+    existed = bool(output)
+    _UPSTREAM_HISTORY_CACHE[cache_key] = existed
+    return existed
+
+
+def is_nox_exclusive(
+    unit: str,
+    upstream_ref: str,
+    base: str | None = None,
+    local_ref: str | None = "HEAD",
+) -> bool:
+    """Return whether a unit is exclusive to Project Nox (created locally, never existed upstream)."""
+    has_local = (
+        (local_ref is not None and path_exists(local_ref, unit))
+        or Path(unit).exists()
+    )
+    if not has_local:
+        return False
+
+    if path_exists(upstream_ref, unit):
+        return False
+
+    return not unit_existed_in_upstream_history(unit, upstream_ref, base=base)
+
+
+def upstream_historical_units(upstream_ref: str) -> set[str]:
+    """Return source units that were added at some point in upstream history."""
     paths = git(
         "log", "--diff-filter=A", "--name-only", "--format=",
         upstream_ref, "--", "src/*/*/build.gradle", "src/*/*/build.gradle.kts",
@@ -214,6 +248,8 @@ def classify_sync_units(
     main_set = set(main_units)
     candidates = upstream_set | main_set
     historically_upstream = upstream_historical_units(upstream_ref)
+    
+    # Deletions: existed upstream historically or in base, but missing from upstream_ref
     deleted = {
         unit for unit in candidates
         if unit.startswith("src/")
@@ -221,17 +257,46 @@ def classify_sync_units(
         and path_exists("HEAD", unit)
         and not path_exists(upstream_ref, unit)
     }
+    
     explicitly_protected = get_explicit_code_protections(explicit_delete_protections)
-    deleted_protected = sorted(deleted & explicitly_protected)
-    deleted_remove = sorted(deleted - explicitly_protected)
+    deleted_protected = sorted({
+        u for u in deleted
+        if u in explicitly_protected or is_nox_exclusive(u, upstream_ref, base=base)
+    })
+    deleted_remove = sorted(deleted - set(deleted_protected))
+
     protected_updates = {
         unit for unit in (upstream_set & explicitly_protected) - deleted
         if path_exists("HEAD", unit)
     }
+
+    # Conflicts: units with concurrent edits between base and HEAD
     conflicts = sorted(((upstream_set & main_set) | protected_updates) - deleted)
     upstream_only = sorted(upstream_set - set(conflicts) - deleted)
     nox_only = sorted(main_set - upstream_set - deleted)
     return upstream_only, conflicts, nox_only, deleted_remove, deleted_protected
+
+
+def pending_sync_units(
+    diff_units: list[str],
+    protected_units: list[str],
+    upstream_ref: str,
+    base: str | None = None,
+) -> list[str]:
+    """Return HEAD/upstream differences which still need a sync attempt."""
+    protected = set(protected_units)
+    pending = []
+    for unit in diff_units:
+        if unit in protected:
+            continue
+        if is_nox_exclusive(unit, upstream_ref, base=base):
+            continue
+        if not path_exists(upstream_ref, unit) and (
+            unit in protected or is_nox_exclusive(unit, upstream_ref, base=base)
+        ):
+            continue
+        pending.append(unit)
+    return pending
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -250,13 +315,17 @@ def resolve_dependent_libs(libs: set[str]) -> set[str]:
         pattern = re.compile(
             rf"project\((?:path(?: =|:) )?[\"']:(?:lib):({'|'.join(map(re.escape, current))})[\"']\)"
         )
+        if not Path("lib").is_dir():
+            break
         for lib_dir in Path("lib").iterdir():
-            if lib_dir.name in all_deps or lib_dir.name in libs:
+            if not lib_dir.is_dir() or lib_dir.name in all_deps or lib_dir.name in libs:
                 continue
             build_file = lib_dir / "build.gradle.kts"
             if not build_file.is_file():
+                build_file = lib_dir / "build.gradle"
+            if not build_file.is_file():
                 continue
-            if pattern.search(build_file.read_text("utf-8")):
+            if pattern.search(build_file.read_text("utf-8", errors="ignore")):
                 all_deps.add(lib_dir.name)
                 to_process.add(lib_dir.name)
     return all_deps
@@ -264,29 +333,33 @@ def resolve_dependent_libs(libs: set[str]) -> set[str]:
 
 def resolve_multisrc_from_libs(libs: set[str]) -> set[str]:
     """Find lib-multisrc themes that depend on the given libs."""
-    if not libs:
+    if not libs or not Path("lib-multisrc").is_dir():
         return set()
     pattern = re.compile(
         rf"project\((?:path(?: =|:) )?[\"']:(?:lib):({'|'.join(map(re.escape, libs))})[\"']\)"
     )
     themes: set[str] = set()
     for ms_dir in Path("lib-multisrc").iterdir():
+        if not ms_dir.is_dir():
+            continue
         build_file = ms_dir / "build.gradle.kts"
         if not build_file.is_file():
+            build_file = ms_dir / "build.gradle"
+        if not build_file.is_file():
             continue
-        if pattern.search(build_file.read_text("utf-8")):
+        if pattern.search(build_file.read_text("utf-8", errors="ignore")):
             themes.add(ms_dir.name)
     return themes
 
 
 def resolve_extensions_from(multisrcs: set[str], libs: set[str]) -> set[tuple[str, str]]:
-    """Find extensions that depend on given multisrcs or libs (via build.gradle)."""
+    """Find extensions that depend on given multisrcs or libs."""
     if not multisrcs and not libs:
         return set()
     patterns = []
     if multisrcs:
         patterns.append(
-            rf"themePkg\s*=\s*['\"]({'|'.join(map(re.escape, multisrcs))})['\"]"
+            rf"""(?:theme|themePkg)\s*=\s*['"]({'|'.join(map(re.escape, multisrcs))})['"]"""
         )
     if libs:
         patterns.append(
@@ -294,24 +367,26 @@ def resolve_extensions_from(multisrcs: set[str], libs: set[str]) -> set[tuple[st
         )
     regex = re.compile("|".join(patterns))
     extensions: set[tuple[str, str]] = set()
+    if not Path("src").is_dir():
+        return extensions
     for lang_dir in Path("src").iterdir():
         if not lang_dir.is_dir():
             continue
         for ext_dir in lang_dir.iterdir():
-            build_file = ext_dir / "build.gradle"
+            if not ext_dir.is_dir():
+                continue
+            build_file = ext_dir / "build.gradle.kts"
+            if not build_file.is_file():
+                build_file = ext_dir / "build.gradle"
             if not build_file.is_file():
                 continue
-            if regex.search(build_file.read_text("utf-8")):
+            if regex.search(build_file.read_text("utf-8", errors="ignore")):
                 extensions.add((lang_dir.name, ext_dir.name))
     return extensions
 
 
 def detect_indirect_impacts(upstream_units: list[str]) -> set[str]:
-    """
-    Given upstream changes, expand impact to include extensions affected indirectly
-    via lib/lib-multisrc dependency chains.
-    Returns additional src/ units affected indirectly.
-    """
+    """Given upstream changes, expand impact to include extensions affected indirectly."""
     changed_libs = {
         u.split("/")[1] for u in upstream_units if u.startswith("lib/")
     }
@@ -319,53 +394,51 @@ def detect_indirect_impacts(upstream_units: list[str]) -> set[str]:
         u.split("/")[1] for u in upstream_units if u.startswith("lib-multisrc/")
     }
 
-    # Expand libs transitively
     changed_libs |= resolve_dependent_libs(changed_libs)
-    # Expand multisrcs from libs
     changed_multisrcs |= resolve_multisrc_from_libs(changed_libs)
-    # Find affected extensions
     affected_exts = resolve_extensions_from(changed_multisrcs, changed_libs)
     return {f"src/{lang}/{ext}" for lang, ext in affected_exts}
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Version guard — Yuzono/anime real versioning model
+# Versioning & Monotonic Version Guard
 # ──────────────────────────────────────────────────────────────────────────────
 
 def read_base_version_code(ref: str | None, theme: str) -> int:
-    """Read baseVersionCode from lib-multisrc/<theme>/build.gradle.kts."""
-    content = read_file_at(ref, f"lib-multisrc/{theme}/build.gradle.kts")
-    if not content:
-        return 0
-    m = _BASE_VERSION_CODE_RE.search(content)
-    return int(m.group(1)) if m else 0
+    """Read baseVersionCode from lib-multisrc/<theme>/build.gradle.kts (or .gradle)."""
+    for fn in ("build.gradle.kts", "build.gradle"):
+        content = read_file_at(ref, f"lib-multisrc/{theme}/{fn}")
+        if content:
+            m = _BASE_VERSION_CODE_RE.search(content)
+            if m:
+                return int(m.group(1))
+    return 0
 
 
 def effective_version(ref: str | None, unit: str) -> tuple[int, int, int] | None:
     """
     Returns (raw, base, effective) for an extension unit.
-
-    Standalone: raw=extVersionCode, base=0, effective=extVersionCode
-    Multisrc:   raw=overrideVersionCode, base=baseVersionCode(theme), effective=base+raw
+    Works for both Groovy and Kotlin DSL.
     """
-    # Extensions use build.gradle (Groovy), not build.gradle.kts
-    content = read_file_at(ref, f"{unit}/build.gradle")
+    content = read_file_at(ref, f"{unit}/build.gradle.kts")
+    if not content:
+        content = read_file_at(ref, f"{unit}/build.gradle")
     if not content:
         return None
 
-    # Is it multisrc?
-    theme_match = _THEME_PKG_RE.search(content)
+    theme_match = _THEME_RE.search(content)
     if theme_match:
         theme = theme_match.group(1)
-        override_match = _OVERRIDE_VERSION_CODE_RE.search(content)
-        if not override_match:
+        vc_match = _KTS_VERSION_CODE_RE.search(content)
+        if not vc_match:
             return None
-        raw = int(override_match.group(1))
+        raw = int(vc_match.group(1))
         base = read_base_version_code(ref, theme)
         return raw, base, raw + base
     else:
-        # Standalone
-        vc_match = _EXT_VERSION_CODE_RE.search(content)
+        vc_match = _KTS_VERSION_CODE_RE.search(content)
+        if not vc_match:
+            vc_match = _EXT_VERSION_CODE_RE.search(content)
         if not vc_match:
             return None
         raw = int(vc_match.group(1))
@@ -373,12 +446,38 @@ def effective_version(ref: str | None, unit: str) -> tuple[int, int, int] | None
 
 
 def read_lib_version(ref: str | None, unit: str) -> int:
-    """Read libVersion from <unit>/build.gradle. Defaults to 14 if omitted."""
-    content = read_file_at(ref, f"{unit}/build.gradle")
-    if not content:
-        return 14
-    m = _LIB_VERSION_RE.search(content)
-    return int(m.group(1)) if m else 14
+    """Read libVersion from extension build file. Defaults to 14 if omitted."""
+    for fn in ("build.gradle.kts", "build.gradle"):
+        content = read_file_at(ref, f"{unit}/{fn}")
+        if content:
+            m = _LIB_VERSION_RE.search(content)
+            if m:
+                return int(m.group(1))
+    return 14
+
+
+def fetch_deployed_version_codes() -> dict[str, int]:
+    """Fetch currently deployed extension codes from distribution repo."""
+    try:
+        import urllib.request
+        url = "https://raw.githubusercontent.com/Awerkori/anime-extensoes/repo/index.min.json"
+        req = urllib.request.Request(url, headers={"User-Agent": "Nox-Sync/1.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            codes = {}
+            for item in data:
+                pkg = item.get("pkg", "")
+                prefix = "eu.kanade.tachiyomi.animeextension."
+                if pkg.startswith(prefix):
+                    module = pkg[len(prefix):]
+                    parts = module.split(".")
+                    if len(parts) >= 2:
+                        unit = f"src/{parts[0]}/{parts[1]}"
+                        codes[unit] = int(item.get("code", 0))
+            return codes
+    except Exception as e:
+        print(f"Notice: unable to fetch deployed version codes ({e}); continuing with local evaluation")
+        return {}
 
 
 def bump_version_if_needed(
@@ -386,168 +485,104 @@ def bump_version_if_needed(
     upstream_ref: str,
     pre_sync_effective: tuple[int, int, int] | None = None,
     pre_sync_lib: int | None = None,
+    deployed_code: int = 0,
 ) -> tuple[int, int, int, int, int, int, int] | None:
     """
-    Ensure local version code and libVersion are monotonically ahead of upstream.
-
-    If upstream effective >= local effective OR upstream_lib > local_lib,
-    bump local version so that:
-      local effective = max(upstream effective + 1, local effective + 1)
-      local libVersion = max(local_lib, upstream_lib)
-
-    Returns (loc_raw, loc_base, loc_eff, up_raw, up_base, up_eff, new_raw) if bumped.
-    Rewrites the file on disk. Caller must git add.
+    Ensure local version code and libVersion are monotonically ahead of upstream and deployed.
     """
     local = pre_sync_effective if pre_sync_effective is not None else effective_version(None, unit)
     upstream = effective_version(upstream_ref, unit)
 
-    if local is None or upstream is None:
+    if local is None and upstream is None:
         return None
 
-    loc_raw, loc_base, loc_eff = local
-    up_raw, up_base, up_eff = upstream
+    loc_raw, loc_base, loc_eff = local if local is not None else (0, 0, 0)
+    up_raw, up_base, up_eff = upstream if upstream is not None else (0, 0, 0)
 
     loc_lib = pre_sync_lib if pre_sync_lib is not None else read_lib_version(None, unit)
-    up_lib = read_lib_version(upstream_ref, unit)
+    up_lib = read_lib_version(upstream_ref, unit) if upstream is not None else loc_lib
 
-    needs_vc_bump = up_eff >= loc_eff
+    needs_vc_bump = (up_eff >= loc_eff) or (loc_eff <= deployed_code)
     needs_lib_upgrade = up_lib > loc_lib
 
     if not needs_vc_bump and not needs_lib_upgrade:
-        return None  # local is already ahead on both version code and lib
+        return None
 
-    target_eff = max(up_eff + 1, loc_eff + 1)
-    build_file = Path(f"{unit}/build.gradle")
+    target_eff = max(up_eff + 1, loc_eff + 1, deployed_code + 1)
+
+    kts_path = Path(f"{unit}/build.gradle.kts")
+    groovy_path = Path(f"{unit}/build.gradle")
+
+    if kts_path.exists():
+        build_file = kts_path
+        is_kts = True
+    elif groovy_path.exists():
+        build_file = groovy_path
+        is_kts = False
+    else:
+        return None
+
     text = build_file.read_text(encoding="utf-8")
-
-    theme_match = _THEME_PKG_RE.search(text)
-    cur_base = read_base_version_code(None, theme_match.group(1)) if theme_match else 0
+    theme_match = _THEME_RE.search(text)
+    theme = theme_match.group(1) if theme_match else None
+    cur_base = read_base_version_code(None, theme) if theme else 0
     new_raw = target_eff - cur_base
 
     target_lib = max(loc_lib, up_lib)
-    if target_lib > 14:
-        if _LIB_VERSION_RE.search(text):
-            text = _LIB_VERSION_RE.sub(f"libVersion = {target_lib}", text)
-        else:
-            text = re.sub(r"(ext\s*\{)", rf"\1\n    libVersion = {target_lib}", text, count=1)
-
-    if theme_match:
-        if _OVERRIDE_VERSION_CODE_RE.search(text):
-            text = _OVERRIDE_VERSION_CODE_RE.sub(
-                lambda m: m.group(0).replace(re.search(r"\d+", m.group(0)).group(0), str(new_raw), 1),
-                text,
-            )
-        else:
-            text = re.sub(r"(ext\s*\{)", rf"\1\n    overrideVersionCode = {new_raw}", text, count=1)
+    if is_kts:
+        if target_lib > 14:
+            if re.search(r'libVersion\s*=\s*["\']\d+["\']', text):
+                text = re.sub(r'libVersion\s*=\s*["\']\d+["\']', f'libVersion = "{target_lib}"', text, count=1)
+            elif re.search(r'libVersion\s*=\s*\d+', text):
+                text = re.sub(r'libVersion\s*=\s*\d+', f'libVersion = "{target_lib}"', text, count=1)
+            else:
+                marker = re.search(r"(?m)^(\s*)yuzono\s*\{", text)
+                if marker:
+                    indent = marker.group(1) + "    "
+                    text = text[:marker.end()] + f'\n{indent}libVersion = "{target_lib}"' + text[marker.end():]
+        if re.search(r'(versionCode|overrideVersionCode)\s*=\s*\d+', text):
+            text = re.sub(r'(versionCode|overrideVersionCode)\s*=\s*\d+', rf'\g<1> = {new_raw}', text, count=1)
     else:
-        if _EXT_VERSION_CODE_RE.search(text):
-            text = _EXT_VERSION_CODE_RE.sub(
-                lambda m: m.group(0).replace(re.search(r"\d+", m.group(0)).group(0), str(new_raw), 1),
-                text,
-            )
+        if target_lib > 14:
+            if re.search(r"libVersion\s*=\s*\d+", text):
+                text = re.sub(r"libVersion\s*=\s*\d+", f"libVersion = {target_lib}", text, count=1)
+            else:
+                text = re.sub(r"(ext\s*\{)", rf"\1\n    libVersion = {target_lib}", text, count=1)
+        if theme:
+            if re.search(r"overrideVersionCode\s*=\s*\d+", text):
+                text = re.sub(r"overrideVersionCode\s*=\s*\d+", f"overrideVersionCode = {new_raw}", text, count=1)
+            else:
+                text = re.sub(r"(ext\s*\{)", rf"\1\n    overrideVersionCode = {new_raw}", text, count=1)
         else:
-            text = re.sub(r"(ext\s*\{)", rf"\1\n    extVersionCode = {new_raw}", text, count=1)
+            if re.search(r"extVersionCode\s*=\s*\d+", text):
+                text = re.sub(r"extVersionCode\s*=\s*\d+", f"extVersionCode = {new_raw}", text, count=1)
+            else:
+                text = re.sub(r"(ext\s*\{)", rf"\1\n    extVersionCode = {new_raw}", text, count=1)
 
     build_file.write_text(text, encoding="utf-8")
     return loc_raw, loc_base, loc_eff, up_raw, up_base, up_eff, new_raw
 
 
-def get_nox_protected_units(base: str, upstream_ref: str) -> list[str]:
-    """
-    Detect extensions that Nox has modified since the merge-base.
-    These are 'protected' — Nox wins on conflict, version guard applies.
-    Detection is automatic (no manual list).
-    """
-    explicit = get_explicit_code_protections()
-    main_entries = changed_entries(base, "HEAD")
-    main_units, _ = collect_units(main_entries)
-    return [
-        u
-        for u in sorted(main_units)
-        if u.startswith("src/")
-        and u not in explicit
-        and path_exists(upstream_ref, f"{u}/build.gradle")
-    ]
-
-
 # ──────────────────────────────────────────────────────────────────────────────
-# Sync plan printing
-# ──────────────────────────────────────────────────────────────────────────────
-
-def print_plan(
-    base: str,
-    upstream_ref: str,
-    upstream_only: list[str],
-    conflict_units: list[str],
-    nox_only: list[str],
-    protected: list[str],
-    indirect: set[str],
-    preserved_paths: list[str],
-    upstream_deleted: list[str],
-    protected_deletions: list[str],
-) -> None:
-    commits = git("rev-list", "--count", f"{base}..{upstream_ref}").strip()
-    print(f"\nBase: {base}")
-    print(f"Upstream commits since base: {commits}")
-    print(f"\nUpstream-only units to apply: {len(upstream_only)}")
-    for u in upstream_only:
-        print(f"  [upstream] {u}")
-    print(f"\nConflict units (Nox wins): {len(conflict_units)}")
-    for u in conflict_units:
-        print(f"  [conflict→Nox] {u}")
-    print(f"\nUpstream-deleted units: {len(upstream_deleted) + len(protected_deletions)}")
-    for u in upstream_deleted:
-        print(f"  [deleted upstream] {u} → REMOVE")
-    for u in protected_deletions:
-        print(f"  [deleted upstream] {u} → KEEP (explicitly protected)")
-    print(f"\nNox-only units (preserved): {len(nox_only)}")
-    for u in nox_only:
-        print(f"  [nox-only] {u}")
-    print(f"\nIndirectly affected by lib/multisrc: {len(indirect)}")
-    for u in sorted(indirect):
-        print(f"  [indirect] {u}")
-    if preserved_paths:
-        print(f"\n.github paths preserved: {len(preserved_paths)}")
-    print(f"\nVersion guard on protected units ({len(protected)}):")
-    for u in protected:
-        local = effective_version(None, u)
-        up = effective_version(upstream_ref, u)
-        if not local or not up:
-            continue
-        loc_raw, loc_base, loc_eff = local
-        up_raw, up_base, up_eff = up
-        loc_lib = read_lib_version(None, u)
-        up_lib = read_lib_version(upstream_ref, u)
-        print(f"  {u}:")
-        print(f"    local  raw={loc_raw} base={loc_base} eff={loc_eff} lib={loc_lib}")
-        print(f"    upstream raw={up_raw} base={up_base} eff={up_eff} lib={up_lib}")
-        if up_lib > loc_lib:
-            target_eff = max(up_eff + 1, loc_eff + 1)
-            new_raw = target_eff - loc_base
-            print(f"    action: MIGRATE lib {loc_lib} → {up_lib} and BUMP raw {loc_raw} → {new_raw}")
-        elif up_eff >= loc_eff:
-            new_raw = (up_eff + 1) - loc_base
-            print(f"    action: BUMP raw {loc_raw} → {new_raw}")
-        else:
-            print(f"    action: keep (local ahead)")
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Apply
+# Application & Merge
 # ──────────────────────────────────────────────────────────────────────────────
 
 def apply_units(
     upstream_ref: str,
-    upstream_units: list[str],
+    units_to_apply: list[str],
     conflict_set: set[str],
     protected: list[str],
-    upstream_deleted: list[str] | None = None,
-    protected_deletions: list[str] | None = None,
+    upstream_deleted: list[str],
+    protected_deletions: list[str],
+    deployed_codes: dict[str, int] | None = None,
 ) -> list[str]:
-    # Record pre-sync state BEFORE git merge / restore modifies files on disk
+    """Apply upstream updates, preserves Nox-protected code, and guarantees version monotonicity."""
+    deployed_codes = deployed_codes or {}
+    base = git("merge-base", "HEAD", upstream_ref).strip()
+
     pre_sync_effective: dict[str, tuple[int, int, int]] = {}
     pre_sync_lib: dict[str, int] = {}
-    for unit in set(protected) | set(upstream_units):
+    for unit in set(protected) | set(units_to_apply):
         eff = effective_version(None, unit)
         if eff is not None:
             pre_sync_effective[unit] = eff
@@ -558,7 +593,8 @@ def apply_units(
     deleted_set = set(upstream_deleted or [])
     deletion_protection_set = set(protected_deletions or [])
     explicit_protection_set = deletion_protection_set | get_explicit_code_protections()
-    for unit in upstream_units:
+
+    for unit in units_to_apply:
         if unit in deletion_protection_set:
             print(f"Preserving explicitly protected upstream deletion: {unit}")
             continue
@@ -569,46 +605,72 @@ def apply_units(
             print(f"Removing upstream-deleted unit: {unit}")
             git("rm", "-r", "--ignore-unmatch", "--quiet", "--", unit)
             continue
-        if unit in conflict_set:
+        if is_nox_exclusive(unit, upstream_ref, base=base):
+            print(f"Preserving Nox-exclusive unit: {unit}")
+            continue
+
+        if unit in protected:
+            # Explicitly protected unit with upstream changes
             up_lib = read_lib_version(upstream_ref, unit)
             loc_lib = pre_sync_lib.get(unit, 14)
             if up_lib > loc_lib:
-                # Structural migration upstream (e.g. 14 -> 16).
-                # Protected units CANNOT freeze on old lib!
                 print(f"Applying upstream structural lib migration {loc_lib} -> {up_lib} for {unit}")
                 git("rm", "-r", "--ignore-unmatch", "--quiet", "--", unit)
                 if path_exists(upstream_ref, unit):
                     git("restore", f"--source={upstream_ref}", "--staged", "--worktree", "--", unit)
             else:
-                continue  # Nox wins on regular conflict
+                print(f"Preserving protected Nox code on conflict: {unit}")
+                continue
         else:
+            # Common upstream unit (or structural theme)
             print(f"Applying {unit}")
             git("rm", "-r", "--ignore-unmatch", "--quiet", "--", unit)
             if path_exists(upstream_ref, unit):
                 git("restore", f"--source={upstream_ref}", "--staged", "--worktree", "--", unit)
 
+            # Ensure clean directory state if build file changed format (.gradle -> .gradle.kts)
+            if path_exists(upstream_ref, f"{unit}/build.gradle.kts"):
+                stale_gradle = Path(f"{unit}/build.gradle")
+                if stale_gradle.exists():
+                    stale_gradle.unlink(missing_ok=True)
+                    git("rm", "--cached", "--ignore-unmatch", "--quiet", "--", str(stale_gradle))
+
     bumped: list[str] = []
     guard_units = sorted(
-        (
-            set(protected)
-            | {u for u in upstream_units if read_lib_version(upstream_ref, u) > pre_sync_lib.get(u, 14)}
-        )
-        - explicit_protection_set
+        set(protected)
+        | {u for u in units_to_apply if u.startswith("src/") and u not in explicit_protection_set}
     )
+
     for unit in guard_units:
+        deployed_code = deployed_codes.get(unit, 0)
         res = bump_version_if_needed(
             unit,
             upstream_ref,
             pre_sync_effective=pre_sync_effective.get(unit),
             pre_sync_lib=pre_sync_lib.get(unit),
+            deployed_code=deployed_code,
         )
         if res is not None:
             loc_raw, _, _, _, _, _, new_raw = res
-            git("add", "--", f"{unit}/build.gradle")
+            for fn in ("build.gradle.kts", "build.gradle"):
+                target_f = Path(f"{unit}/{fn}")
+                if target_f.exists():
+                    git("add", "--", str(target_f))
             bumped.append(f"{unit} → {new_raw}")
             print(f"Version guard: bumped {unit} ({loc_raw} → {new_raw})")
-        else:
-            print(f"Version guard: {unit} already ahead, no bump needed")
+
+    # Record sync state
+    upstream_head = git("rev-parse", upstream_ref).strip()
+    head_sha = git("rev-parse", "HEAD").strip()
+    sync_state = {
+        "upstream_sha": upstream_head,
+        "upstream_branch": UPSTREAM_BRANCH,
+        "synced_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "base_sha": base,
+    }
+    SYNC_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    SYNC_STATE_FILE.write_text(json.dumps(sync_state, indent=2) + "\n", encoding="utf-8")
+    git("add", "--", str(SYNC_STATE_FILE))
 
     git("diff", "--check")
 
@@ -677,6 +739,54 @@ def print_observability_header(
         print("==================================================")
 
 
+def print_plan(
+    base: str,
+    upstream_ref: str,
+    upstream_only: list[str],
+    conflict_units: list[str],
+    nox_only: list[str],
+    protected: list[str],
+    indirect: set[str],
+    preserved_paths: list[str],
+    upstream_deleted: list[str],
+    protected_deletions: list[str],
+) -> None:
+    commits = git("rev-list", "--count", f"{base}..{upstream_ref}").strip()
+    print(f"\nBase: {base}")
+    print(f"Upstream commits: {commits}")
+    print(f"Upstream units: {len(upstream_only) + len(conflict_units)}")
+
+    for u in upstream_only:
+        print(f"  [upstream only] {u}")
+    for u in conflict_units:
+        print(f"  [conflict→Nox] {u}")
+    for u in upstream_deleted:
+        print(f"  [deleted upstream] {u} → REMOVE")
+    for u in protected_deletions:
+        print(f"  [deleted upstream] {u} → KEEP (explicitly protected)")
+
+    if nox_only:
+        print(f"Nox only (preserved): {len(nox_only)}")
+        for u in nox_only:
+            print(f"  [Nox only] {u}")
+
+    if protected:
+        print(f"Nox protected (version guard): {len(protected)}")
+        for u in protected:
+            print(f"  [protected] {u}")
+
+    if indirect:
+        print(f"Indirect impacts via lib/multisrc: {len(indirect)}")
+        for u in sorted(indirect):
+            print(f"  [indirect] {u}")
+
+    if preserved_paths:
+        print(f"Preserved paths: {len(preserved_paths)}")
+        for p in preserved_paths:
+            print(f"  [preserved] {p}")
+    print()
+
+
 def print_observability_footer(
     sync_result: str,
     push_result: str,
@@ -689,20 +799,49 @@ def print_observability_footer(
     print("==================================================")
 
 
+def ensure_main_unchanged(start_main: str) -> None:
+    """Refuse to publish if main advanced while this sync was running."""
+    git("fetch", "origin")
+    current_main = git("rev-parse", "origin/main").strip()
+    if current_main != start_main:
+        raise RuntimeError(
+            "origin/main advanced during sync; refusing to publish "
+            f"over {start_main} (now {current_main})"
+        )
+
+
+def publish_sync(upstream_ref: str, start_main: str) -> None:
+    """Publish main first, then mirror upstream into the sync branch."""
+    ensure_main_unchanged(start_main)
+    print("Push origin/main: HEAD -> main")
+    git("push", "origin", "HEAD:main")
+    print("Push origin/main: PASS")
+    try:
+        git("push", "origin", f"{upstream_ref}:refs/heads/{SYNC_BRANCH}")
+        print("Push origin/sync: PASS")
+    except Exception as e:
+        print(f"Warning: unable to update sync branch ref ({e}); main was successfully pushed.")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Main CLI
+# ──────────────────────────────────────────────────────────────────────────────
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Project Nox Anime — Sync Yuzono upstream")
-    parser.add_argument("--dry-run", action="store_true", help="Show plan only, no changes")
-    parser.add_argument("--push", action="store_true", help="Apply and push")
+    parser = argparse.ArgumentParser(description="Sync Yuzono upstream (Nox-wins)")
+    parser.add_argument("--dry-run", action="store_true", help="Print plan without modifying files")
+    parser.add_argument("--push", action="store_true", help="Commit and push to origin/main and sync")
     args = parser.parse_args()
 
     if args.dry_run and args.push:
-        print("Use either --dry-run or --push", file=sys.stderr)
+        print("Cannot use --dry-run and --push together", file=sys.stderr)
         sys.exit(1)
 
     ensure_clean_tree()
     ensure_upstream_remote()
 
     git("fetch", "origin")
+    start_main = git("rev-parse", "origin/main").strip()
     git("fetch", UPSTREAM_REMOTE, UPSTREAM_BRANCH)
 
     upstream_ref = f"{UPSTREAM_REMOTE}/{UPSTREAM_BRANCH}"
@@ -729,8 +868,19 @@ def main() -> None:
         explicit_delete_protections,
     )
     conflict_set = set(conflict_units)
-
     protected = get_nox_protected_units(base, upstream_ref)
+
+    # Self-healing: check if HEAD has pending differences from upstream_ref
+    # (e.g. from previously skipped syncs or mass-bumps)
+    diff_entries = changed_entries("HEAD", upstream_ref)
+    diff_units, _ = collect_units(diff_entries)
+    effective_diff = pending_sync_units(diff_units, protected, upstream_ref, base=base)
+
+    if not upstream_units and effective_diff:
+        print(f"Notice: Main tree is missing {len(effective_diff)} upstream updates. Proceeding with recovery sync.")
+        upstream_units = sorted(effective_diff)
+        upstream_only = [u for u in upstream_units if u not in conflict_set]
+
     indirect = detect_indirect_impacts(upstream_units)
 
     print_plan(
@@ -754,7 +904,7 @@ def main() -> None:
         for _, paths in upstream_entries
         for path in paths
     )
-    no_changes = (not upstream_units and not indirect and not upstream_deleted)
+    no_changes = (not upstream_units and not indirect and not upstream_deleted and not effective_diff)
 
     trigger = os.environ.get("GITHUB_EVENT_NAME", "workflow_dispatch")
     local_head = git("rev-parse", "HEAD").strip()
@@ -777,11 +927,10 @@ def main() -> None:
         no_changes=no_changes,
     )
 
-    if not upstream_units and not indirect and not upstream_deleted:
+    if no_changes:
         print("No upstream changes to apply.")
         if args.push:
-            # Mirror evaluated upstream tip to sync branch so periodic check stays up to date
-            git("push", "origin", f"{upstream_ref}:refs/heads/{SYNC_BRANCH}")
+            publish_sync(upstream_ref, start_main)
         print_observability_footer("NO_CHANGES", "SKIPPED", "SKIPPED")
         return
 
@@ -790,6 +939,7 @@ def main() -> None:
         print_observability_footer("SUCCESS", "SKIPPED", "SKIPPED")
         return
 
+    deployed_codes = fetch_deployed_version_codes()
     units_to_apply = sorted(set(upstream_units) | set(upstream_deleted) | set(protected_deletions))
     bumped = apply_units(
         upstream_ref,
@@ -798,12 +948,10 @@ def main() -> None:
         protected,
         upstream_deleted,
         protected_deletions,
+        deployed_codes=deployed_codes,
     )
     write_step_summary(protected, bumped)
-    git("push", "origin", "HEAD:main")
-    if args.push:
-        # Update sync branch to mirror upstream tip ONLY after successful push to main
-        git("push", "origin", f"{upstream_ref}:refs/heads/{SYNC_BRANCH}")
+    publish_sync(upstream_ref, start_main)
     print_observability_footer("SUCCESS", "SUCCESS", "TRIGGERED")
 
 

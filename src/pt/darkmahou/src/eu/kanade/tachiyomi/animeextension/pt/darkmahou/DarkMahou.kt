@@ -10,12 +10,10 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Response
 import org.jsoup.nodes.Element
 
-class DarkMahou :
-    AnimeStream(
-        "pt-BR",
-        "DarkMahou (Torrent)",
-        "https://darkmahou.io",
-    ) {
+class DarkMahou : AnimeStream() {
+    override val lang = "pt-BR"
+    override val name = "DarkMahou (Torrent)"
+    override val baseUrl = "https://darkmahou.io"
     override fun headersBuilder() = super.headersBuilder().add("Referer", baseUrl)
 
     override val animeListUrl = "$baseUrl/animes"

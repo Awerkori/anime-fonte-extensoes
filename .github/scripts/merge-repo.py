@@ -14,14 +14,15 @@ def pkg_to_module(pkg: str) -> str:
     return pkg.replace("eu.kanade.tachiyomi.animeextension.", "")
 
 
-def get_existing_modules() -> set[str]:
+def get_existing_modules() -> set[str] | None:
     modules = set()
     # sys.argv[2] contains the ref_name and 'repo', e.g., 'main/repo'
     branch_dir_name = sys.argv[2].split('/')[0]
     src_dir = REMOTE_REPO.parent.joinpath(branch_dir_name, "src")
 
     if not src_dir.is_dir():
-        return modules
+        print(f"WARNING: Source directory {src_dir} not found; skipping stale module pruning.")
+        return None
 
     for lang_dir in src_dir.iterdir():
         if not lang_dir.is_dir():
@@ -64,9 +65,11 @@ for item in local_index:
 local_index = filtered_local_index
 
 # Extensions that still exist in repo branch but no longer exist in source tree
-stale_modules = remote_modules - existing_modules
-if stale_modules:
-    print(f"Removing stale modules not found in source tree: {sorted(stale_modules)}")
+stale_modules = set()
+if existing_modules is not None and len(existing_modules) > 0:
+    stale_modules = remote_modules - existing_modules
+    if stale_modules:
+        print(f"Removing stale modules not found in source tree: {sorted(stale_modules)}")
 
 to_delete = list((set(to_delete) | stale_modules) - skipped_downgrades)
 

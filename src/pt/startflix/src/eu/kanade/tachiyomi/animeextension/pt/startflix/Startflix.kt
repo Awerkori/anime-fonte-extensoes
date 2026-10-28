@@ -23,7 +23,10 @@ import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.net.URLEncoder
 
-class Startflix : DooPlay("pt-BR", "Startflix", "https://www.startflix.biz") {
+class Startflix : DooPlay() {
+    override val lang = "pt-BR"
+    override val name = "Startflix"
+    override val baseUrl = "https://www.startflix.biz"
 
     override val supportsLatest = true
 

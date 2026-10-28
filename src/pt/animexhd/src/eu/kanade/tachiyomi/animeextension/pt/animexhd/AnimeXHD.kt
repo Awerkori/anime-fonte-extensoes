@@ -31,7 +31,10 @@ import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.TimeZone
 
-class AnimeXHD : DooPlay("pt-BR", "AnimeXHD", "https://animexhd.xyz") {
+class AnimeXHD : DooPlay() {
+    override val lang = "pt-BR"
+    override val name = "AnimeXHD"
+    override val baseUrl = "https://animexhd.xyz"
     override val fetchGenres = false
     override val prefQualityKey = "quality_selection"
     override val prefQualityDefault = "best"

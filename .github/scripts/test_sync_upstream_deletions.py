@@ -557,6 +557,70 @@ class SyncDeletionTest(unittest.TestCase):
         self.assertEqual(before, after)
         self.assertFalse((self.repo / "src/pt/darkmahou/build.gradle.kts").exists())
 
+    def test_upstream_edit_to_unprotected_unit_is_applied_even_after_mass_bump(self):
+        self.add_source("src/en/animenosub", 10)
+        run("git", "add", "-A", cwd=self.repo)
+        run("git", "commit", "-m", "mass bump animenosub", cwd=self.repo)
+        self.base = run("git", "rev-parse", "HEAD", cwd=self.repo)
+
+        def upstream_update():
+            path = self.repo / "src/en/animenosub"
+            (path / "build.gradle").unlink(missing_ok=True)
+            (path / "build.gradle.kts").write_text(
+                'yuzono {\n    name = "Animenosub"\n    versionCode = 11\n}\n',
+                encoding="utf-8",
+            )
+            (path / "NewFeature.kt").write_text("class NewFeature\n")
+
+        upstream_ref, up_units, main_units = self.create_divergence(upstream_update)
+        bumped = sync.apply_units(
+            upstream_ref,
+            up_units,
+            set(),
+            [],
+            [],
+            [],
+        )
+        self.assertTrue((self.repo / "src/en/animenosub/NewFeature.kt").exists())
+        self.assertTrue((self.repo / "src/en/animenosub/build.gradle.kts").exists())
+        self.assertFalse((self.repo / "src/en/animenosub/build.gradle").exists())
+
+    def test_kotlin_dsl_version_detection_and_monotonic_bump(self):
+        path = self.repo / "src/en/animenosub"
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "build.gradle.kts").write_text(
+            'yuzono {\n    name = "Animenosub"\n    versionCode = 15\n}\n',
+            encoding="utf-8",
+        )
+        eff = sync.effective_version(None, "src/en/animenosub")
+        self.assertEqual(eff, (15, 0, 15))
+
+        bump_res = sync.bump_version_if_needed(
+            "src/en/animenosub",
+            "HEAD",
+            deployed_code=20,
+        )
+        self.assertIsNotNone(bump_res)
+        self.assertEqual(bump_res[6], 21)
+        self.assertIn("versionCode = 21", (path / "build.gradle.kts").read_text())
+
+    def test_pending_sync_units_detects_unapplied_upstream_updates(self):
+        self.add_source("src/en/unapplied", 5)
+        run("git", "add", "-A", cwd=self.repo)
+        run("git", "commit", "-m", "add unapplied base", cwd=self.repo)
+        base = run("git", "rev-parse", "HEAD", cwd=self.repo)
+
+        upstream_ref = self.commit_upstream(
+            lambda: (self.repo / "src/en/unapplied/build.gradle").write_text("ext { extVersionCode = 6 }\n")
+        )
+        run("git", "switch", "main", cwd=self.repo)
+
+        diff_entries = sync.changed_entries("HEAD", upstream_ref)
+        diff_units, _ = sync.collect_units(diff_entries)
+        pending = sync.pending_sync_units(diff_units, [], upstream_ref, base=base)
+        self.assertIn("src/en/unapplied", pending)
+
+
 
 def shutil_rmtree(path: Path) -> None:
     import shutil
