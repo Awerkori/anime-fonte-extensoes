@@ -4,7 +4,7 @@ plugins {
 
 yuzono {
     name = "French Anime"
-    versionCode = 42
+    versionCode = 34
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
     theme = "datalifeengine"

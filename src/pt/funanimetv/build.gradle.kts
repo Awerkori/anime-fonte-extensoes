@@ -4,7 +4,7 @@ plugins {
 
 yuzono {
     name = "Fun Anime TV"
-    versionCode = 5
+    versionCode = 2
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

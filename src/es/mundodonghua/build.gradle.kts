@@ -4,7 +4,7 @@ plugins {
 
 yuzono {
     name = "MundoDonghua"
-    versionCode = 53
+    versionCode = 47
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

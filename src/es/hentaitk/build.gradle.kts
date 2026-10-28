@@ -4,7 +4,7 @@ plugins {
 
 yuzono {
     name = "HentaiTk"
-    versionCode = 36
+    versionCode = 30
     contentWarning = ContentWarning.NSFW
     libVersion = "14"
 

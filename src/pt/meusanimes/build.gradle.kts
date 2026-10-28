@@ -4,7 +4,7 @@ plugins {
 
 yuzono {
     name = "Meus Animes"
-    versionCode = 9
+    versionCode = 1
     contentWarning = ContentWarning.NSFW
     libVersion = "14"
 

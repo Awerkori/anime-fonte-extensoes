@@ -4,7 +4,7 @@ plugins {
 
 yuzono {
     name = "SoloLatino"
-    versionCode = 34
+    versionCode = 25
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
     theme = "dooplay"

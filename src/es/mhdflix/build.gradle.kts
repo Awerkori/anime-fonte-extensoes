@@ -4,7 +4,7 @@ plugins {
 
 yuzono {
     name = "MhdFlix"
-    versionCode = 33
+    versionCode = 25
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

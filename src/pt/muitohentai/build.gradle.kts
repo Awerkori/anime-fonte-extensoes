@@ -4,7 +4,7 @@ plugins {
 
 yuzono {
     name = "Muito Hentai"
-    versionCode = 5
+    versionCode = 2
     contentWarning = ContentWarning.NSFW
     libVersion = "14"
 

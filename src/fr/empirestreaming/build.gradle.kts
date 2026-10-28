@@ -4,7 +4,7 @@ plugins {
 
 yuzono {
     name = "EmpireStreaming"
-    versionCode = 34
+    versionCode = 30
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

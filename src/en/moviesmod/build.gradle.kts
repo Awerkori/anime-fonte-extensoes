@@ -4,7 +4,7 @@ plugins {
 
 yuzono {
     name = "MoviesMod"
-    versionCode = 9
+    versionCode = 4
     contentWarning = ContentWarning.SAFE
     libVersion = "16"
 

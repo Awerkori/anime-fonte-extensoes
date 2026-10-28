@@ -4,7 +4,7 @@ plugins {
 
 yuzono {
     name = "LegionAnime"
-    versionCode = 60
+    versionCode = 52
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

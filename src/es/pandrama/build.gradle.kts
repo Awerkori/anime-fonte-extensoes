@@ -4,7 +4,7 @@ plugins {
 
 yuzono {
     name = "Pandrama"
-    versionCode = 17
+    versionCode = 12
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

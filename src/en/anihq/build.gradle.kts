@@ -4,7 +4,7 @@ plugins {
 
 yuzono {
     name = "AniHQ"
-    versionCode = 7
+    versionCode = 4
     contentWarning = ContentWarning.MIXED
     libVersion = "16"
 

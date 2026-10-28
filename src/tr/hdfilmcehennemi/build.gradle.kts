@@ -4,7 +4,7 @@ plugins {
 
 yuzono {
     name = "HDFilmCehennemi"
-    versionCode = 40
+    versionCode = 35
     contentWarning = ContentWarning.NSFW
     libVersion = "14"
 

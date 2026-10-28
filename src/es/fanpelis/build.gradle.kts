@@ -4,7 +4,7 @@ plugins {
 
 yuzono {
     name = "FanPelis"
-    versionCode = 31
+    versionCode = 26
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

@@ -4,7 +4,7 @@ plugins {
 
 yuzono {
     name = "Cine24h"
-    versionCode = 34
+    versionCode = 26
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

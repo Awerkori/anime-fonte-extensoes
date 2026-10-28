@@ -4,7 +4,7 @@ plugins {
 
 yuzono {
     name = "Moflix-Stream"
-    versionCode = 37
+    versionCode = 30
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

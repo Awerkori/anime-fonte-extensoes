@@ -4,7 +4,7 @@ plugins {
 
 yuzono {
     name = "Animenix"
-    versionCode = 30
+    versionCode = 23
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
     theme = "dooplay"

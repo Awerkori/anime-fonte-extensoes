@@ -4,7 +4,7 @@ plugins {
 
 yuzono {
     name = "Animeler"
-    versionCode = 44
+    versionCode = 37
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

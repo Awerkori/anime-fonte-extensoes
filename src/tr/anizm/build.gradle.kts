@@ -4,7 +4,7 @@ plugins {
 
 yuzono {
     name = "Anizm"
-    versionCode = 55
+    versionCode = 47
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

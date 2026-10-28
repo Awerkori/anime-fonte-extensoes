@@ -4,7 +4,7 @@ plugins {
 
 yuzono {
     name = "VerAni.me"
-    versionCode = 14
+    versionCode = 7
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

@@ -4,7 +4,7 @@ plugins {
 
 yuzono {
     name = "Doramasflix"
-    versionCode = 62
+    versionCode = 54
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

@@ -4,7 +4,7 @@ plugins {
 
 yuzono {
     name = "Anitube"
-    versionCode = 32
+    versionCode = 31
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

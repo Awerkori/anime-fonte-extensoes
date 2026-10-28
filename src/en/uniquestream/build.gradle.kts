@@ -4,7 +4,7 @@ plugins {
 
 yuzono {
     name = "UniqueStream"
-    versionCode = 12
+    versionCode = 10
     contentWarning = ContentWarning.SAFE
     libVersion = "16"
 

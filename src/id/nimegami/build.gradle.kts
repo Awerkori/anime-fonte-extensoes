@@ -4,7 +4,7 @@ plugins {
 
 yuzono {
     name = "NimeGami"
-    versionCode = 9
+    versionCode = 7
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

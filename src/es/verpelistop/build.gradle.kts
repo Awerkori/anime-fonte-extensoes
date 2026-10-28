@@ -4,7 +4,7 @@ plugins {
 
 yuzono {
     name = "VerPelisTop"
-    versionCode = 18
+    versionCode = 10
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
     theme = "dooplay"

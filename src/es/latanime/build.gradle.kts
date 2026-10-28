@@ -4,7 +4,7 @@ plugins {
 
 yuzono {
     name = "Latanime"
-    versionCode = 53
+    versionCode = 44
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

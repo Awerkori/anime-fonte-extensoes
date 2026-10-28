@@ -5,7 +5,7 @@ plugins {
 yuzono {
     name = "StreamingCommunity"
     className = "StreamingCommunityFactory"
-    versionCode = 27
+    versionCode = 23
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 }

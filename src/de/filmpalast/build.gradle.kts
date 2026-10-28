@@ -4,7 +4,7 @@ plugins {
 
 yuzono {
     name = "FilmPalast"
-    versionCode = 33
+    versionCode = 28
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

@@ -4,7 +4,7 @@ plugins {
 
 yuzono {
     name = "AnimePlayer"
-    versionCode = 9
+    versionCode = 6
     contentWarning = ContentWarning.NSFW
     libVersion = "14"
     theme = "dooplay"

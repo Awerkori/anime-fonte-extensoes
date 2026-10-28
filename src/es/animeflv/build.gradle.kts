@@ -4,7 +4,7 @@ plugins {
 
 yuzono {
     name = "AnimeFLV"
-    versionCode = 84
+    versionCode = 78
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

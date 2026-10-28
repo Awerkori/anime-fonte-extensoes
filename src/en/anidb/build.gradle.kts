@@ -4,7 +4,7 @@ plugins {
 
 yuzono {
     name = "AniDB"
-    versionCode = 13
+    versionCode = 7
     contentWarning = ContentWarning.NSFW
     libVersion = "16"
 
