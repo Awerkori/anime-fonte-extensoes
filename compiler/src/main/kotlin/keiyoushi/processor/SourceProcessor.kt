@@ -281,11 +281,39 @@ class SourceProcessor(
             )
         }
 
-        if ("name" !in ctorParams && "name" in overridden) {
+        // A plain `id` parameter compiles, but then AnimeHttpSource's computed id, or one the class sets itself,
+        // replaces the DSL one; only a constructor property is sure to hold it. Collected here, not passed in, so
+        // upstream's validateConcreteSource signature stays unchanged for later picks
+        val ctorProperties = node.primaryConstructor?.parameters.orEmpty()
+            .filter { it.isVal || it.isVar }
+            .mapNotNull { it.name?.asString() }
+            .toSet()
+        for (property in listOf("lang", "id")) {
+            if (property in ctorParams && property !in ctorProperties) {
+                logger.error(
+                    "A concrete @Source class ($className) must declare `$property` as `override val $property`, " +
+                        "not as a plain constructor parameter.",
+                    node,
+                )
+            }
+        }
+
+        // Nothing is generated on top of a concrete class, so it supplies name and baseUrl itself
+        for (property in listOf("name", "baseUrl")) {
+            if (property !in overridden) {
+                logger.error(
+                    "A concrete @Source class ($className) must take `override val $property` as a primary " +
+                        "constructor parameter or override it.",
+                    node,
+                )
+            }
+        }
+
+        if ("name" !in ctorProperties && "name" in overridden) {
             logger.warn("name is provided by $className; the DSL name is used for metadata only.", node)
         }
         
-        if ("baseUrl" !in ctorParams && "baseUrl" in overridden) {
+        if ("baseUrl" !in ctorProperties && "baseUrl" in overridden) {
             logger.warn("baseUrl is provided by $className; the DSL baseUrl is used for metadata/hosts only.", node)
         }
     }

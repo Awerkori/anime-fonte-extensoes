@@ -383,6 +383,31 @@ abstract class MySource : AnimeHttpSource() {
 Each module has exactly one `@Source` class. If it extends `keiyoushi.utils.Source`, write the annotation as
 `@keiyoushi.annotation.Source`, since the two names clash.
 
+Keep the class `abstract` unless the app looks it up by its class name, as Anikku's Jellyfin tracker does. The generated
+code then wraps each source in a subclass, whose name differs. A concrete `@Source` class is instead created directly,
+once per `source {}` block, so it keeps its name:
+
+```kotlin
+@Source
+class MySource(
+    override val lang: String,
+    override val id: Long,
+) : AnimeHttpSource() {
+    override val name by lazy { "MySource (${preferences.displayName})" }
+    override val baseUrl get() = preferences.serverUrl
+}
+```
+
+- It must take `override val lang` and `override val id` as primary constructor parameters, filled in from each
+  `source {}` block.
+- It takes `name` and `baseUrl` the same way (`override val name: String`, `override val baseUrl: String`), or
+  overrides them itself, as above.
+- Only a static `baseUrl` is supported: use an `abstract` class for `mirrors(...)` or `custom(...)`.
+- R8 renames classes in release builds, so keep its name in the module's `proguard-rules.pro`:
+  `-keepnames class eu.kanade.tachiyomi.animeextension.<lang>.<mysourcename>.MySource`, as
+  `src/all/jellyfin/proguard-rules.pro` does. Nothing checks this: without the rule the build and the repo checks
+  pass, and only the app's lookup by name fails.
+
 #### Declare sources in build.gradle.kts
 
 | Field         | Description                                                                                                                                                                            |
