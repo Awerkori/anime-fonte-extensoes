@@ -267,6 +267,10 @@ For example, to scaffold a source based on the `dooplay` multisrc theme:
 $ python ext-bootstrap.py -n "My Source" -l en -u https://mysource.com -m dooplay
 ```
 
+Some themes leave members abstract for each source to implement, such as `datalifeengine`
+(`categories`, `genres`), `anilist` and `pelisplus`. The generated class doesn't stub them, so it
+won't compile until you add them; the compiler error lists every missing member.
+
 ### Loading a subset of Gradle modules
 
 By default, all individual and multisrc extensions are loaded for local development.

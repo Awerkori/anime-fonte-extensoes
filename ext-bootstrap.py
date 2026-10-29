@@ -43,6 +43,7 @@ def validate_args(args: argparse.Namespace, parser: argparse.ArgumentParser):
 
     # Validate multisrc theme if provided
     args.lib_version = "16"
+    args.multisrc_args = []
     if args.multisrc:
         multisrc_dir = path / "lib-multisrc"
         if not multisrc_dir.exists() or not multisrc_dir.is_dir():
@@ -61,10 +62,75 @@ def validate_args(args: argparse.Namespace, parser: argparse.ArgumentParser):
             (multisrc_dir / multisrc_theme / "build.gradle.kts").read_text(),
         ).group(1)
 
+        args.multisrc_class, args.multisrc_args = get_multisrc_class(
+            multisrc_dir / multisrc_theme, multisrc_theme, parser
+        )
+
 
 def get_ext_classname(extname: str) -> str:
     sanitized = re.sub(r"[^A-Za-z0-9 ]", "", extname)
     return "".join(word.capitalize() for word in re.findall(r"[A-Za-z0-9]+", sanitized))
+
+
+def get_multisrc_class(
+    theme_dir: Path, theme: str, parser: argparse.ArgumentParser
+) -> tuple[str, list[tuple[str, str]]]:
+    # The theme's class name doesn't always follow its directory (dooplay -> DooPlay),
+    # so read it, with a placeholder for each constructor parameter that has no default
+    package_dir = theme_dir / "src" / "eu" / "kanade" / "tachiyomi" / "multisrc" / theme
+    for file in sorted(package_dir.glob("*.kt")):
+        text = re.sub(r"//[^\n]*", "", file.read_text())
+        match = re.search(r"^abstract class (\w+)\s*(\()?", text, re.MULTILINE)
+        if match:
+            break
+    else:
+        parser.error(
+            f"invalid multisrc theme: '{theme}' (no abstract class in '{package_dir}')"
+        )
+
+    classname = match.group(1)
+    if not match.group(2):
+        return classname, []
+
+    # Split the constructor's parameter list at top-level commas
+    params, current, depth = [], "", 0
+    for char in text[match.end() :].replace("->", "→"):
+        if char in "(<[{":
+            depth += 1
+        elif char in ")>]}":
+            if depth == 0:
+                break
+            depth -= 1
+        elif char == "," and depth == 0:
+            params.append(current)
+            current = ""
+            continue
+        current += char
+    params.append(current)
+
+    ctor_args = []
+    for param in filter(str.strip, params):
+        declaration, _, default = param.partition("=")
+        if default.strip():
+            continue
+
+        name, _, type_ = declaration.partition(":")
+        *modifiers, name = name.split()
+        if "override" in modifiers:
+            parser.error(
+                f"invalid multisrc theme: '{theme}' ({classname} takes `{name}` "
+                "in its constructor, which the source block owns)"
+            )
+
+        type_ = type_.strip()
+        if type_ == "String":
+            ctor_args.append((name, '""'))
+        elif type_.startswith("List<"):
+            ctor_args.append((name, "emptyList()"))
+        else:
+            ctor_args.append((name, f'TODO("{name}")'))
+
+    return classname, ctor_args
 
 
 if __name__ == "__main__":
@@ -179,12 +245,17 @@ if __name__ == "__main__":
 
         if args.multisrc:
             f.write(
-                f"import eu.kanade.tachiyomi.multisrc.{args.multisrc}.{get_ext_classname(args.multisrc)}\n"
+                f"import eu.kanade.tachiyomi.multisrc.{args.multisrc}.{args.multisrc_class}\n"
             )
             f.write("import keiyoushi.annotation.Source\n\n")
             f.write("@Source\n")
+            ctor_args = "".join(
+                f"\t{name} = {value},\n" for name, value in args.multisrc_args
+            )
             f.write(
-                f"abstract class {get_ext_classname(args.extname)} : {get_ext_classname(args.multisrc)}()\n"
+                f"abstract class {get_ext_classname(args.extname)} : {args.multisrc_class}("
+                + (f"\n{ctor_args}" if ctor_args else "")
+                + ")\n"
             )
         else:
             f.write("import eu.kanade.tachiyomi.animesource.model.AnimeFilterList\n")
@@ -283,3 +354,7 @@ if __name__ == "__main__":
             )
 
             f.write("}\n")
+
+    if args.multisrc_args:
+        names = ", ".join(name for name, _ in args.multisrc_args)
+        print(f"Replace the placeholder {args.multisrc_class} constructor arguments: {names}")
