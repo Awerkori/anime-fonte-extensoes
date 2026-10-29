@@ -19,9 +19,10 @@ def ascii_validator(value: str) -> str:
 def validate_args(args: argparse.Namespace, parser: argparse.ArgumentParser):
     # Validate language
     lang = args.lang
-    if not re.fullmatch(r"(?:[a-z]{2,3}(?:-[A-Z]{2,3})?|all)", lang):
+    if not re.fullmatch(r"(?:[a-z]{2,3}(?:-(?:[A-Z]{2,3}|[A-Za-z]{4}))?|all)", lang):
         parser.error(
-            f"invalid language: '{lang}' (must be a 2- or 3-letter ISO language code)"
+            f"invalid language: '{lang}' (must be a 2- or 3-letter ISO language code, "
+            "optionally with a region or script subtag such as 'pt-BR' or 'zh-hant')"
         )
 
     # Validate base URL
