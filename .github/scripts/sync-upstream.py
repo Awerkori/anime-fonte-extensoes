@@ -106,6 +106,8 @@ def is_preserved(path: str) -> bool:
     """Paths that must NEVER be overwritten by upstream (our CI/scripts/build logic)."""
     if path == ".github" or path.startswith(".github/"):
         return True
+    if path.lower().startswith("readme"):
+        return True
     if path.startswith("gradle/build-logic/"):
         return True
     if path in {

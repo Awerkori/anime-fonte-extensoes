@@ -1,40 +1,53 @@
 # Project Nox · Código-fonte das Extensões de Anime
 
-Repositório central de código-fonte, desenvolvimento de extractors de vídeo e automação de compilação das extensões de anime do **Project Nox** para **Aniyomi**, **Anikku** e forks compatíveis.
+Repositório central de desenvolvimento, código-fonte em Kotlin, desenvolvimento de extractors de vídeo e automação de compilação das extensões de anime do **Project Nox** para **Aniyomi e forks**.
 
 ---
 
-> [!NOTE]
+> [!IMPORTANT]
 > **Procurando apenas assistir e instalar as extensões no seu player?**  
-> Este repositório contém o código-fonte em Kotlin para desenvolvimento e manutenção técnica. Para instalar os catálogos compilados no aplicativo, acesse:  
+> Este repositório destina-se a desenvolvedores e contém o código-fonte em Kotlin para manutenção e criação de fontes. Para instalar os catálogos compilados diretamente no seu aplicativo, acesse o repositório de distribuição oficial:  
 > ➡️ [**Project Nox · Extensões de Anime (Distribuição)**](https://github.com/Awerkori/anime-extensoes)
 
 ---
 
 ## 🎯 Sobre o Projeto
 
-O ecossistema de anime do Project Nox gerencia e aperfeiçoa extensões focadas em streaming com suporte à comunidade lusófona (PT-BR). As responsabilidades deste projeto englobam:
+O ecossistema de anime do **Project Nox** gerencia extensões voltadas à reprodução fluida de mídias audiovisuais com prioridade para a comunidade brasileira (PT-BR). As principais frentes de atuação deste repositório incluem:
 
-- **Extractors de Vídeo Dedicados:** Parsers customizados para contornar proteções, resolver redirecionamentos de players e processar playlists HLS/M3U8 com estabilidade.
-- **Pipeline de Integração Contínua (CI):** Compilação automatizada via Gradle e GitHub Actions, com testes sintéticos, empacotamento de APKs e assinatura digital.
-- **Publicação Automática:** Cada atualização aprovada na branch principal gera os pacotes correspondentes e atualiza o catálogo JSON no repositório de distribuição [`anime-extensoes`](https://github.com/Awerkori/anime-extensoes).
+- **Extractors de Vídeo e Servidores Locais:** Desenvolvimento e manutenção de módulos especializados em contornar protetores de links, decodificar tokens efêmeros de players e processar manifestos HLS/M3U8 via proxy local (`m3u8server`), prevenindo travamentos e erros de buffer no player.
+- **Engenharia de Fontes em Kotlin:** Módulos que mapeiam catálogos, paginações, filtros por gênero/temporada e listas de episódios de sites populares de streaming.
+- **Pipeline de Integração Contínua (CI):** Compilação modular automatizada via Gradle e GitHub Actions, com testes sintéticos, empacotamento de APKs assinados e publicação de índices.
+- **Distribuição Sincronizada:** Cada merge aprovado na branch `main` dispara o empacotamento e a entrega contínua dos artefatos ao repositório [`anime-extensoes`](https://github.com/Awerkori/anime-extensoes).
 
 ---
 
 ## 🏗️ Estrutura do Repositório
 
-- `src/`: Extensões organizadas por idioma (ex: `src/pt/` para fontes em português, como AnimeFire, RedeCanais e Anikyuu).
-- `lib/`: Bibliotecas compartilhadas e extractors comuns de hospedagem de vídeo (Blogger, MixDrop, servidores locais M3U8, etc.).
-- `.github/workflows/`: Workflows do GitHub Actions responsáveis pela compilação modular e publicação do repositório.
-- `.github/scripts/`: Scripts em Python para merge, catalogação e sincronização com a branch `repo`.
+O projeto segue arquitetura modular em Gradle:
+
+```
+├── src/                    # Extensões organizadas por idioma
+│   ├── pt/                 # Extensões em Português (AnimeFire, RedeCanais, Anikyuu, etc.)
+│   └── ...                 # Outros módulos de exibição
+├── lib/                    # Extractors de vídeo e bibliotecas reutilizáveis
+│   ├── bloggerextractor/   # Decodificador de streams hospedados no Google/Blogger
+│   ├── mixdropextractor/   # Parser de links MixDrop e mirrors
+│   ├── m3u8server/         # Servidor HTTP local para servir e desfragmentar streams HLS
+│   └── ...                 # Outros extractors dedicados
+├── .github/
+│   ├── workflows/          # Pipelines de automação (build_push.yml, sync_upstream.yml)
+│   └── scripts/            # Scripts em Python para consolidação do catálogo e merge
+└── build.gradle.kts        # Configurações globais de compilação
+```
 
 ---
 
-## 💻 Como Compilar Localmente
+## 💻 Como Compilar e Desenvolver Localmente
 
 ### Pré-requisitos
 - **JDK 17** ou superior instalado e configurado no `JAVA_HOME`.
-- **Android SDK** com Build-Tools e plataformas Android 30+.
+- **Android SDK** com Platform-Tools e Build-Tools recentes (API 30+).
 
 ### Clonar o repositório
 ```bash
@@ -42,45 +55,74 @@ git clone https://github.com/Awerkori/anime-fonte-extensoes.git
 cd anime-fonte-extensoes
 ```
 
-### Compilar uma extensão específica
+### Compilar Extensões e Extractors
+
+Para compilar uma extensão específica em modo debug:
 ```bash
-# Compilar o APK da extensão em modo debug
 ./gradlew :src:pt:<nome-da-extensao>:assembleDebug
 ```
+O APK resultante fica disponível em:  
+`src/pt/<nome-da-extensao>/build/outputs/apk/debug/`
 
-Os APKs gerados ficam localizados em `src/pt/<nome-da-extensao>/build/outputs/apk/debug/`.
+Para compilar e testar um extractor de vídeo específico:
+```bash
+./gradlew :lib:bloggerextractor:assembleDebug
+```
+
+### Formatação de Código
+```bash
+# Validar e aplicar as diretrizes de código Spotless
+./gradlew spotlessApply
+```
 
 ---
 
 ## 🤝 Como Contribuir
 
-Contribuições da comunidade são bem-vindas:
+Contribuições da comunidade são muito apreciadas:
 
-1. **Consulte a Central de Pedidos:** Verifique os chamados existentes na [Central de Pedidos](https://github.com/Awerkori/project-nox-requests) para priorizar correções demandadas.
-2. **Crie uma branch:** Nomeie de forma clara (ex: `fix/animefire-player` ou `feat/novo-extractor`).
-3. **Modularidade nos Extractors:** Se um player for utilizado por múltiplos sites, implemente-o ou atualize-o dentro do módulo `lib/`.
-4. **Envie um Pull Request:** Detalhe a correção realizada, os fluxos testados e o comportamento esperado.
+1. **Verifique os Chamados:** Acesse a [Central de Pedidos](https://github.com/Awerkori/project-nox-requests) para checar fontes reportadas com instabilidade ou novos pedidos prioritários.
+2. **Crie uma branch descritiva:** Ex: `fix/animefire-player` ou `feat/novo-extractor`.
+3. **Reutilização de Extractors:** Caso um novo site utilize um host de vídeo comum a outras fontes, implemente a lógica dentro do diretório `lib/` para reaproveitamento modular.
+4. **Envie seu Pull Request:** Explique a solução adotada, os métodos de bypass de player aplicados e os testes de reprodução realizados.
+
+---
+
+## 🛠️ Suporte e Reporte de Erros
+
+Identificou uma extensão de anime quebrada, falha ao carregar episódios ou erro no player?
+
+- 🎫 **Abrir solicitação oficial:** [Project Nox · Central de Pedidos](https://github.com/Awerkori/project-nox-requests)
+- 📊 **Acompanhar status em tempo real:** [Project Nox · Tracker](https://awerkori.github.io/project-nox-tracker/)
 
 ---
 
 ## 🔗 Projetos Relacionados
 
-- 🎬 [**Project Nox · Extensões de Anime**](https://github.com/Awerkori/anime-extensoes) — Repositório de distribuição (APKs compilados e catálogo JSON).
-- 📦 [**Project Nox · Extensões de Mangá**](https://github.com/Awerkori/manga-extensoes) — Catálogo de extensões de leitura para Mihon.
-- 💻 [**Project Nox · Código-fonte das Extensões de Mangá**](https://github.com/Awerkori/manga-fonte-extensoes) — Código-fonte das extensões de mangá.
-- 🎫 [**Project Nox · Central de Pedidos**](https://github.com/Awerkori/project-nox-requests) — Reporte de links quebrados e pedidos de fontes.
-- 📊 [**Project Nox · Tracker**](https://awerkori.github.io/project-nox-tracker/) — Painel de status em tempo real.
-- 🌐 [**Project Nox · Site**](https://manga.project-nox-awerkori.workers.dev) — Leitor web oficial.
+- 🎬 [**Project Nox · Extensões de Anime**](https://github.com/Awerkori/anime-extensoes) — Repositório de distribuição (APKs compilados e catálogo JSON para Aniyomi e forks).
+- 📦 [**Project Nox · Extensões de Mangá**](https://github.com/Awerkori/manga-extensoes) — Distribuição de fontes de leitura para Mihon e forks.
+- 💻 [**Project Nox · Código-fonte das Extensões de Mangá**](https://github.com/Awerkori/manga-fonte-extensoes) — Código em Kotlin das extensões de mangá.
+- 🌐 [**Project Nox · Plataforma Web de Mangá**](https://github.com/Awerkori/project-nox-manga) — Plataforma web oficial.
+- ⚙️ [**Project Nox · Importer**](https://github.com/Awerkori/project-nox-importer) — Serviço de ingestão autônoma 24/7.
 
 ---
 
-## ⚖️ Licença e Créditos
+## 🌟 Créditos e Reconhecimento
 
-Distribuído sob a licença **Apache 2.0**. Consulte o arquivo [LICENSE](LICENSE) para obter mais informações.
+- **Felipe GFA** ([@FelipeGFA](https://github.com/FelipeGFA)): Pela migração estrutural da suíte de anime, desenvolvimento e depuração de parsers avançados (RedeCanais, BetterAnime, etc.) e consolidação dos fluxos de compilação contínua.
+- **Yūzōnō** ([@yuzono](https://github.com/yuzono)) e equipe **Aniyomi** ([@aniyomiorg](https://github.com/aniyomiorg)): Pela arquitetura upstream dos extractors de vídeo e ecossistema de extensões de reprodução.
+- **Javier Tomás** e comunidade open-source de desenvolvedores.
+
+---
+
+## ⚖️ Licença e Isenção de Responsabilidade
+
+Distribuído sob a licença **Apache 2.0**. Consulte o arquivo [LICENSE](LICENSE) para maiores esclarecimentos.
 
 ```
 Copyright 2015 Javier Tomás
-Copyright (c) Yūzōnō Contributors & Project Nox Contributors
+Copyright (c) Yūzōnō Contributors & Aniyomi Contributors
+Copyright (c) Project Nox Contributors & Felipe GFA
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -90,4 +132,4 @@ You may obtain a copy of the License at
 ```
 
 ### Isenção de Responsabilidade
-O **Project Nox** desenvolve e disponibiliza ferramentas para fins educacionais e de interoperabilidade. Não armazenamos, modificamos nem intermediamos arquivos multimídia nos servidores do projeto. Todo o conteúdo é transmitido diretamente de serviços externos públicos. Este projeto não possui afiliação oficial com a equipe do Aniyomi ou Anikku.
+O **Project Nox** desenvolve exclusivamente soluções de código aberto para fins educacionais e de pesquisa em interoperabilidade. Não armazenamos, hospedamos nem comercializamos materiais audiovisuais protegidos. As extensões atuam estritamente como ferramentas de consulta a sites públicos externos.
