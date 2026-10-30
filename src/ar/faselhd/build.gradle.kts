@@ -11,8 +11,8 @@ yuzono {
     source {
         name = "فاصل اعلاني"
         lang = "ar"
-        baseUrl("https://www.faselhds.biz") {
-            withCustom = true
+        baseUrl {
+            custom("https://www.faselhds.biz")
         }
     }
 }

@@ -10,8 +10,8 @@ yuzono {
 
     source {
         lang = "pt-BR"
-        baseUrl("https://www.anitube.vip") {
-            withCustom = true
+        baseUrl {
+            custom("https://www.anitube.vip")
         }
     }
 

@@ -12,7 +12,6 @@ yuzono {
         lang = "all"
         id = 4222017068256633289L
         baseUrl = "https://drive.google.com"
-        skipCodeGen = true
     }
 }
 

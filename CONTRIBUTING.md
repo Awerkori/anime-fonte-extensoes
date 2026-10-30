@@ -18,6 +18,7 @@ or fixing it directly by submitting a Pull Request.
   - [Getting help](#getting-help)
   - [Writing an extension](#writing-an-extension)
     - [Setting up a new Gradle module](#setting-up-a-new-gradle-module)
+      - [Using ext-bootstrap.py](#using-ext-bootstrappy)
     - [Loading a subset of Gradle modules](#loading-a-subset-of-gradle-modules)
       - [Extension file structure](#extension-file-structure)
       - [build.gradle.kts](#buildgradlekts)
@@ -26,7 +27,6 @@ or fixing it directly by submitting a Pull Request.
       - [Declare sources in build.gradle.kts](#declare-sources-in-buildgradlekts)
       - [baseUrl modes](#baseurl-modes)
       - [Multiple sources from one class](#multiple-sources-from-one-class)
-      - [Keeping name and baseUrl in the class](#keeping-name-and-baseurl-in-the-class)
     - [Core dependencies](#core-dependencies)
       - [Extension API](#extension-api)
       - [lib tools](#lib-tools)
@@ -45,6 +45,7 @@ or fixing it directly by submitting a Pull Request.
         - [Filter helpers - `firstInstance` / `firstInstanceOrNull`](#filter-helpers---firstinstance--firstinstanceornull)
         - [Next.js data extraction - `extractNextJs` / `extractNextJsRsc`](#nextjs-data-extraction---extractnextjs--extractnextjsrsc)
         - [Extracting URLs - `setUrlWithoutDomain` + `absUrl`](#extracting-urls---seturlwithoutdomain--absurl)
+        - [GraphQL Requests - `graphQLPost` / `parseGraphQLAs`](#graphql-requests---graphqlpost--parsegraphqlas)
       - [Additional dependencies](#additional-dependencies)
     - [Extension main class](#extension-main-class)
       - [Main class key variables](#main-class-key-variables)
@@ -224,8 +225,8 @@ and [negative refspecs](https://github.blog/2020-10-19-git-2-29-released/#user-c
 
 ## Writing an extension
 
-The quickest way to get started is to copy an existing extension's folder structure and renaming it
-as needed. We also recommend reading through a few existing extensions' code before you start.
+The quickest way to get started is by using the [ext-bootstrap.py](#using-ext-bootstrappy) script.
+We also recommend reading through the code of a few existing extensions before beginning.
 
 ### Setting up a new Gradle module
 
@@ -235,6 +236,40 @@ source supports multiple languages or if it could support multiple sources.
 The `<lang>` used in the folder inside `src` should be the major `language` part. For example, if
 you will be creating a `pt-BR` source, use `<lang>` here as `pt` only. Inside the source class, use
 the full locale string instead.
+
+#### Using ext-bootstrap.py
+
+Instead of setting this up by hand, you can use the `ext-bootstrap.py` script to scaffold a new
+extension module automatically:
+
+```console
+$ python ext-bootstrap.py -n "My Source" -l en -u https://mysource.com
+```
+
+This creates `src/<lang>/<mysourcename>/build.gradle.kts` along with the extension's package
+directory and a starter source class implementing `AnimeHttpSource`.
+
+Available options:
+
+| Flag | Description |
+| --- | --- |
+| `-n`, `--extname` | Extension name |
+| `-l`, `--lang`, `--language` | Extension language (2- or 3-letter ISO code, or `all`) |
+| `-u`, `--baseurl` | Extension base URL (must be `https://`) |
+| `--source-name` | Source name (defaults to `--extname`) |
+| `-c`, `--content-warning` | `SAFE`, `MIXED`, or `NSFW` (default: `SAFE`) |
+| `-m`, `--multisrc` | Name of an existing multisrc theme to base the source on |
+| `--path` | Path to the extension repo directory (defaults to the current directory) |
+
+For example, to scaffold a source based on the `dooplay` multisrc theme:
+
+```console
+$ python ext-bootstrap.py -n "My Source" -l en -u https://mysource.com -m dooplay
+```
+
+Some themes leave members abstract for each source to implement, such as `datalifeengine`
+(`categories`, `genres`), `anilist` and `pelisplus`. The generated class doesn't stub them, so it
+won't compile until you add them; the compiler error lists every missing member.
 
 ### Loading a subset of Gradle modules
 
@@ -333,7 +368,8 @@ your source class. The build uses KSP to generate a subclass of it, `ExtensionGe
 
 #### Annotate your source class
 
-Add `@Source` to your main class, make it `abstract`, and don't declare `name`, `lang`, `id`, `versionId` or `baseUrl`:
+Add `@Source` to your main class, make it `abstract`, and don't declare `name`, `lang`, `id`, `versionId` or `baseUrl`
+(except the discouraged `name`/`baseUrl` overrides described under [the table below](#declare-sources-in-buildgradlekts)):
 
 ```kotlin
 import keiyoushi.annotation.Source
@@ -347,6 +383,31 @@ abstract class MySource : AnimeHttpSource() {
 Each module has exactly one `@Source` class. If it extends `keiyoushi.utils.Source`, write the annotation as
 `@keiyoushi.annotation.Source`, since the two names clash.
 
+Keep the class `abstract` unless the app looks it up by its class name, as Anikku's Jellyfin tracker does. The generated
+code then wraps each source in a subclass, whose name differs. A concrete `@Source` class is instead created directly,
+once per `source {}` block, so it keeps its name:
+
+```kotlin
+@Source
+class MySource(
+    override val lang: String,
+    override val id: Long,
+) : AnimeHttpSource() {
+    override val name by lazy { "MySource (${preferences.displayName})" }
+    override val baseUrl get() = preferences.serverUrl
+}
+```
+
+- It must take `override val lang` and `override val id` as primary constructor parameters, filled in from each
+  `source {}` block.
+- It takes `name` and `baseUrl` the same way (`override val name: String`, `override val baseUrl: String`), or
+  overrides them itself, as above.
+- Only a static `baseUrl` is supported: use an `abstract` class for `mirrors(...)` or `custom(...)`.
+- R8 renames classes in release builds, so keep its name in the module's `proguard-rules.pro`:
+  `-keepnames class eu.kanade.tachiyomi.animeextension.<lang>.<mysourcename>.MySource`, as
+  `src/all/jellyfin/proguard-rules.pro` does. Nothing checks this: without the rule the build and the repo checks
+  pass, and only the app's lookup by name fails.
+
 #### Declare sources in build.gradle.kts
 
 | Field         | Description                                                                                                                                                                            |
@@ -356,7 +417,8 @@ Each module has exactly one `@Source` class. If it extends `keiyoushi.utils.Sour
 | `baseUrl`     | The source's base URL. See [baseUrl modes](#baseurl-modes) below.                                                                                                                      |
 | `id`          | Explicit source ID, written as a `Long` (`id = 1234L`). Optional; computed from `name`, `lang` and `versionId` when omitted. Set it when renaming a source to keep users' libraries. |
 | `versionId`   | Seed used to compute `id`. Defaults to `1`. Only bump it if the source's URL structure fundamentally changes and old entries can no longer be redirected.                              |
-| `skipCodeGen` | Optional. Leaves `name`, `lang`, `id` and `baseUrl` to the class. See [Keeping name and baseUrl in the class](#keeping-name-and-baseurl-in-the-class).                                 |
+
+A source class may compute `name` and/or `baseUrl` itself by declaring `override val name` / `override val baseUrl`; codegen detects the override and skips generating that property (the DSL value is then used only for metadata such as the repo index and deeplink hosts). **This is discouraged** — prefer letting the DSL own `name` and `baseUrl`, and only override them in the source class when you have a very specific reason. `baseUrl` may only be overridden when the DSL declares a plain static `baseUrl` — the `mirrors`/`custom` modes generate preference infrastructure and cannot be hand-overridden. `id` and `lang` are always owned by the DSL; overriding them in the source class is an error.
 
 #### baseUrl modes
 
@@ -369,18 +431,29 @@ source {
 }
 ```
 
-**Mirrors**, where the user picks one URL from a list. The URL passed to `baseUrl(...)` is the default, and the picker
-shows each mirror's host:
+**Mirrors**, where the user picks one URL from a list:
 
 ```kotlin
 source {
     lang = "en"
-    baseUrl("https://example.com") {
-        mirrors = listOf(
+    baseUrl {
+        mirrors(
+            "https://example.com",
             "https://mirror1.com",
             "https://mirror2.com",
         )
     }
+}
+```
+
+The first url is the default; each mirror's host is shown in the picker. To show custom labels instead, pass `"label" to "url"` pairs — either all urls are naked or all are labeled, not a mix:
+
+```kotlin
+baseUrl {
+    mirrors(
+        "Main" to "https://example.com",
+        "Mirror" to "https://mirror1.com",
+    )
 }
 ```
 
@@ -389,8 +462,8 @@ source {
 ```kotlin
 source {
     lang = "en"
-    baseUrl("https://example.com") {
-        withCustom = true
+    baseUrl {
+        custom("https://example.com")
     }
 }
 ```
@@ -401,13 +474,12 @@ preferences, calling `super.setupPreferenceScreen(screen)` when your class alrea
 the default URL changes in an update. Their titles are translated in `core/translations/strings.json`.
 
 > [!IMPORTANT]
-> When using `mirrors` or `withCustom`, **do not** add your own domain preference or read one from `SharedPreferences`:
+> When using `mirrors(...)` or `custom(...)`, **do not** add your own domain preference or read one from `SharedPreferences`:
 > the generated code handles it, and doing both creates duplicate preferences.
 >
-> The generated `baseUrl` reads a preference that the generated subclass creates, so it is not available while your
-> class (or its theme) is being constructed. Don't read `baseUrl`, or `headers` built from it, in a property initializer
-> or an `init` block: use a getter (`private val apiUrl get() = "$baseUrl/api"`) or `by lazy` instead. A getter also
-> picks up a new mirror at once, while anything built once keeps the old one until the app restarts.
+> The generated `baseUrl` reads the setting on every access. Anything built from it once, in a property initializer or
+> an `init` block, keeps the URL the source had when it was created until the app restarts, so build it in a getter
+> instead (`private val apiUrl get() = "$baseUrl/api"`): a getter picks up a new mirror at once.
 
 #### Multiple sources from one class
 
@@ -435,21 +507,6 @@ yuzono {
 
 Anything that used to be a constructor parameter is derived from `name` or `lang` in the class, for example
 `private val siteLang get() = when (lang) { ... }`.
-
-#### Keeping name and baseUrl in the class
-
-When the class must compute these values itself, for example a `baseUrl` that follows the site's redirects to a new
-domain, set `skipCodeGen = true`. The generated class then adds nothing, and the class declares `name`, `lang`,
-`baseUrl` and, when it differs from the computed one, `id`. Keep the `source {}` values in step with the class: they are
-still used for the deeplink hosts. `skipCodeGen` only works with a single `source {}` block and a static `baseUrl`.
-
-```kotlin
-source {
-    lang = "fr"
-    baseUrl = "https://example.com"
-    skipCodeGen = true
-}
-```
 
 ### Core dependencies
 
@@ -1166,8 +1223,8 @@ open class UriPartFilter(displayName: String, private val vals: Array<Pair<Strin
 
 #### Configurable Sources and Preferences
 
-- **Mirrors and custom URLs:** Declare a mirror list or a user-editable base URL with `mirrors` or `withCustom` in the `source {}` block (see [baseUrl modes](#baseurl-modes)) instead of writing the preference yourself. The generated preferences store the mirror index, clamp it when mirrors are removed, and reset a custom URL when the default changes.
-- **Base URL getter:** If the class still computes `baseUrl` from its own preferences (with `skipCodeGen`, for example to follow a domain redirect), use a custom getter (e.g., `override val baseUrl: String get() = ...`) instead of `by lazy`. Using `by lazy` requires the user to restart the app for the domain change to take effect.
+- **Mirrors and custom URLs:** Declare a mirror list or a user-editable base URL with `mirrors(...)` or `custom(...)` in the `source {}` block (see [baseUrl modes](#baseurl-modes)) instead of writing the preference yourself. The generated preferences store the mirror index, clamp it when mirrors are removed, and reset a custom URL when the default changes.
+- **Base URL getter:** If the class still computes `baseUrl` from its own preferences (by overriding `baseUrl`, for example to follow a domain redirect), use a custom getter (e.g., `override val baseUrl: String get() = ...`) instead of `by lazy`. Using `by lazy` requires the user to restart the app for the domain change to take effect.
 
 #### URL intent filter
 
@@ -1365,8 +1422,8 @@ When no `host()` is specified in a theme `deeplink {}` block, the host is resolv
 The main class of the theme (e.g., `<ThemeName>.kt`) contains the default implementation for the source sites. It should be declared as an `abstract class` extending `AnimeHttpSource`, allowing individual extensions to inherit and override its properties and methods.
 
 `name`, `lang`, `id` and `baseUrl` come from each extension's `source {}` block, so the theme neither takes them as
-constructor parameters nor overrides them. The theme only reads them, and not while it is being constructed (see
-[baseUrl modes](#baseurl-modes)).
+constructor parameters nor overrides them. The theme only reads them, preferably in getters so a mirror change applies
+at once (see [baseUrl modes](#baseurl-modes)).
 
 ```kotlin
 package eu.kanade.tachiyomi.multisrc.<theme_name>

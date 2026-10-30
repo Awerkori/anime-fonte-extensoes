@@ -11,7 +11,6 @@ yuzono {
     source {
         lang = "fr"
         baseUrl = "https://anime-sama.to"
-        skipCodeGen = true
     }
 
     deeplink {

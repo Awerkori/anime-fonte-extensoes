@@ -10,8 +10,11 @@ yuzono {
 
     source {
         lang = "en"
-        baseUrl("https://anikuro.to") {
-            mirrors = listOf("https://anikuro.ru")
+        baseUrl {
+            mirrors(
+                "https://anikuro.to",
+                "https://anikuro.ru",
+            )
         }
     }
 }

@@ -11,8 +11,11 @@ yuzono {
 
     source {
         lang = "en"
-        baseUrl("https://animewave.to") {
-            mirrors = listOf("https://aniwave.cz")
+        baseUrl {
+            mirrors(
+                "https://animewave.to",
+                "https://aniwave.cz",
+            )
         }
     }
 }

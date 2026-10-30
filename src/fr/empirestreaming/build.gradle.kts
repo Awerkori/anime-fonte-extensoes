@@ -10,8 +10,11 @@ yuzono {
 
     source {
         lang = "fr"
-        baseUrl("https://empire-stream.net") {
-            mirrors = listOf("https://empire-streaming.app")
+        baseUrl {
+            mirrors(
+                "https://empire-stream.net",
+                "https://empire-streaming.app",
+            )
         }
     }
 }

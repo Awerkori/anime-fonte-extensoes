@@ -12,7 +12,6 @@ yuzono {
         lang = "en"
         id = 4709139914729853090L
         baseUrl = "https://mkissa.to/anime"
-        skipCodeGen = true
     }
 }
 

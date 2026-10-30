@@ -10,8 +10,12 @@ yuzono {
 
     source {
         lang = "en"
-        baseUrl("https://animepahe.pw") {
-            mirrors = listOf("https://animepahe.com", "https://animepahe.org")
+        baseUrl {
+            mirrors(
+                "https://animepahe.pw",
+                "https://animepahe.com",
+                "https://animepahe.org",
+            )
         }
     }
 }

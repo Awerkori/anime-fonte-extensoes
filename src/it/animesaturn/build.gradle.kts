@@ -11,8 +11,9 @@ yuzono {
     source {
         name = "AnimeSaturn"
         lang = "it"
-        baseUrl("https://animesaturn.net") {
-            mirrors = listOf(
+        baseUrl {
+            mirrors(
+                "https://animesaturn.net",
                 "https://animesaturn.cx",
                 "https://animesaturn.cc",
                 "https://animesaturn.com",

@@ -10,8 +10,11 @@ yuzono {
 
     source {
         lang = "en"
-        baseUrl("https://xanime.me") {
-            mirrors = listOf("https://xanime.app")
+        baseUrl {
+            mirrors(
+                "https://xanime.me",
+                "https://xanime.app",
+            )
         }
     }
 
