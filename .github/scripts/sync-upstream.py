@@ -400,6 +400,10 @@ def pending_sync_units(
     base: str | None = None,
 ) -> list[str]:
     """Return HEAD/upstream differences which still need a sync attempt."""
+    if base is None:
+        base = git("merge-base", "HEAD", upstream_ref).strip()
+    upstream_head = git("rev-parse", upstream_ref).strip()
+
     all_upstream = get_all_source_units(upstream_ref)
     all_local = get_all_source_units("HEAD")
     explicit_protected = set(protected_units) | get_explicit_code_protections()
@@ -416,27 +420,19 @@ def pending_sync_units(
         if not is_ptbr_unit(u) and u not in explicit_protected and not is_nox_exclusive(u, upstream_ref, base=base):
             pending.add(u)
 
-    # 3. Divergent foreign units present in both
-    for u in all_upstream & all_local:
-        if is_ptbr_unit(u) or u in explicit_protected:
-            continue
-        diff = git("diff", "--name-only", "HEAD", upstream_ref, "--", u, check=False).strip()
-        if diff:
-            pending.add(u)
-
-    # 4. Standard diff units (including structural/libs)
-    for unit in diff_units:
-        if is_ptbr_unit(unit):
-            continue
-        if unit in explicit_protected:
-            continue
-        if is_nox_exclusive(unit, upstream_ref, base=base):
-            continue
-        if not path_exists(upstream_ref, unit) and (
-            unit in explicit_protected or is_nox_exclusive(unit, upstream_ref, base=base)
-        ):
-            continue
-        pending.add(unit)
+    # 3. If upstream has commits not yet merged into HEAD, inspect changed units
+    if base != upstream_head:
+        upstream_diff_entries = changed_entries(base, upstream_ref)
+        upstream_diff_units, _ = collect_units(upstream_diff_entries)
+        for u in upstream_diff_units:
+            if not is_ptbr_unit(u) and u not in explicit_protected:
+                pending.add(u)
+        for unit in diff_units:
+            if is_ptbr_unit(unit) or unit in explicit_protected or is_nox_exclusive(unit, upstream_ref, base=base):
+                continue
+            if not path_exists(upstream_ref, unit):
+                continue
+            pending.add(unit)
 
     return sorted(pending)
 

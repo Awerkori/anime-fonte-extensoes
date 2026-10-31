@@ -144,21 +144,30 @@ def check_consistency(check_pending: bool = False, full_audit: bool = True) -> i
     }
 
     all_audited_units = sorted(upstream_sources | local_modules | set(deployed_by_unit.keys()))
+    base = sync_mod.git("merge-base", "HEAD", upstream_ref).strip() if sync_mod else ""
+    upstream_head_sha = sync_mod.git("rev-parse", upstream_ref).strip() if sync_mod else ""
+    upstream_has_unmerged = bool(upstream_head_sha and base != upstream_head_sha)
+    unmerged_units = set()
+    if upstream_has_unmerged and sync_mod:
+        upstream_diff_entries = sync_mod.changed_entries(base, upstream_ref)
+        unmerged_units, _ = sync_mod.collect_units(upstream_diff_entries)
+
     for u in all_audited_units:
         if u.startswith("src/pt/") or u == "src/pt":
             parity_by_status["PROTECTED_PTBR"].append(u)
         elif u in upstream_sources and u not in local_modules:
             parity_by_status["MISSING"].append(u)
         elif u in local_modules and u not in upstream_sources:
-            parity_by_status["STALE"].append(u)
-        else:
-            diff = git("diff", "--name-only", "HEAD", upstream_ref, "--", u, check=False)
-            if diff:
-                parity_by_status["OUTDATED"].append(u)
-            elif u not in deployed_by_unit:
-                parity_by_status["PUBLISH_PENDING"].append(u)
+            if sync_mod and sync_mod.is_nox_exclusive(u, upstream_ref, base=base):
+                parity_by_status["PROTECTED_PTBR"].append(u)
             else:
-                parity_by_status["IN_SYNC"].append(u)
+                parity_by_status["STALE"].append(u)
+        elif u in unmerged_units:
+            parity_by_status["OUTDATED"].append(u)
+        elif u not in deployed_by_unit:
+            parity_by_status["PUBLISH_PENDING"].append(u)
+        else:
+            parity_by_status["IN_SYNC"].append(u)
 
     # Build Markdown summary
     lines = [
