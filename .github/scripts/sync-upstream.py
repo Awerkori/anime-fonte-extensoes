@@ -792,23 +792,13 @@ def apply_units(
                     stale_gradle.unlink(missing_ok=True)
                     git("rm", "-f", "--cached", "--ignore-unmatch", "--quiet", "--", str(stale_gradle))
 
-    # Apply global structural updates from upstream (compiler, core, ext-bootstrap, DSL)
+    # Apply global structural updates from upstream (compiler, core, ext-bootstrap)
     for p in ["compiler", "core", "ext-bootstrap.py"]:
         if path_exists(upstream_ref, p):
             if git("diff", "--name-only", "HEAD", upstream_ref, "--", p).strip():
                 print(f"Applying global infrastructure update: {p}")
                 git("rm", "-rf", "--ignore-unmatch", "--quiet", "--", p)
                 git("restore", f"--source={upstream_ref}", "--staged", "--worktree", "--", p)
-
-    for bl in [
-        "gradle/build-logic/src/main/kotlin/PluginExtension.kt",
-        "gradle/build-logic/src/main/kotlin/keiyoushi/gradle/extensions/BaseUrlSpec.kt",
-        "gradle/build-logic/src/main/kotlin/keiyoushi/gradle/extensions/KeiyoushiExtension.kt",
-    ]:
-        if path_exists(upstream_ref, bl):
-            if git("diff", "--name-only", "HEAD", upstream_ref, "--", bl).strip():
-                print(f"Applying build-logic DSL update: {bl}")
-                git("restore", f"--source={upstream_ref}", "--staged", "--worktree", "--", bl)
 
     bumped: list[str] = []
     guard_units = sorted(

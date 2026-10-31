@@ -43,6 +43,11 @@ abstract class SourceSpec {
     fun baseUrl(block: BaseUrlDsl.() -> Unit) {
         resolvedBaseUrl.set(BaseUrlDsl().apply(block).build())
     }
+
+    // Legacy backward-compatibility for: baseUrl("https://...") { withCustom = true }
+    fun baseUrl(url: String, block: BaseUrlDsl.() -> Unit) {
+        resolvedBaseUrl.set(BaseUrlDsl().apply(block).buildLegacy(url))
+    }
 }
 
 abstract class KeiyoushiExtension @Inject constructor(

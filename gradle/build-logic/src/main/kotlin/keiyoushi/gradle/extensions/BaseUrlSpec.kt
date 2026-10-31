@@ -27,6 +27,9 @@ class BaseUrlDsl {
     private val mirrors = mutableListOf<Mirror>()
     private var custom: BaseUrlSpec.Custom? = null
 
+    // Legacy backwards compatibility property for `withCustom = true`
+    var withCustom: Boolean = false
+
     /** Declares selectable mirror urls; the first is the default and each mirror's host is shown in the picker. */
     fun mirrors(vararg urls: String) {
         require(urls.isNotEmpty()) { "baseUrl { mirrors(...) } needs at least one url" }
@@ -51,5 +54,13 @@ class BaseUrlDsl {
         return custom
             ?: mirrors.takeIf { it.isNotEmpty() }?.let { BaseUrlSpec.Mirrors(it.toList()) }
             ?: error("source { baseUrl { } } is empty — call mirrors(...) or custom(...)")
+    }
+
+    internal fun buildLegacy(defaultUrl: String): BaseUrlSpec {
+        return when {
+            withCustom || custom != null -> BaseUrlSpec.Custom(defaultUrl)
+            mirrors.isNotEmpty() -> BaseUrlSpec.Mirrors(listOf(Mirror(defaultUrl)) + mirrors)
+            else -> BaseUrlSpec.Static(defaultUrl)
+        }
     }
 }
