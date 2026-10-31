@@ -4,14 +4,17 @@ plugins {
 
 yuzono {
     name = "EmpireStreaming"
-    versionCode = 30
+    versionCode = 34
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 
     source {
         lang = "fr"
-        baseUrl("https://empire-stream.net") {
-            mirrors = listOf("https://empire-streaming.app")
+        baseUrl {
+            mirrors(
+                "https://empire-stream.net",
+                "https://empire-streaming.app",
+            )
         }
     }
 }

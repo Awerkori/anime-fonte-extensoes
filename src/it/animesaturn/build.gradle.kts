@@ -4,15 +4,16 @@ plugins {
 
 yuzono {
     name = "Anime Saturn"
-    versionCode = 15
+    versionCode = 19
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 
     source {
         name = "AnimeSaturn"
         lang = "it"
-        baseUrl("https://animesaturn.net") {
-            mirrors = listOf(
+        baseUrl {
+            mirrors(
+                "https://animesaturn.net",
                 "https://animesaturn.cx",
                 "https://animesaturn.cc",
                 "https://animesaturn.com",

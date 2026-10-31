@@ -4,7 +4,7 @@ plugins {
 
 yuzono {
     name = "Stremio"
-    versionCode = 13
+    versionCode = 14
     contentWarning = ContentWarning.SAFE
     libVersion = "16"
     torrent = true
@@ -12,7 +12,6 @@ yuzono {
     source {
         lang = "all"
         baseUrl = "https://app.strem.io/shell-v4.4"
-        skipCodeGen = true
     }
 }
 

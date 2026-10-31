@@ -4,15 +4,18 @@ plugins {
 
 yuzono {
     name = "AniWave (Unoriginal)"
-    versionCode = 2
+    versionCode = 4
     contentWarning = ContentWarning.SAFE
     libVersion = "16"
     theme = "anikototheme"
 
     source {
         lang = "en"
-        baseUrl("https://animewave.to") {
-            mirrors = listOf("https://aniwave.cz")
+        baseUrl {
+            mirrors(
+                "https://animewave.to",
+                "https://aniwave.cz",
+            )
         }
     }
 }

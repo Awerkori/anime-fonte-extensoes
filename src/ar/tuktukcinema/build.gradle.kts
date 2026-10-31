@@ -4,15 +4,15 @@ plugins {
 
 yuzono {
     name = "Tuktuk Cinema"
-    versionCode = 11
+    versionCode = 15
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 
     source {
         name = "توك توك سينما"
         lang = "ar"
-        baseUrl("https://tuktukhd.com") {
-            withCustom = true
+        baseUrl {
+            custom("https://tuktukhd.com")
         }
     }
 }

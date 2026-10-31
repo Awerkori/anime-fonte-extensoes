@@ -4,7 +4,7 @@ plugins {
 
 yuzono {
     name = "MKissa"
-    versionCode = 74
+    versionCode = 78
     contentWarning = ContentWarning.NSFW
     libVersion = "16"
 
@@ -12,7 +12,6 @@ yuzono {
         lang = "en"
         id = 4709139914729853090L
         baseUrl = "https://mkissa.to/anime"
-        skipCodeGen = true
     }
 }
 

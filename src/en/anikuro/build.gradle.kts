@@ -4,14 +4,17 @@ plugins {
 
 yuzono {
     name = "AniKuro"
-    versionCode = 3
+    versionCode = 6
     contentWarning = ContentWarning.NSFW
     libVersion = "16"
 
     source {
         lang = "en"
-        baseUrl("https://anikuro.to") {
-            mirrors = listOf("https://anikuro.ru")
+        baseUrl {
+            mirrors(
+                "https://anikuro.to",
+                "https://anikuro.ru",
+            )
         }
     }
 }

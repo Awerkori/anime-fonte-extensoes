@@ -4,15 +4,15 @@ plugins {
 
 yuzono {
     name = "FASELHD"
-    versionCode = 31
+    versionCode = 34
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 
     source {
         name = "فاصل اعلاني"
         lang = "ar"
-        baseUrl("https://www.faselhds.biz") {
-            withCustom = true
+        baseUrl {
+            custom("https://www.faselhds.biz")
         }
     }
 }

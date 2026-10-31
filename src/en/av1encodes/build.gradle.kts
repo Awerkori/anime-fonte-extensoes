@@ -4,14 +4,18 @@ plugins {
 
 yuzono {
     name = "AV1Encodes"
-    versionCode = 3
+    versionCode = 5
     contentWarning = ContentWarning.SAFE
     libVersion = "16"
 
     source {
         lang = "en"
-        baseUrl("https://av1encodes.com") {
-            mirrors = listOf("https://animealpha.cc", "https://av1please.com")
+        baseUrl {
+            mirrors(
+                "av1encodes.com (default)" to "https://av1encodes.com",
+                "animealpha.cc" to "https://animealpha.cc",
+                "av1please.com (mirror)" to "https://av1please.com",
+            )
         }
     }
 }

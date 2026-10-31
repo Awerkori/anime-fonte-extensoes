@@ -4,15 +4,20 @@ plugins {
 
 yuzono {
     name = "AnimeKai (Unoriginal)"
-    versionCode = 0
+    versionCode = 2
     contentWarning = ContentWarning.SAFE
     libVersion = "16"
     theme = "anikototheme"
 
     source {
         lang = "en"
-        baseUrl("https://animekaitv.to") {
-            mirrors = listOf("https://anikaitv.to", "https://animekai.se", "https://anikai.se")
+        baseUrl {
+            mirrors(
+                "https://animekaitv.to",
+                "https://anikaitv.to",
+                "https://animekai.se",
+                "https://anikai.se",
+            )
         }
     }
 }

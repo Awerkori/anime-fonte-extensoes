@@ -4,14 +4,15 @@ plugins {
 
 yuzono {
     name = "KissKH"
-    versionCode = 10
+    versionCode = 13
     contentWarning = ContentWarning.NSFW
     libVersion = "16"
 
     source {
         lang = "en"
-        baseUrl("https://kisskh.ovh") {
-            mirrors = listOf(
+        baseUrl {
+            mirrors(
+                "https://kisskh.ovh",
                 "https://kisskh.do",
                 "https://kisskh.co",
                 "https://kisskh.id",
