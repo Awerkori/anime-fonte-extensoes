@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+import sys
+sys.dont_write_bytecode = True
 """
 Project Nox Anime — Sync Upstream (Yuzono Nox-Wins & Full Propagation)
 
@@ -19,12 +21,18 @@ Upstream repository: https://github.com/yuzono/anime-extensions (branch master)
 
 import argparse
 import datetime
+import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
 from pathlib import Path
+
+class ConcurrencyRaceError(Exception):
+    """Raised when origin/main advances concurrently during sync execution."""
+    pass
+
 
 UPSTREAM_REMOTE = "upstream"
 UPSTREAM_URL = "https://github.com/yuzono/anime-extensions.git"
@@ -102,21 +110,93 @@ def parse_name_status(output: str) -> list[tuple[str, list[str]]]:
     return entries
 
 
+def is_ptbr_unit(unit: str) -> bool:
+    """Universal rule: ANY path in src/pt/** is an untouchable PT-BR extension."""
+    return unit == "src/pt" or unit.startswith("src/pt/")
+
+
 def is_preserved(path: str) -> bool:
-    """Paths that must NEVER be overwritten by upstream (our CI/scripts/build logic)."""
+    """Paths that must NEVER be overwritten by upstream (our CI/scripts/build logic/custom code)."""
     if path == ".github" or path.startswith(".github/"):
         return True
     if path.lower().startswith("readme"):
         return True
-    if path.startswith("gradle/build-logic/"):
-        return True
     if path in {
         "gradle/build-logic",
+        "gradle/build-logic/build.gradle.kts",
+        "gradle/build-logic/src/main/kotlin/PluginExtensionLegacy.kt",
         "gradle/kei.versions.toml",
         "settings.gradle.kts",
     }:
         return True
     return False
+
+
+
+
+def get_ptbr_snapshot(ref: str | None = None) -> dict[str, str]:
+    """Capture sha256 checksum of every file in src/pt/**."""
+    snapshot: dict[str, str] = {}
+    if ref is None:
+        pt_dir = Path("src/pt")
+        if not pt_dir.is_dir():
+            return snapshot
+        for p in sorted(pt_dir.rglob("*")):
+            if p.is_file():
+                snapshot[p.as_posix()] = hashlib.sha256(p.read_bytes()).hexdigest()
+    else:
+        out = git("ls-tree", "-r", ref, "src/pt", check=False)
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) >= 4:
+                sha = parts[2]
+                path = parts[3]
+                snapshot[path] = sha
+    return snapshot
+
+
+def verify_ptbr_unchanged(pre_snapshot: dict[str, str]) -> None:
+    """Verify that src/pt/** has EXACTLY zero alterations."""
+    post_snapshot = get_ptbr_snapshot(None)
+    if pre_snapshot != post_snapshot:
+        added = sorted(set(post_snapshot.keys()) - set(pre_snapshot.keys()))
+        removed = sorted(set(pre_snapshot.keys()) - set(post_snapshot.keys()))
+        modified = sorted(k for k in pre_snapshot.keys() & post_snapshot.keys() if pre_snapshot[k] != post_snapshot[k])
+        errors = []
+        if added:
+            errors.append(f"added {len(added)} files: {added[:5]}")
+        if removed:
+            errors.append(f"removed {len(removed)} files: {removed[:5]}")
+        if modified:
+            errors.append(f"modified {len(modified)} files: {modified[:5]}")
+        msg = f"CRITICAL: PT-BR protection violated during sync! Alterations detected: {'; '.join(errors)}"
+        print(f"::error::{msg}", file=sys.stderr)
+        raise RuntimeError(msg)
+
+
+def get_all_source_units(ref: str | None = None) -> set[str]:
+    """Discover all extension source units ('src/<lang>/<ext>')."""
+    units = set()
+    if ref is None:
+        src = Path("src")
+        if not src.is_dir():
+            return units
+        for lang_dir in src.iterdir():
+            if not lang_dir.is_dir():
+                continue
+            for ext_dir in lang_dir.iterdir():
+                if not ext_dir.is_dir():
+                    continue
+                if (ext_dir / "build.gradle.kts").is_file() or (ext_dir / "build.gradle").is_file():
+                    units.add(f"src/{lang_dir.name}/{ext_dir.name}")
+    else:
+        out = git("ls-tree", "-r", "--name-only", ref, "src", check=False)
+        for line in out.splitlines():
+            parts = line.split("/")
+            if len(parts) >= 3 and parts[-1] in {"build.gradle", "build.gradle.kts"}:
+                units.add(f"{parts[0]}/{parts[1]}/{parts[2]}")
+    return units
+
 
 
 def sync_unit(path: str) -> str | None:
@@ -175,13 +255,15 @@ def get_explicit_delete_protections() -> list[str]:
 def get_explicit_code_protections(
     explicit_delete_protections: list[str] | None = None,
 ) -> set[str]:
-    """Return all explicitly protected units."""
+    """Return all explicitly protected units, universally including all local PT-BR sources."""
     base_list = (
         explicit_delete_protections
         if explicit_delete_protections is not None
         else get_explicit_delete_protections()
     )
-    return set(base_list) | set(EXPLICIT_LOCKED_UNITS)
+    pt_local = {u for u in get_all_source_units(None) if is_ptbr_unit(u)}
+    return set(base_list) | set(EXPLICIT_LOCKED_UNITS) | pt_local
+
 
 
 def get_nox_protected_units(base: str, upstream_ref: str) -> list[str]:
@@ -258,24 +340,45 @@ def classify_sync_units(
     """Separate normal updates/conflicts from true upstream source deletions."""
     upstream_set = set(upstream_units)
     main_set = set(main_units)
-    candidates = upstream_set | main_set
+    all_upstream = get_all_source_units(upstream_ref)
+    all_local = get_all_source_units("HEAD")
+
+    # Candidates unite diff units with full inventory
+    candidates = upstream_set | main_set | all_upstream | all_local
     historically_upstream = upstream_historical_units(upstream_ref)
     
-    # Deletions: existed upstream historically or in base, but missing from upstream_ref
+    explicitly_protected = get_explicit_code_protections(explicit_delete_protections)
+
+    # Missing foreign units that exist upstream but not locally:
+    missing_foreign = {
+        u for u in all_upstream
+        if not is_ptbr_unit(u) and not path_exists("HEAD", u)
+    }
+
+    # Divergent foreign units present in both whose contents differ:
+    divergent_foreign = set()
+    for u in all_upstream & all_local:
+        if is_ptbr_unit(u):
+            continue
+        diff = git("diff", "--name-only", "HEAD", upstream_ref, "--", u, check=False).strip()
+        if diff:
+            divergent_foreign.add(u)
+
+    # Deletions: present locally but missing from upstream_ref (existed in base or historically upstream)
     deleted = {
         unit for unit in candidates
         if unit.startswith("src/")
-        and (path_exists(base, unit) or unit in historically_upstream)
         and path_exists("HEAD", unit)
         and not path_exists(upstream_ref, unit)
+        and (path_exists(base, unit) or unit in historically_upstream or not is_nox_exclusive(unit, upstream_ref, base=base))
     }
+
     
-    explicitly_protected = get_explicit_code_protections(explicit_delete_protections)
     deleted_protected = sorted({
         u for u in deleted
-        if u in explicitly_protected or is_nox_exclusive(u, upstream_ref, base=base)
+        if u in explicitly_protected or is_ptbr_unit(u) or is_nox_exclusive(u, upstream_ref, base=base)
     })
-    deleted_remove = sorted(deleted - set(deleted_protected))
+    deleted_remove = sorted({u for u in deleted if not is_ptbr_unit(u) and u not in deleted_protected})
 
     protected_updates = {
         unit for unit in (upstream_set & explicitly_protected) - deleted
@@ -284,7 +387,7 @@ def classify_sync_units(
 
     # Conflicts: units with concurrent edits between base and HEAD
     conflicts = sorted(((upstream_set & main_set) | protected_updates) - deleted)
-    upstream_only = sorted(upstream_set - set(conflicts) - deleted)
+    upstream_only = sorted((set(upstream_units) | missing_foreign | divergent_foreign) - set(conflicts) - deleted - {u for u in candidates if is_ptbr_unit(u)})
     nox_only = sorted(main_set - upstream_set - deleted)
     return upstream_only, conflicts, nox_only, deleted_remove, deleted_protected
 
@@ -296,19 +399,46 @@ def pending_sync_units(
     base: str | None = None,
 ) -> list[str]:
     """Return HEAD/upstream differences which still need a sync attempt."""
-    protected = set(protected_units) | get_explicit_code_protections()
-    pending = []
+    all_upstream = get_all_source_units(upstream_ref)
+    all_local = get_all_source_units("HEAD")
+    explicit_protected = set(protected_units) | get_explicit_code_protections()
+
+    pending: set[str] = set()
+
+    # 1. Missing foreign units in local (added upstream)
+    for u in all_upstream - all_local:
+        if not is_ptbr_unit(u) and u not in explicit_protected:
+            pending.add(u)
+
+    # 2. Stale foreign units in local (removed upstream)
+    for u in all_local - all_upstream:
+        if not is_ptbr_unit(u) and u not in explicit_protected and not is_nox_exclusive(u, upstream_ref, base=base):
+            pending.add(u)
+
+    # 3. Divergent foreign units present in both
+    for u in all_upstream & all_local:
+        if is_ptbr_unit(u) or u in explicit_protected:
+            continue
+        diff = git("diff", "--name-only", "HEAD", upstream_ref, "--", u, check=False).strip()
+        if diff:
+            pending.add(u)
+
+    # 4. Standard diff units (including structural/libs)
     for unit in diff_units:
-        if unit in protected:
+        if is_ptbr_unit(unit):
+            continue
+        if unit in explicit_protected:
             continue
         if is_nox_exclusive(unit, upstream_ref, base=base):
             continue
         if not path_exists(upstream_ref, unit) and (
-            unit in protected or is_nox_exclusive(unit, upstream_ref, base=base)
+            unit in explicit_protected or is_nox_exclusive(unit, upstream_ref, base=base)
         ):
             continue
-        pending.append(unit)
-    return pending
+        pending.add(unit)
+
+    return sorted(pending)
+
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -501,8 +631,13 @@ def bump_version_if_needed(
 ) -> tuple[int, int, int, int, int, int, int] | None:
     """
     Ensure local version code and libVersion are monotonically ahead of upstream and deployed.
+    PT-BR units are strictly forbidden from being bumped or modified here.
     """
+    if is_ptbr_unit(unit):
+        return None
+
     local = pre_sync_effective if pre_sync_effective is not None else effective_version(None, unit)
+
     upstream = effective_version(upstream_ref, unit)
 
     if local is None and upstream is None:
@@ -592,6 +727,9 @@ def apply_units(
     deployed_codes = deployed_codes or {}
     base = git("merge-base", "HEAD", upstream_ref).strip()
 
+    # Pre-sync PT-BR snapshot to verify zero alterations
+    pre_ptbr_snapshot = get_ptbr_snapshot(None)
+
     pre_sync_effective: dict[str, tuple[int, int, int]] = {}
     pre_sync_lib: dict[str, int] = {}
     for unit in set(protected) | set(units_to_apply):
@@ -607,6 +745,9 @@ def apply_units(
     explicit_protection_set = deletion_protection_set | get_explicit_code_protections()
 
     for unit in units_to_apply:
+        if is_ptbr_unit(unit):
+            print(f"Preserving untouchable PT-BR unit: {unit}")
+            continue
         if unit in deletion_protection_set:
             print(f"Preserving explicitly protected upstream deletion: {unit}")
             continue
@@ -622,6 +763,9 @@ def apply_units(
             continue
 
         if unit in protected:
+            if is_ptbr_unit(unit):
+                print(f"Preserving untouchable PT-BR unit on conflict: {unit}")
+                continue
             # Explicitly protected unit with upstream changes
             up_lib = read_lib_version(upstream_ref, unit)
             loc_lib = pre_sync_lib.get(unit, 14)
@@ -647,10 +791,27 @@ def apply_units(
                     stale_gradle.unlink(missing_ok=True)
                     git("rm", "--cached", "--ignore-unmatch", "--quiet", "--", str(stale_gradle))
 
+    # Apply global structural updates from upstream (compiler, core, ext-bootstrap, DSL)
+    diff_globals = git("diff", "--name-only", "HEAD", upstream_ref, "--", "compiler", "core", "ext-bootstrap.py", "gradle/build-logic").splitlines()
+    if diff_globals:
+        for p in ["compiler", "core", "ext-bootstrap.py"]:
+            if path_exists(upstream_ref, p):
+                print(f"Applying global infrastructure update: {p}")
+                git("rm", "-r", "--ignore-unmatch", "--quiet", "--", p)
+                git("restore", f"--source={upstream_ref}", "--staged", "--worktree", "--", p)
+        # Apply updated build-logic DSL files while keeping PluginExtensionLegacy
+        for bl in [
+            "gradle/build-logic/src/main/kotlin/PluginExtension.kt",
+            "gradle/build-logic/src/main/kotlin/keiyoushi/gradle/extensions/BaseUrlSpec.kt",
+            "gradle/build-logic/src/main/kotlin/keiyoushi/gradle/extensions/KeiyoushiExtension.kt",
+        ]:
+            if path_exists(upstream_ref, bl):
+                print(f"Applying build-logic DSL update: {bl}")
+                git("restore", f"--source={upstream_ref}", "--staged", "--worktree", "--", bl)
+
     bumped: list[str] = []
     guard_units = sorted(
-        set(protected)
-        | {u for u in units_to_apply if u.startswith("src/") and u not in explicit_protection_set}
+        {u for u in units_to_apply if u.startswith("src/") and not is_ptbr_unit(u) and u not in explicit_protection_set}
     )
 
     for unit in guard_units:
@@ -684,6 +845,9 @@ def apply_units(
     SYNC_STATE_FILE.write_text(json.dumps(sync_state, indent=2) + "\n", encoding="utf-8")
     git("add", "--", str(SYNC_STATE_FILE))
 
+    # Verify PT-BR snapshot integrity: MUST be 100% byte-for-byte identical
+    verify_ptbr_unchanged(pre_ptbr_snapshot)
+
     git("diff", "--check")
 
     commit_msg = "Sync upstream"
@@ -691,6 +855,7 @@ def apply_units(
         commit_msg += "\n\nNox-wins version bumps:\n" + "\n".join(f"  - {b}" for b in bumped)
     git("commit", "-m", commit_msg)
     return bumped
+
 
 
 def write_step_summary(protected: list[str], bumped: list[str]) -> None:
@@ -816,10 +981,11 @@ def ensure_main_unchanged(start_main: str) -> None:
     git("fetch", "origin")
     current_main = git("rev-parse", "origin/main").strip()
     if current_main != start_main:
-        raise RuntimeError(
+        raise ConcurrencyRaceError(
             "origin/main advanced during sync; refusing to publish "
             f"over {start_main} (now {current_main})"
         )
+
 
 
 def publish_sync(upstream_ref: str, start_main: str) -> None:
@@ -849,7 +1015,9 @@ def main() -> None:
         print("Cannot use --dry-run and --push together", file=sys.stderr)
         sys.exit(1)
 
-    ensure_clean_tree()
+    if not args.dry_run:
+        ensure_clean_tree()
+
     ensure_upstream_remote()
 
     git("fetch", "origin")
@@ -888,10 +1056,10 @@ def main() -> None:
     diff_units, _ = collect_units(diff_entries)
     effective_diff = pending_sync_units(diff_units, protected, upstream_ref, base=base)
 
-    if not upstream_units and effective_diff:
-        print(f"Notice: Main tree is missing {len(effective_diff)} upstream updates. Proceeding with recovery sync.")
-        upstream_units = sorted(effective_diff)
-        upstream_only = [u for u in upstream_units if u not in conflict_set]
+    if effective_diff:
+        print(f"Notice: Main tree has {len(effective_diff)} pending inventory/upstream updates.")
+        upstream_units = sorted(set(upstream_units) | set(effective_diff))
+        upstream_only = sorted((set(upstream_only) | set(effective_diff)) - conflict_set - set(upstream_deleted) - set(protected_deletions) - {u for u in effective_diff if is_ptbr_unit(u)})
 
     indirect = detect_indirect_impacts(upstream_units)
 
@@ -942,7 +1110,11 @@ def main() -> None:
     if no_changes:
         print("No upstream changes to apply.")
         if args.push:
-            publish_sync(upstream_ref, start_main)
+            try:
+                publish_sync(upstream_ref, start_main)
+            except ConcurrencyRaceError as e:
+                print(f"Transient concurrency conflict: {e}", file=sys.stderr)
+                sys.exit(75)
         print_observability_footer("NO_CHANGES", "SKIPPED", "SKIPPED")
         return
 
@@ -952,7 +1124,7 @@ def main() -> None:
         return
 
     deployed_codes = fetch_deployed_version_codes()
-    units_to_apply = sorted(set(upstream_units) | set(upstream_deleted) | set(protected_deletions))
+    units_to_apply = sorted(set(upstream_units) | set(upstream_deleted) | set(protected_deletions) | set(effective_diff))
     bumped = apply_units(
         upstream_ref,
         units_to_apply,
@@ -963,8 +1135,13 @@ def main() -> None:
         deployed_codes=deployed_codes,
     )
     write_step_summary(protected, bumped)
-    publish_sync(upstream_ref, start_main)
+    try:
+        publish_sync(upstream_ref, start_main)
+    except ConcurrencyRaceError as e:
+        print(f"Transient concurrency conflict: {e}", file=sys.stderr)
+        sys.exit(75)
     print_observability_footer("SUCCESS", "SUCCESS", "TRIGGERED")
+
 
 
 if __name__ == "__main__":

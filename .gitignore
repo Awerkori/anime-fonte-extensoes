@@ -12,3 +12,11 @@ gen
 generated-src/
 .kotlin
 *.jks
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+

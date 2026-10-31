@@ -4,6 +4,9 @@ import json
 from pathlib import Path
 import shutil
 
+sys.dont_write_bytecode = True
+
+
 REMOTE_REPO: Path = Path.cwd()
 LOCAL_REPO: Path = REMOTE_REPO.parent.joinpath(sys.argv[2])
 
@@ -72,6 +75,9 @@ if existing_modules is not None and len(existing_modules) > 0:
         print(f"Removing stale modules not found in source tree: {sorted(stale_modules)}")
 
 to_delete = list((set(to_delete) | stale_modules) - skipped_downgrades)
+# Absolute protection: PT-BR modules are NEVER pruned or deleted from catalog
+to_delete = [m for m in to_delete if not m.startswith("pt.")]
+
 
 # Delete old files
 for module in to_delete:

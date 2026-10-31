@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+import sys
+sys.dont_write_bytecode = True
 """
 Project Nox Anime — Consistency Checker
 
@@ -93,7 +95,7 @@ def load_sync_module():
     return mod
 
 
-def check_consistency(check_pending: bool = False) -> int:
+def check_consistency(check_pending: bool = False, full_audit: bool = True) -> int:
     upstream_head = get_upstream_head()
     sync_head = get_sync_branch_head()
     sync_state = get_sync_state()
@@ -116,7 +118,11 @@ def check_consistency(check_pending: bool = False) -> int:
     # Check pending upstream differences via sync module logic
     upstream_ref = "upstream/master"
     sync_mod = load_sync_module()
+
+    # Full 1-by-1 Parity Audit
+    upstream_sources = set()
     if sync_mod:
+        upstream_sources = sync_mod.get_all_source_units(upstream_ref)
         base = sync_mod.git("merge-base", "HEAD", upstream_ref).strip()
         diff_entries = sync_mod.changed_entries("HEAD", upstream_ref)
         diff_units, _ = sync_mod.collect_units(diff_entries)
@@ -126,9 +132,37 @@ def check_consistency(check_pending: bool = False) -> int:
         protected = get_protected_units()
         pending_units = []
 
+    parity_by_status = {
+        "IN_SYNC": [],
+        "MISSING": [],
+        "OUTDATED": [],
+        "STALE": [],
+        "RENAMED": [],
+        "PUBLISH_PENDING": [],
+        "PROTECTED_PTBR": [],
+        "EXCEPTION": [],
+    }
+
+    all_audited_units = sorted(upstream_sources | local_modules | set(deployed_by_unit.keys()))
+    for u in all_audited_units:
+        if u.startswith("src/pt/") or u == "src/pt":
+            parity_by_status["PROTECTED_PTBR"].append(u)
+        elif u in upstream_sources and u not in local_modules:
+            parity_by_status["MISSING"].append(u)
+        elif u in local_modules and u not in upstream_sources:
+            parity_by_status["STALE"].append(u)
+        else:
+            diff = git("diff", "--name-only", "HEAD", upstream_ref, "--", u, check=False)
+            if diff:
+                parity_by_status["OUTDATED"].append(u)
+            elif u not in deployed_by_unit:
+                parity_by_status["PUBLISH_PENDING"].append(u)
+            else:
+                parity_by_status["IN_SYNC"].append(u)
+
     # Build Markdown summary
     lines = [
-        "## Project Nox Anime — Consistency & Synchronization Status\n",
+        "## Project Nox Anime — Consistency & Parity Status\n",
         "| Parameter | Value | Status |",
         "| :--- | :--- | :--- |",
         f"| **Upstream Master HEAD** | `{upstream_head[:8] if len(upstream_head)>=8 else upstream_head}` | Reference |",
@@ -138,14 +172,29 @@ def check_consistency(check_pending: bool = False) -> int:
         f"| **Local Source Extensions** | {len(local_modules)} modules | Active |",
         f"| **Deployed Catalog Extensions** | {len(deployed_items)} extensions | Distribution |",
         f"| **Pending Upstream Units** | {len(pending_units)} units | {'NEEDS_SYNC' if pending_units else 'IN_SYNC'} |",
-        f"| **Explicitly Protected Units** | {len(protected)} units | Protected |",
+        "",
+        "### 1-by-1 Upstream Parity Breakdown:\n",
+        "| Parity Status | Count | Description |",
+        "| :--- | :--- | :--- |",
+        f"| `IN_SYNC` | {len(parity_by_status['IN_SYNC'])} | Faithful 1-by-1 match with Yuzono & deployed in catalog |",
+        f"| `MISSING` | {len(parity_by_status['MISSING'])} | Present in Yuzono, missing locally in Nox |",
+        f"| `OUTDATED` | {len(parity_by_status['OUTDATED'])} | Foreign extensions with divergent code or pending bump |",
+        f"| `STALE` | {len(parity_by_status['STALE'])} | Removed in Yuzono, pending pruning from Nox |",
+        f"| `RENAMED` | {len(parity_by_status['RENAMED'])} | Transitioned/renamed upstream extensions |",
+        f"| `PUBLISH_PENDING` | {len(parity_by_status['PUBLISH_PENDING'])} | Code in sync locally, catalog publish pending |",
+        f"| `PROTECTED_PTBR` | {len(parity_by_status['PROTECTED_PTBR'])} | Untouchable Brazilian extensions |",
+        f"| `EXCEPTION` | {len(parity_by_status['EXCEPTION'])} | Documented audit exceptions |",
         "",
     ]
 
-    if pending_units:
-        lines.append(f"### Pending Upstream Units ({len(pending_units)}):\n")
-        lines.append(f"`{', '.join(pending_units[:30])}`" + (f" and {len(pending_units) - 30} more..." if len(pending_units) > 30 else ""))
-        lines.append("")
+    if parity_by_status["MISSING"]:
+        lines.append(f"**Missing Upstream Units to Import ({len(parity_by_status['MISSING'])}):** `{', '.join(parity_by_status['MISSING'])}`\n")
+    if parity_by_status["STALE"]:
+        lines.append(f"**Stale Foreign Units to Remove ({len(parity_by_status['STALE'])}):** `{', '.join(parity_by_status['STALE'])}`\n")
+    if parity_by_status["OUTDATED"]:
+        sample = parity_by_status["OUTDATED"][:20]
+        extra = f" and {len(parity_by_status['OUTDATED']) - 20} more..." if len(parity_by_status["OUTDATED"]) > 20 else ""
+        lines.append(f"**Outdated Foreign Units to Update ({len(parity_by_status['OUTDATED'])}):** `{', '.join(sample)}`{extra}\n")
 
     report = "\n".join(lines)
     print(report)
@@ -160,11 +209,18 @@ def check_consistency(check_pending: bool = False) -> int:
 
     if check_pending:
         # Exit code 2 indicates sync is needed
-        if pending_units or (upstream_head != sync_head and upstream_head != "UNKNOWN"):
+        if (
+            pending_units
+            or parity_by_status["MISSING"]
+            or parity_by_status["STALE"]
+            or parity_by_status["OUTDATED"]
+            or (upstream_head != sync_head and upstream_head != "UNKNOWN")
+        ):
             return 2
         return 0
 
     return 0
+
 
 
 def main() -> None:

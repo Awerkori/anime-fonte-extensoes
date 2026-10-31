@@ -39,10 +39,14 @@ class SyncDeletionTest(unittest.TestCase):
         self.old_cwd = Path.cwd()
         os.chdir(self.repo)
         self.add_source("src/tr/turkanime", 1)
+        self.add_source("src/en/conflict", 1)
+        self.add_source("src/en/mass_bump", 1)
+        self.add_source("src/en/custom_edit", 1)
         self.add_source("src/pt/conflict", 1)
         self.add_source("src/pt/mass_bump", 1)
         self.add_source("src/pt/custom_edit", 1)
         run("git", "add", ".", cwd=self.repo)
+
         run("git", "commit", "-m", "merge base", cwd=self.repo)
         self.base = run("git", "rev-parse", "HEAD", cwd=self.repo)
         run("git", "switch", "-c", "upstream", cwd=self.repo)
@@ -101,17 +105,27 @@ class SyncDeletionTest(unittest.TestCase):
 
     def test_upstream_delete_after_mass_bump_is_removed(self):
         upstream_ref, up, local = self.create_divergence(
-            lambda: shutil_rmtree(self.repo / "src/pt/mass_bump"),
-            lambda: (self.repo / "src/pt/mass_bump/build.gradle").write_text("extVersionCode = 56\n"),
+            lambda: shutil_rmtree(self.repo / "src/en/mass_bump"),
+            lambda: (self.repo / "src/en/mass_bump/build.gradle").write_text("extVersionCode = 56\n"),
         )
-        self.assertIn("src/pt/mass_bump", self.classify(upstream_ref, up, local)[3])
+        self.assertIn("src/en/mass_bump", self.classify(upstream_ref, up, local)[3])
 
     def test_upstream_delete_after_custom_edit_is_removed_by_default(self):
         upstream_ref, up, local = self.create_divergence(
-            lambda: shutil_rmtree(self.repo / "src/pt/custom_edit"),
-            lambda: (self.repo / "src/pt/custom_edit/build.gradle").write_text("Nox custom parser\n"),
+            lambda: shutil_rmtree(self.repo / "src/en/custom_edit"),
+            lambda: (self.repo / "src/en/custom_edit/build.gradle").write_text("Nox custom parser\n"),
         )
-        self.assertIn("src/pt/custom_edit", self.classify(upstream_ref, up, local)[3])
+        self.assertIn("src/en/custom_edit", self.classify(upstream_ref, up, local)[3])
+
+    def test_ptbr_upstream_delete_is_always_shielded(self):
+        upstream_ref, up, local = self.create_divergence(
+            lambda: shutil_rmtree(self.repo / "src/pt/mass_bump"),
+            lambda: (self.repo / "src/pt/mass_bump/build.gradle").write_text("extVersionCode = 56\n"),
+        )
+        res = self.classify(upstream_ref, up, local)
+        self.assertNotIn("src/pt/mass_bump", res[3], "PT-BR unit must NEVER be in deleted_remove")
+        self.assertIn("src/pt/mass_bump", res[4], "PT-BR unit must be shielded in deleted_protected")
+
 
     def test_explicit_delete_protection_keeps_source(self):
         upstream_ref, up, local = self.create_divergence(
@@ -350,24 +364,24 @@ class SyncDeletionTest(unittest.TestCase):
         # Nox has custom edit with versionCode 24 on lib 14
         # Upstream migrates to lib 16 with versionCode 18
         def upstream_migrate():
-            (self.repo / "src/pt/conflict/build.gradle").write_text(
+            (self.repo / "src/en/conflict/build.gradle").write_text(
                 "ext {\n    libVersion = 16\n    extVersionCode = 18\n}\n",
                 encoding="utf-8",
             )
-            (self.repo / "src/pt/conflict/UpstreamLib16.kt").write_text("package pt\nclass UpstreamLib16\n")
+            (self.repo / "src/en/conflict/UpstreamLib16.kt").write_text("package en\nclass UpstreamLib16\n")
 
         def nox_custom():
-            (self.repo / "src/pt/conflict/build.gradle").write_text(
+            (self.repo / "src/en/conflict/build.gradle").write_text(
                 "ext {\n    extVersionCode = 24\n}\n",
                 encoding="utf-8",
             )
-            (self.repo / "src/pt/conflict/NoxLegacy.kt").write_text("package pt\nclass NoxLegacy\n")
+            (self.repo / "src/en/conflict/NoxLegacy.kt").write_text("package en\nclass NoxLegacy\n")
 
         upstream_ref, up_units, main_units = self.create_divergence(upstream_migrate, nox_custom)
         upstream_only, conflicts, nox_only, deleted, protected_del = self.classify(
             upstream_ref, up_units, main_units
         )
-        self.assertIn("src/pt/conflict", conflicts)
+        self.assertIn("src/en/conflict", conflicts)
 
         bumped = sync.apply_units(
             upstream_ref,
@@ -378,22 +392,22 @@ class SyncDeletionTest(unittest.TestCase):
             protected_del,
         )
 
-        build_text = (self.repo / "src/pt/conflict/build.gradle").read_text(encoding="utf-8")
+        build_text = (self.repo / "src/en/conflict/build.gradle").read_text(encoding="utf-8")
         self.assertIn("libVersion = 16", build_text)
         self.assertIn("extVersionCode = 25", build_text)
-        self.assertTrue((self.repo / "src/pt/conflict/UpstreamLib16.kt").exists())
+        self.assertTrue((self.repo / "src/en/conflict/UpstreamLib16.kt").exists())
 
     def test_upstream_lib16_migration_when_upstream_eff_is_higher(self):
         # Nox was at 10 on lib 14
         # Upstream migrates to lib 16 with versionCode 21
         def upstream_migrate():
-            (self.repo / "src/pt/conflict/build.gradle").write_text(
+            (self.repo / "src/en/conflict/build.gradle").write_text(
                 "ext {\n    libVersion = 16\n    extVersionCode = 21\n}\n",
                 encoding="utf-8",
             )
 
         def nox_custom():
-            (self.repo / "src/pt/conflict/build.gradle").write_text(
+            (self.repo / "src/en/conflict/build.gradle").write_text(
                 "ext {\n    extVersionCode = 10\n}\n",
                 encoding="utf-8",
             )
@@ -411,9 +425,44 @@ class SyncDeletionTest(unittest.TestCase):
             protected_del,
         )
 
-        build_text = (self.repo / "src/pt/conflict/build.gradle").read_text(encoding="utf-8")
+        build_text = (self.repo / "src/en/conflict/build.gradle").read_text(encoding="utf-8")
         self.assertIn("libVersion = 16", build_text)
         self.assertIn("extVersionCode = 22", build_text)
+
+    def test_ptbr_universal_protection_blocks_lib_migration(self):
+        # Upstream attempts to migrate src/pt/conflict to lib 16 with higher versionCode
+        def upstream_migrate():
+            (self.repo / "src/pt/conflict/build.gradle").write_text(
+                "ext {\n    libVersion = 16\n    extVersionCode = 50\n}\n",
+                encoding="utf-8",
+            )
+            (self.repo / "src/pt/conflict/UpstreamCode.kt").write_text("class UpstreamCode\n")
+
+        def nox_custom():
+            (self.repo / "src/pt/conflict/build.gradle").write_text(
+                "ext {\n    libVersion = 14\n    extVersionCode = 10\n}\n",
+                encoding="utf-8",
+            )
+            (self.repo / "src/pt/conflict/NoxOriginal.kt").write_text("class NoxOriginal\n")
+
+        upstream_ref, up_units, main_units = self.create_divergence(upstream_migrate, nox_custom)
+        upstream_only, conflicts, nox_only, deleted, protected_del = self.classify(
+            upstream_ref, up_units, main_units
+        )
+        sync.apply_units(
+            upstream_ref,
+            sorted(set(up_units) | set(deleted) | set(protected_del)),
+            set(conflicts),
+            conflicts,
+            deleted,
+            protected_del,
+        )
+        build_text = (self.repo / "src/pt/conflict/build.gradle").read_text(encoding="utf-8")
+        self.assertIn("libVersion = 14", build_text)
+        self.assertIn("extVersionCode = 10", build_text)
+        self.assertTrue((self.repo / "src/pt/conflict/NoxOriginal.kt").exists())
+        self.assertFalse((self.repo / "src/pt/conflict/UpstreamCode.kt").exists())
+
 
     def _seed_real_darkmahou(self) -> dict[str, bytes]:
         import shutil

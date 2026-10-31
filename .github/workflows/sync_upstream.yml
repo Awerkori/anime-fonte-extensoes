@@ -35,6 +35,7 @@ jobs:
       contents: write
     env:
       GH_TOKEN: ${{ secrets.BOT_PAT }}
+      PYTHONDONTWRITEBYTECODE: "1"
     steps:
       - name: Checkout main branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -76,9 +77,12 @@ jobs:
           if [ "$CONSISTENCY_EXIT" -eq 2 ]; then
             echo "Pending upstream updates or divergences detected. Proceeding with sync."
             echo "has_changes=true" >> "$GITHUB_OUTPUT"
-          else
+          elif [ "$CONSISTENCY_EXIT" -eq 0 ]; then
             echo "All extensions are in sync with upstream."
             echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Consistency check failed with error code $CONSISTENCY_EXIT."
+            exit "$CONSISTENCY_EXIT"
           fi
 
       - name: Configure Git
@@ -99,23 +103,25 @@ jobs:
           MAX_ATTEMPTS=3
           for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
             echo "::group::Sync upstream — Tentativa $attempt de $MAX_ATTEMPTS"
-            if python .github/scripts/sync-upstream.py --push; then
-              echo "::endgroup::"
-              break
-            fi
+            set +e
+            python .github/scripts/sync-upstream.py --push
+            SYNC_EXIT=$?
+            set -e
             echo "::endgroup::"
-            if [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then
-              echo "Waiting 10s before retry..."
+            if [ "$SYNC_EXIT" -eq 0 ]; then
+              break
+            elif [ "$SYNC_EXIT" -eq 75 ] && [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then
+              echo "Transient concurrency race detected on push (exit code 75). Waiting 10s before retry..."
               sleep 10
               git fetch origin
             else
-              echo "::error::Sync upstream failed after $MAX_ATTEMPTS attempts."
-              exit 1
+              echo "::error::Sync upstream failed with deterministic/fatal exit code $SYNC_EXIT (attempt $attempt of $MAX_ATTEMPTS)."
+              exit "$SYNC_EXIT"
             fi
           done
 
       - name: Trigger next check (24/7 cloud pulse)
-        if: always() && !cancelled() && steps.guard.conclusion == 'success' && steps.guard.outputs.should_run_sync == 'true'
+        if: success() && steps.guard.conclusion == 'success' && steps.guard.outputs.should_run_sync == 'true'
         env:
           GITHUB_EVENT_NAME: ${{ github.event_name }}
           TRIGGER_SOURCE: ${{ github.event.inputs.trigger_source || 'manual' }}

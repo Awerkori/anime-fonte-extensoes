@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+import sys
+sys.dont_write_bytecode = True
 """
 pulse_guard.py - Project Nox 24/7 Cloud Pulse & Anti-Duplication Watchdog Guard (Fail-Closed).
 
