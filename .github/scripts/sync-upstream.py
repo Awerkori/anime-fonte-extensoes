@@ -122,6 +122,7 @@ def is_preserved(path: str) -> bool:
     if path.lower().startswith("readme"):
         return True
     if path in {
+        ".gitignore",
         "gradle/build-logic",
         "gradle/build-logic/build.gradle.kts",
         "gradle/build-logic/src/main/kotlin/PluginExtensionLegacy.kt",
@@ -200,7 +201,7 @@ def get_all_source_units(ref: str | None = None) -> set[str]:
 
 
 def sync_unit(path: str) -> str | None:
-    """Normalize a file path to its semantic sync unit."""
+    """Normalize a file path to its semantic sync unit (src/<lang>/<name>, lib/<name>, lib-multisrc/<theme>)."""
     if is_preserved(path):
         return None
     parts = path.split("/")
@@ -208,7 +209,7 @@ def sync_unit(path: str) -> str | None:
         return "/".join(parts[:3])
     if len(parts) >= 2 and parts[0] in {"lib", "lib-multisrc"}:
         return "/".join(parts[:2])
-    return path
+    return None
 
 
 def changed_entries(base: str, ref: str) -> list[tuple[str, list[str]]]:
@@ -756,7 +757,7 @@ def apply_units(
             continue
         if unit in deleted_set:
             print(f"Removing upstream-deleted unit: {unit}")
-            git("rm", "-r", "--ignore-unmatch", "--quiet", "--", unit)
+            git("rm", "-rf", "--ignore-unmatch", "--quiet", "--", unit)
             continue
         if is_nox_exclusive(unit, upstream_ref, base=base):
             print(f"Preserving Nox-exclusive unit: {unit}")
@@ -771,7 +772,7 @@ def apply_units(
             loc_lib = pre_sync_lib.get(unit, 14)
             if up_lib > loc_lib:
                 print(f"Applying upstream structural lib migration {loc_lib} -> {up_lib} for {unit}")
-                git("rm", "-r", "--ignore-unmatch", "--quiet", "--", unit)
+                git("rm", "-rf", "--ignore-unmatch", "--quiet", "--", unit)
                 if path_exists(upstream_ref, unit):
                     git("restore", f"--source={upstream_ref}", "--staged", "--worktree", "--", unit)
             else:
@@ -780,7 +781,7 @@ def apply_units(
         else:
             # Common upstream unit (or structural theme)
             print(f"Applying {unit}")
-            git("rm", "-r", "--ignore-unmatch", "--quiet", "--", unit)
+            git("rm", "-rf", "--ignore-unmatch", "--quiet", "--", unit)
             if path_exists(upstream_ref, unit):
                 git("restore", f"--source={upstream_ref}", "--staged", "--worktree", "--", unit)
 
@@ -789,23 +790,23 @@ def apply_units(
                 stale_gradle = Path(f"{unit}/build.gradle")
                 if stale_gradle.exists():
                     stale_gradle.unlink(missing_ok=True)
-                    git("rm", "--cached", "--ignore-unmatch", "--quiet", "--", str(stale_gradle))
+                    git("rm", "-f", "--cached", "--ignore-unmatch", "--quiet", "--", str(stale_gradle))
 
     # Apply global structural updates from upstream (compiler, core, ext-bootstrap, DSL)
-    diff_globals = git("diff", "--name-only", "HEAD", upstream_ref, "--", "compiler", "core", "ext-bootstrap.py", "gradle/build-logic").splitlines()
-    if diff_globals:
-        for p in ["compiler", "core", "ext-bootstrap.py"]:
-            if path_exists(upstream_ref, p):
+    for p in ["compiler", "core", "ext-bootstrap.py"]:
+        if path_exists(upstream_ref, p):
+            if git("diff", "--name-only", "HEAD", upstream_ref, "--", p).strip():
                 print(f"Applying global infrastructure update: {p}")
-                git("rm", "-r", "--ignore-unmatch", "--quiet", "--", p)
+                git("rm", "-rf", "--ignore-unmatch", "--quiet", "--", p)
                 git("restore", f"--source={upstream_ref}", "--staged", "--worktree", "--", p)
-        # Apply updated build-logic DSL files while keeping PluginExtensionLegacy
-        for bl in [
-            "gradle/build-logic/src/main/kotlin/PluginExtension.kt",
-            "gradle/build-logic/src/main/kotlin/keiyoushi/gradle/extensions/BaseUrlSpec.kt",
-            "gradle/build-logic/src/main/kotlin/keiyoushi/gradle/extensions/KeiyoushiExtension.kt",
-        ]:
-            if path_exists(upstream_ref, bl):
+
+    for bl in [
+        "gradle/build-logic/src/main/kotlin/PluginExtension.kt",
+        "gradle/build-logic/src/main/kotlin/keiyoushi/gradle/extensions/BaseUrlSpec.kt",
+        "gradle/build-logic/src/main/kotlin/keiyoushi/gradle/extensions/KeiyoushiExtension.kt",
+    ]:
+        if path_exists(upstream_ref, bl):
+            if git("diff", "--name-only", "HEAD", upstream_ref, "--", bl).strip():
                 print(f"Applying build-logic DSL update: {bl}")
                 git("restore", f"--source={upstream_ref}", "--staged", "--worktree", "--", bl)
 
