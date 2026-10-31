@@ -4,7 +4,7 @@ plugins {
 
 yuzono {
     name = "AV1Encodes"
-    versionCode = 5
+    versionCode = 6
     contentWarning = ContentWarning.SAFE
     libVersion = "16"
 

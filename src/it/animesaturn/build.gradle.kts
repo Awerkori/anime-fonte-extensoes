@@ -4,7 +4,7 @@ plugins {
 
 yuzono {
     name = "Anime Saturn"
-    versionCode = 19
+    versionCode = 20
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 
