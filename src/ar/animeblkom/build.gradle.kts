@@ -4,7 +4,7 @@ plugins {
 
 yuzono {
     name = "Anime Blkom"
-    versionCode = 36
+    versionCode = 37
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

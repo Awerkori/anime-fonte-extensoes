@@ -1,6 +1,6 @@
 {
-  "upstream_sha": "f678146a013f610bc901d850d17672a1e5439974",
+  "upstream_sha": "f0dbffc94d5ab789b44279848e55b1a2f98de119",
   "upstream_branch": "master",
-  "synced_at": "2026-10-31T23:32:20.528926+00:00",
-  "base_sha": "a73c84c97ba149b9f65ff34e5750293394e8e2af"
+  "synced_at": "2026-11-01T15:53:37.837455+00:00",
+  "base_sha": "f678146a013f610bc901d850d17672a1e5439974"
 }
