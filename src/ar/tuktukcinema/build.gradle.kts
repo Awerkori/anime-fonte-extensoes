@@ -4,7 +4,7 @@ plugins {
 
 yuzono {
     name = "Tuktuk Cinema"
-    versionCode = 17
+    versionCode = 18
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

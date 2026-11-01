@@ -4,7 +4,7 @@ plugins {
 
 yuzono {
     name = "HDRezka"
-    versionCode = 4
+    versionCode = 5
     contentWarning = ContentWarning.SAFE
     libVersion = "16"
 
