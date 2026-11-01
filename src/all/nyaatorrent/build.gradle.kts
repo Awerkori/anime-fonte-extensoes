@@ -4,7 +4,7 @@ plugins {
 
 yuzono {
     name = "Nyaa (Torrent)"
-    versionCode = 9
+    versionCode = 10
     contentWarning = ContentWarning.NSFW
     libVersion = "14"
     torrent = true

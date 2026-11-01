@@ -4,7 +4,7 @@ plugins {
 
 yuzono {
     name = "Stremio"
-    versionCode = 17
+    versionCode = 18
     contentWarning = ContentWarning.SAFE
     libVersion = "16"
     torrent = true

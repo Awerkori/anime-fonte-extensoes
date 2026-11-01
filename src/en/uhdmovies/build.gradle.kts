@@ -4,7 +4,7 @@ plugins {
 
 yuzono {
     name = "UHD Movies"
-    versionCode = 23
+    versionCode = 24
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

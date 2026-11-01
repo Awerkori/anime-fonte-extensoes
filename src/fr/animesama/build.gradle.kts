@@ -4,7 +4,7 @@ plugins {
 
 yuzono {
     name = "Anime-Sama"
-    versionCode = 40
+    versionCode = 41
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 
