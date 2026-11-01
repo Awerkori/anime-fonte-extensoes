@@ -4,7 +4,7 @@ plugins {
 
 yuzono {
     name = "Animelib"
-    versionCode = 26
+    versionCode = 18
     contentWarning = ContentWarning.NSFW
     libVersion = "14"
 

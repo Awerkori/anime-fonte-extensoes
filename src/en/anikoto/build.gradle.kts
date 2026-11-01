@@ -4,7 +4,7 @@ plugins {
 
 yuzono {
     name = "Anikoto"
-    versionCode = 6
+    versionCode = 0
     contentWarning = ContentWarning.SAFE
     libVersion = "16"
     theme = "anikototheme"
