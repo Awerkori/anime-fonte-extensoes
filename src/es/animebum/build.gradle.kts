@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "AnimeBum"
-    versionCode = 30
+    versionCode = 22
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

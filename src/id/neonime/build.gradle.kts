@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "NeoNime"
-    versionCode = 34
+    versionCode = 27
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

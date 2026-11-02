@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "Xfani"
-    versionCode = 9
+    versionCode = 8
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

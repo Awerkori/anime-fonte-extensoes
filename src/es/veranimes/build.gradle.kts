@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "VerAnimes"
-    versionCode = 33
+    versionCode = 26
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

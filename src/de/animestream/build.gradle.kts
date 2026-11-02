@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "Anime-Stream"
-    versionCode = 3
+    versionCode = 2
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

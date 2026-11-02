@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "Oppai Stream"
-    versionCode = 9
+    versionCode = 7
     contentWarning = ContentWarning.NSFW
     libVersion = "16"
 

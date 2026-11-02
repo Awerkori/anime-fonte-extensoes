@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "Cycity"
-    versionCode = 4
+    versionCode = 3
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

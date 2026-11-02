@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "YFantasy"
-    versionCode = 4
+    versionCode = 3
     contentWarning = ContentWarning.NSFW
     libVersion = "16"
 

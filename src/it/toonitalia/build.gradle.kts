@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "Toonitalia"
-    versionCode = 44
+    versionCode = 38
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

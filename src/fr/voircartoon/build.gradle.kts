@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "VoirCartoon"
-    versionCode = 21
+    versionCode = 16
     contentWarning = ContentWarning.NSFW
     libVersion = "14"
     theme = "dooplay"

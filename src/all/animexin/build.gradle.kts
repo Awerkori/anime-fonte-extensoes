@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "AnimeXin"
-    versionCode = 29
+    versionCode = 24
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
     theme = "animestream"

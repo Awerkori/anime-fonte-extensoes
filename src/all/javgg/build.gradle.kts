@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "JavGG"
-    versionCode = 28
+    versionCode = 22
     contentWarning = ContentWarning.NSFW
     libVersion = "14"
 

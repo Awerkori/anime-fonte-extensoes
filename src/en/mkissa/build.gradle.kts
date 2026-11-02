@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "MKissa"
-    versionCode = 82
+    versionCode = 74
     contentWarning = ContentWarning.NSFW
     libVersion = "16"
 

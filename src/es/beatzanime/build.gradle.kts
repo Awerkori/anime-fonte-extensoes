@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "BeatZ Anime"
-    versionCode = 4
+    versionCode = 3
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "Jable"
-    versionCode = 3
+    versionCode = 2
     contentWarning = ContentWarning.NSFW
     libVersion = "14"
 

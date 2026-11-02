@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "Voiranime"
-    versionCode = 8
+    versionCode = 3
     contentWarning = ContentWarning.NSFW
     libVersion = "14"
 

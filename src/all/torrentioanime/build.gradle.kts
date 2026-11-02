@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "Torrentio Anime (Torrent / Debrid)"
-    versionCode = 25
+    versionCode = 24
     contentWarning = ContentWarning.SAFE
     libVersion = "16"
     torrent = true

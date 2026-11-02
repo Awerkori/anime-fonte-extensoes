@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "OtakuDesu"
-    versionCode = 50
+    versionCode = 44
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

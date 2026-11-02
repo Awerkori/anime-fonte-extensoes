@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "Samehadaku"
-    versionCode = 12
+    versionCode = 10
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

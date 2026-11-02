@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "HexaWatch"
-    versionCode = 14
+    versionCode = 8
     contentWarning = ContentWarning.NSFW
     libVersion = "16"
 

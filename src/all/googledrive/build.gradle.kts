@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "Google Drive"
-    versionCode = 23
+    versionCode = 18
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

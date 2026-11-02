@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "Zonaleros"
-    versionCode = 28
+    versionCode = 20
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

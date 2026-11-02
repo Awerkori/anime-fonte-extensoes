@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "AnimeVostFr"
-    versionCode = 3
+    versionCode = 2
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

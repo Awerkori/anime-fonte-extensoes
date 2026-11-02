@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "AniPlay"
-    versionCode = 28
+    versionCode = 23
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

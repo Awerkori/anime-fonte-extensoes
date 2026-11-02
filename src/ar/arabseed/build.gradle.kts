@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "Arab Seed"
-    versionCode = 38
+    versionCode = 32
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

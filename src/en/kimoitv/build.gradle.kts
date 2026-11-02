@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "KimoiTV"
-    versionCode = 2
+    versionCode = 1
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

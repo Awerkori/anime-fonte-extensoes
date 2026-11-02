@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "AsiaFlix"
-    versionCode = 39
+    versionCode = 33
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

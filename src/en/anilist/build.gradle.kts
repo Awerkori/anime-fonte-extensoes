@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "AniList"
-    versionCode = 16
+    versionCode = 15
     contentWarning = ContentWarning.SAFE
     libVersion = "16"
 

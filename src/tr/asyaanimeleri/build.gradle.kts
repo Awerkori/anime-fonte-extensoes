@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "AsyaAnimeleri"
-    versionCode = 25
+    versionCode = 19
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
     theme = "animestream"

@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "Gnula"
-    versionCode = 61
+    versionCode = 52
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

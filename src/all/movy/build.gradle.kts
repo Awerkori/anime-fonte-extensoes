@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "Movy"
-    versionCode = 5
+    versionCode = 3
     contentWarning = ContentWarning.NSFW
     libVersion = "16"
 

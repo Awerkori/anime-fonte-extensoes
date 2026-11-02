@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "Cuevana3Ch"
-    versionCode = 72
+    versionCode = 67
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

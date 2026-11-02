@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "Hentai Torrent (Torrent)"
-    versionCode = 6
+    versionCode = 5
     contentWarning = ContentWarning.NSFW
     libVersion = "14"
     torrent = true
