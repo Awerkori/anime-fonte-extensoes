@@ -1,10 +1,12 @@
+import io.github.keiyoushi.gradle.api.ContentWarning
+
 plugins {
     alias(kei.plugins.extension)
 }
 
 yuzono {
     name = "Re:ANIME"
-    versionCode = 14
+    versionCode = 20
     contentWarning = ContentWarning.MIXED
     libVersion = "16"
 

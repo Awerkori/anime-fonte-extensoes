@@ -1,10 +1,12 @@
+import io.github.keiyoushi.gradle.api.ContentWarning
+
 plugins {
     alias(kei.plugins.extension)
 }
 
 yuzono {
     name = "FRAnime"
-    versionCode = 29
+    versionCode = 35
     contentWarning = ContentWarning.NSFW
     libVersion = "14"
 

@@ -1,10 +1,12 @@
+import io.github.keiyoushi.gradle.api.ContentWarning
+
 plugins {
     alias(kei.plugins.extension)
 }
 
 yuzono {
     name = "Nyaa (Torrent)"
-    versionCode = 5
+    versionCode = 10
     contentWarning = ContentWarning.NSFW
     libVersion = "14"
     torrent = true

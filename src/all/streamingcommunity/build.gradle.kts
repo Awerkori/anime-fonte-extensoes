@@ -1,10 +1,12 @@
+import io.github.keiyoushi.gradle.api.ContentWarning
+
 plugins {
     alias(kei.plugins.extension)
 }
 
 yuzono {
     name = "StreamingCommunity"
-    versionCode = 24
+    versionCode = 31
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

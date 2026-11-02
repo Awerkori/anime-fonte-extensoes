@@ -1,10 +1,12 @@
+import io.github.keiyoushi.gradle.api.ContentWarning
+
 plugins {
     alias(kei.plugins.extension)
 }
 
 yuzono {
     name = "Wiflix"
-    versionCode = 30
+    versionCode = 38
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
     theme = "datalifeengine"

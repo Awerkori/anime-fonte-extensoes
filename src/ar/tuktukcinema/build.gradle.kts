@@ -1,10 +1,12 @@
+import io.github.keiyoushi.gradle.api.ContentWarning
+
 plugins {
     alias(kei.plugins.extension)
 }
 
 yuzono {
     name = "Tuktuk Cinema"
-    versionCode = 11
+    versionCode = 19
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

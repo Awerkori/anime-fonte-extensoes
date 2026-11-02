@@ -1,10 +1,12 @@
+import io.github.keiyoushi.gradle.api.ContentWarning
+
 plugins {
     alias(kei.plugins.extension)
 }
 
 yuzono {
     name = "AnimeKhor"
-    versionCode = 22
+    versionCode = 27
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
     theme = "animestream"
