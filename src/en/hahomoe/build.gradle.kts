@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "haho.moe"
-    versionCode = 12
+    versionCode = 11
     contentWarning = ContentWarning.NSFW
     libVersion = "16"
 
