@@ -122,8 +122,10 @@ jobs:
 
       - name: Trigger next check (24/7 cloud pulse)
         if: success() && steps.guard.conclusion == 'success' && steps.guard.outputs.should_run_sync == 'true'
+        continue-on-error: true
         env:
           GITHUB_EVENT_NAME: ${{ github.event_name }}
           TRIGGER_SOURCE: ${{ github.event.inputs.trigger_source || 'manual' }}
           CURRENT_RUN_ID: ${{ github.run_id }}
-        run: python .github/scripts/pulse_guard.py pulse-dispatch --sleep-seconds 300
+          HAS_CHANGES: ${{ steps.check_upstream.outputs.has_changes }}
+        run: python .github/scripts/pulse_guard.py pulse-dispatch --sleep-seconds 300 --only-on-changes

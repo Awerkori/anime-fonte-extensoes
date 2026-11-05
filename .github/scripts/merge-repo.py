@@ -109,16 +109,17 @@ for file in LOCAL_REPO.joinpath("icon").glob("*"):
     shutil.copy2(file, remote_icon_dir / file.name)
 
 
-# Build final index
-# 1. Keep remote items that are NOT in to_delete
-index = [
-    item for item in remote_index
-    if not any([item["pkg"].endswith(f".{module}") for module in to_delete])
-]
+# Build final index: map by package name to eliminate any duplicates
+index_by_pkg = {}
+for item in remote_index:
+    if not any(item["pkg"].endswith(f".{module}") for module in to_delete):
+        index_by_pkg[item["pkg"]] = item
 
-# 2. Add local items
-index.extend(local_index)
-index.sort(key=lambda x: x["pkg"])
+# Overwrite/insert with freshly built local items
+for item in local_index:
+    index_by_pkg[item["pkg"]] = item
+
+index = sorted(index_by_pkg.values(), key=lambda x: x["pkg"])
 
 # Garbage Collection: Remove any APK or Icon that is not in the final index
 valid_apks = {item["apk"] for item in index}

@@ -287,6 +287,25 @@ def cmd_pulse_dispatch(args: argparse.Namespace) -> int:
         return 0
 
     # Wait sleep interval before checking and dispatching
+    if getattr(args, "only_on_changes", False) is True:
+        has_changes = os.environ.get("HAS_CHANGES", "true").strip().lower()
+        if has_changes == "false":
+            print("[Pulse Guard] Standby mode: No upstream changes detected. Skipping pulse sleep & dispatch. Scheduled cron will handle next check.")
+            log_pulse_status(
+                pulse_mode=pulse_mode,
+                current_run_id=current_run_id,
+                active_run_check="OK",
+                active_run_check_attempts=0,
+                active_run_check_error=None,
+                other_active_runs="0",
+                next_pulse_required=False,
+                trigger_attempt="NONE",
+                trigger_result="SKIPPED_NO_CHANGES_CRON_STANDBY",
+                watchdog_restart=False,
+                watchdog_already_alive=False,
+            )
+            return 0
+
     if args.sleep_seconds > 0:
         print(f"[Pulse Guard] Waiting {args.sleep_seconds}s before checking and dispatching next pulse...")
         time.sleep(args.sleep_seconds)
@@ -407,6 +426,7 @@ def main() -> int:
     # pulse-dispatch command
     dispatch_parser = subparsers.add_parser("pulse-dispatch", help="Sleep and dispatch next pulse")
     dispatch_parser.add_argument("--sleep-seconds", type=int, default=300, help="Seconds to wait before dispatch")
+    dispatch_parser.add_argument("--only-on-changes", action="store_true", help="Only sleep and dispatch if changes occurred")
 
     args = parser.parse_args()
 

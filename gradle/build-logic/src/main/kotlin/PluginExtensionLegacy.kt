@@ -1,20 +1,19 @@
-import ContentWarning
 import com.android.build.api.dsl.ApplicationExtension
 import com.android.build.api.variant.ApplicationAndroidComponentsExtension
 import com.android.build.gradle.tasks.PackageAndroidArtifact
-import keiyoushi.gradle.extensions.DeeplinkFilter
-import keiyoushi.gradle.extensions.DeeplinkSpec
-import keiyoushi.gradle.extensions.KeiyoushiMultisrcExtension
-import keiyoushi.gradle.extensions.VALID_LIB_VERSIONS
-import keiyoushi.gradle.extensions.alias
-import keiyoushi.gradle.extensions.compileOnly
-import keiyoushi.gradle.extensions.implementation
-import keiyoushi.gradle.extensions.kei
-import keiyoushi.gradle.extensions.libs
-import keiyoushi.gradle.extensions.plugins
-import keiyoushi.gradle.tasks.GenerateExtensionManifestTask
-import keiyoushi.gradle.tasks.GenerateKeepRulesTask
-import keiyoushi.gradle.utils.assertWithoutFlag
+import io.github.keiyoushi.gradle.api.ContentWarning
+import io.github.keiyoushi.gradle.api.DeeplinkFilter
+import io.github.keiyoushi.gradle.api.dsl.ExtensionDeeplink
+import io.github.keiyoushi.gradle.api.dsl.KeiyoushiThemeExtension
+import io.github.keiyoushi.gradle.internal.VALID_LIB_VERSIONS
+import io.github.keiyoushi.gradle.internal.extensions.alias
+import io.github.keiyoushi.gradle.internal.extensions.compileOnly
+import io.github.keiyoushi.gradle.internal.extensions.implementation
+import io.github.keiyoushi.gradle.internal.extensions.kei
+import io.github.keiyoushi.gradle.internal.extensions.libs
+import io.github.keiyoushi.gradle.internal.extensions.plugins
+import io.github.keiyoushi.gradle.tasks.GenerateKeepRulesTask
+import io.github.keiyoushi.gradle.tasks.GenerateManifestTask
 import org.gradle.api.Plugin
 import org.gradle.api.Project
 import org.gradle.api.plugins.BasePluginExtension
@@ -43,7 +42,7 @@ class PluginExtensionLegacy : Plugin<Project> {
         if (theme != null) evaluationDependsOn(theme.path)
 
         val themeExtension = if (theme != null) {
-            theme.extensions.findByType(KeiyoushiMultisrcExtension::class.java)
+            theme.extensions.findByType(KeiyoushiThemeExtension::class.java)
         } else {
             null
         }
@@ -97,7 +96,7 @@ class PluginExtensionLegacy : Plugin<Project> {
             ContentWarning.SAFE
         }
 
-        val manifestTask = tasks.register<GenerateExtensionManifestTask>("generateExtensionManifest") {
+        val manifestTask = tasks.register<GenerateManifestTask>("generateExtensionManifest") {
             this.filters.set(deeplinkFilters)
             this.extensionName.set(extName)
             this.className.set(classNameValue)
@@ -187,7 +186,7 @@ class PluginExtensionLegacy : Plugin<Project> {
                 @Suppress("UnstableApiUsage")
                 val keepRules = variant.sources.keepRules
                 if (keepRules != null) {
-                    val task = tasks.register<GenerateKeepRulesTask>("generate${variantName}KeepRules") {
+                    val task = tasks.register<GenerateKeepRulesTask>("generate${variantNameKeepRulesTask(variantName)}") {
                         this.applicationId.set(variant.applicationId)
                         this.className.set(classNameValue)
                     }
@@ -225,9 +224,18 @@ class PluginExtensionLegacy : Plugin<Project> {
     }
 }
 
+private fun variantNameKeepRulesTask(variantName: String) = "${variantName}KeepRules"
+
+private inline fun assertWithoutFlag(value: Boolean, lazyMessage: () -> Any) {
+    if (!value) {
+        val message = lazyMessage()
+        throw AssertionError(message)
+    }
+}
+
 private fun extractHost(url: String): String? = url.split("://").getOrNull(1)?.split("/")?.first()?.takeIf { it.isNotEmpty() }
 
-private fun specsToFilters(specs: List<DeeplinkSpec>, defaultHosts: List<String>): List<DeeplinkFilter> = specs.mapNotNull { spec ->
+private fun specsToFilters(specs: List<ExtensionDeeplink>, defaultHosts: List<String>): List<DeeplinkFilter> = specs.mapNotNull { spec ->
     val hosts = spec.hosts.getOrElse(emptyList()).ifEmpty { defaultHosts }
     val paths = spec.pathPatterns.getOrElse(emptyList())
     if (paths.isNotEmpty() && hosts.isNotEmpty()) {

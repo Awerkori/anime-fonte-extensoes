@@ -123,9 +123,11 @@ def is_preserved(path: str) -> bool:
         return True
     if path in {
         ".gitignore",
-        "gradle/build-logic",
         "gradle/build-logic/build.gradle.kts",
         "gradle/build-logic/src/main/kotlin/PluginExtensionLegacy.kt",
+        "gradle/build-logic/src/main/kotlin/ContentWarningLegacy.kt",
+        "gradle/build-logic/src/main/kotlin/io/github/keiyoushi/gradle/api/dsl/BaseUrlConfig.kt",
+        "gradle/build-logic/src/main/kotlin/io/github/keiyoushi/gradle/api/dsl/ExtensionSource.kt",
         "gradle/kei.versions.toml",
         "settings.gradle.kts",
     }:

@@ -33,6 +33,7 @@ class TestPulseGuard(unittest.TestCase):
         os.environ.pop("TRIGGER_SOURCE", None)
         os.environ.pop("CURRENT_RUN_ID", None)
         os.environ.pop("GITHUB_RUN_ID", None)
+        os.environ.pop("HAS_CHANGES", None)
 
     def read_github_output(self):
         if not os.path.exists(self.output_file):
@@ -311,6 +312,24 @@ class TestPulseGuard(unittest.TestCase):
         self.assertEqual(ret, 1)
         self.assertIn("NEXT_PULSE_TRIGGER_ATTEMPT=3", stdout)
         self.assertIn("NEXT_PULSE_TRIGGER_RESULT=FAILED", stdout)
+
+    def test_pulse_dispatch_standby_when_no_changes(self):
+        os.environ["GITHUB_EVENT_NAME"] = "workflow_dispatch"
+        os.environ["TRIGGER_SOURCE"] = "heartbeat"
+        os.environ["HAS_CHANGES"] = "false"
+        args = MagicMock(
+            event_name=None, trigger_source=None, current_run_id="123", repo=None,
+            workflow="sync_upstream.yml", sleep_seconds=300, no_backoff=True, ref="main",
+            only_on_changes=True,
+        )
+
+        with patch("sys.stdout", new_callable=io.StringIO) as mock_stdout:
+            ret = pulse_guard.cmd_pulse_dispatch(args)
+            stdout = mock_stdout.getvalue()
+
+        self.assertEqual(ret, 0)
+        self.assertIn("NEXT_PULSE_TRIGGER_RESULT=SKIPPED_NO_CHANGES_CRON_STANDBY", stdout)
+        self.assertIn("Standby mode: No upstream changes detected", stdout)
 
 
 if __name__ == "__main__":
