@@ -231,3 +231,16 @@ jobs:
           curl -s "https://purge.jsdelivr.net/gh/Awerkori/anime-extensoes@repo/index.json" || true
           curl -s "https://purge.jsdelivr.net/gh/Awerkori/anime-extensoes@repo/index.min.json" || true
 
+      - name: Record publication step summary
+        if: steps.bootstrap-guard.outputs.skip_deploy != 'true'
+        run: |
+          if [ -n "$GITHUB_STEP_SUMMARY" ]; then
+            TOTAL_EXTS="$(jq '. | length' repo/index.min.json 2>/dev/null || echo 'N/A')"
+            echo "## Project Nox Anime — Distribution Publication Completed" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "- **Status:** Published to \`Awerkori/anime-extensoes@repo\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "- **Total Extensions Deployed:** \`$TOTAL_EXTS\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "- **CDN Purge:** Requested" >> "$GITHUB_STEP_SUMMARY"
+            echo "- **Commit:** \`$(git -C repo rev-parse --short HEAD)\`" >> "$GITHUB_STEP_SUMMARY"
+          fi
+

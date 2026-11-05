@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 sys.dont_write_bytecode = True
@@ -677,6 +678,55 @@ class SyncDeletionTest(unittest.TestCase):
         self.assertTrue(sync.is_preserved("settings.gradle.kts"))
         self.assertFalse(sync.is_preserved("src/en/anidb/build.gradle.kts"))
         self.assertFalse(sync.is_preserved("gradle/wrapper/gradle-wrapper.properties"))
+
+    def test_write_step_summary_formatting(self):
+        summary_path = self.repo / "test_summary.md"
+        with patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": str(summary_path)}):
+            sync.write_step_summary(
+                protected=["src/pt/anitube"],
+                bumped=["src/pt/anitube → 10"],
+                new_units=["src/en/shuttletv"],
+                updated_units=["src/en/animenosub"],
+                removed_units=["src/fr/anisama"],
+                sync_result="SUCCESS",
+            )
+        content = summary_path.read_text(encoding="utf-8")
+        self.assertIn("## Project Nox Anime — Upstream Sync Status: `SUCCESS`", content)
+        self.assertIn("### Added Extensions (1)", content)
+        self.assertIn("- `src/en/shuttletv` (imported from upstream)", content)
+        self.assertIn("### Updated Extensions (1)", content)
+        self.assertIn("- `src/en/animenosub`", content)
+        self.assertIn("### Removed Extensions (1)", content)
+        self.assertIn("- `src/fr/anisama` (removed upstream)", content)
+        self.assertIn("### Nox Protected Extensions", content)
+        self.assertIn("- `src/pt/anitube` — kept Nox code, bumped to `10`", content)
+
+    def test_apply_units_commit_message_includes_details(self):
+        self.add_source("src/en/tobeupdated", 1)
+        run("git", "add", "-A", cwd=self.repo)
+        run("git", "commit", "-m", "base commit", cwd=self.repo)
+        
+        upstream_ref = self.commit_upstream(
+            lambda: (self.repo / "src/en/tobeupdated/build.gradle").write_text("ext { extVersionCode = 2 }\n")
+        )
+        run("git", "switch", "main", cwd=self.repo)
+        
+        sync.apply_units(
+            upstream_ref,
+            ["src/en/tobeupdated"],
+            set(),
+            [],
+            [],
+            [],
+            new_units=["src/en/newext"],
+            updated_units=["src/en/tobeupdated"],
+            removed_units=["src/en/deadext"],
+        )
+        last_msg = run("git", "log", "-1", "--pretty=%B", cwd=self.repo)
+        self.assertIn("Sync upstream", last_msg)
+        self.assertIn("Added extensions:\n  - src/en/newext", last_msg)
+        self.assertIn("Updated extensions:\n  - src/en/tobeupdated", last_msg)
+        self.assertIn("Removed extensions:\n  - src/en/deadext", last_msg)
 
 
 

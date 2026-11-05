@@ -721,6 +721,9 @@ def apply_units(
     upstream_deleted: list[str],
     protected_deletions: list[str],
     deployed_codes: dict[str, int] | None = None,
+    new_units: list[str] | None = None,
+    updated_units: list[str] | None = None,
+    removed_units: list[str] | None = None,
 ) -> list[str]:
     """Apply upstream updates, preserves Nox-protected code, and guarantees version monotonicity."""
     deployed_codes = deployed_codes or {}
@@ -840,25 +843,62 @@ def apply_units(
     git("diff", "--check")
 
     commit_msg = "Sync upstream"
+    details = []
+    if new_units:
+        details.append("Added extensions:\n" + "\n".join(f"  - {u}" for u in sorted(new_units)))
+    if updated_units:
+        details.append("Updated extensions:\n" + "\n".join(f"  - {u}" for u in sorted(updated_units)))
+    if removed_units:
+        details.append("Removed extensions:\n" + "\n".join(f"  - {u}" for u in sorted(removed_units)))
     if bumped:
-        commit_msg += "\n\nNox-wins version bumps:\n" + "\n".join(f"  - {b}" for b in bumped)
+        details.append("Nox-wins version bumps:\n" + "\n".join(f"  - {b}" for b in bumped))
+    if details:
+        commit_msg += "\n\n" + "\n\n".join(details)
     git("commit", "-m", commit_msg)
     return bumped
 
 
 
-def write_step_summary(protected: list[str], bumped: list[str]) -> None:
+def write_step_summary(
+    protected: list[str],
+    bumped: list[str],
+    new_units: list[str] | None = None,
+    updated_units: list[str] | None = None,
+    removed_units: list[str] | None = None,
+    sync_result: str = "SUCCESS",
+) -> None:
     path = os.environ.get("GITHUB_STEP_SUMMARY")
-    if not path or not protected:
+    if not path:
         return
-    lines = ["\n## Nox-Wins Summary\n\n"]
-    for u in protected:
-        tag = next((b for b in bumped if b.startswith(u)), None)
-        if tag:
-            lines.append(f"- `{u}` — kept Nox code, bumped to `{tag.split('→')[1].strip()}`\n")
-        else:
-            lines.append(f"- `{u}` — kept Nox code, version already ahead\n")
-    with open(path, "a") as f:
+    new_units = new_units or []
+    updated_units = updated_units or []
+    removed_units = removed_units or []
+    lines = [f"\n## Project Nox Anime — Upstream Sync Status: `{sync_result}`\n\n"]
+    if new_units:
+        lines.append(f"### Added Extensions ({len(new_units)})\n\n")
+        for u in sorted(new_units):
+            lines.append(f"- `{u}` (imported from upstream)\n")
+        lines.append("\n")
+    if updated_units:
+        lines.append(f"### Updated Extensions ({len(updated_units)})\n\n")
+        for u in sorted(updated_units):
+            lines.append(f"- `{u}`\n")
+        lines.append("\n")
+    if removed_units:
+        lines.append(f"### Removed Extensions ({len(removed_units)})\n\n")
+        for u in sorted(removed_units):
+            lines.append(f"- `{u}` (removed upstream)\n")
+        lines.append("\n")
+    if protected:
+        lines.append("### Nox Protected Extensions\n\n")
+        for u in protected:
+            tag = next((b for b in bumped if b.startswith(u)), None)
+            if tag:
+                lines.append(f"- `{u}` — kept Nox code, bumped to `{tag.split('→')[1].strip()}`\n")
+            else:
+                lines.append(f"- `{u}` — kept Nox code, version already ahead\n")
+        lines.append("\n")
+    with open(path, "a", encoding="utf-8") as f:
         f.writelines(lines)
 
 
@@ -1122,8 +1162,18 @@ def main() -> None:
         upstream_deleted,
         protected_deletions,
         deployed_codes=deployed_codes,
+        new_units=new_units,
+        updated_units=updated_units,
+        removed_units=removed_units,
     )
-    write_step_summary(protected, bumped)
+    write_step_summary(
+        protected=protected,
+        bumped=bumped,
+        new_units=new_units,
+        updated_units=updated_units,
+        removed_units=removed_units,
+        sync_result="SUCCESS",
+    )
     try:
         publish_sync(upstream_ref, start_main)
     except ConcurrencyRaceError as e:

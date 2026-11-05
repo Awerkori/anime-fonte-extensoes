@@ -331,6 +331,52 @@ class TestPulseGuard(unittest.TestCase):
         self.assertIn("NEXT_PULSE_TRIGGER_RESULT=SKIPPED_NO_CHANGES_CRON_STANDBY", stdout)
         self.assertIn("Standby mode: No upstream changes detected", stdout)
 
+    @patch("pulse_guard.get_active_runs")
+    def test_watchdog_recovers_after_dispatch_failure(self, mock_active):
+        """When a prior pulse dispatch failed, the 15-min watchdog cron recovers cleanly."""
+        os.environ["GITHUB_EVENT_NAME"] = "schedule"
+        mock_active.return_value = ActiveRunsResult(status="OK", runs=[], attempts=1, error=None)
+        args = MagicMock(
+            event_name=None, trigger_source=None, current_run_id="888", repo=None,
+            workflow="sync_upstream.yml", no_backoff=True
+        )
+
+        with patch("sys.stdout", new_callable=io.StringIO) as mock_stdout:
+            ret = pulse_guard.cmd_watchdog_check(args)
+            stdout = mock_stdout.getvalue()
+
+        self.assertEqual(ret, 0)
+        outputs = self.read_github_output()
+        self.assertEqual(outputs.get("should_run_sync"), "true")
+        self.assertEqual(outputs.get("watchdog_restart"), "true")
+        self.assertEqual(outputs.get("watchdog_already_alive"), "false")
+        self.assertIn("Watchdog detected heartbeat is dead (0 active runs). Restarting pulse!", stdout)
+
+    @patch("pulse_guard.get_active_runs")
+    def test_watchdog_persists_failure_alert_on_repeated_api_error(self, mock_active):
+        """When GitHub API is persistent down/rate-limited, watchdog fails loudly (exit code 1) to trigger alert."""
+        os.environ["GITHUB_EVENT_NAME"] = "schedule"
+        mock_active.return_value = ActiveRunsResult(
+            status="FAILED", runs=[], attempts=3, error="HTTP 403: API rate limit exceeded"
+        )
+        args = MagicMock(
+            event_name=None, trigger_source=None, current_run_id="888", repo=None,
+            workflow="sync_upstream.yml", no_backoff=True
+        )
+
+        with patch("sys.stdout", new_callable=io.StringIO) as mock_stdout:
+            with patch("sys.stderr", new_callable=io.StringIO):
+                ret = pulse_guard.cmd_watchdog_check(args)
+            stdout = mock_stdout.getvalue()
+
+        self.assertEqual(ret, 1)
+        outputs = self.read_github_output()
+        self.assertEqual(outputs.get("should_run_sync"), "false")
+        self.assertEqual(outputs.get("watchdog_restart"), "false")
+        self.assertEqual(outputs.get("watchdog_active_state_unknown"), "true")
+        self.assertIn("ACTIVE_RUN_CHECK=FAILED", stdout)
+        self.assertIn("ACTIVE_RUN_CHECK_ERROR=HTTP 403: API rate limit exceeded", stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
