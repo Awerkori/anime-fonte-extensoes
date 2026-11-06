@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "Cinejoy"
-    versionCode = 5
+    versionCode = 6
     contentWarning = ContentWarning.MIXED
     libVersion = "16"
 
