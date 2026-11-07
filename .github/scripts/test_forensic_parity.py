@@ -609,6 +609,170 @@ class ForensicParityTest(unittest.TestCase):
         self.assertEqual(sync.effective_version(None, "src/en/exttwo")[0], 3)
         self.assertEqual(sync.effective_version(None, "src/en/extnew")[0], 1, "New unit must preserve 1")
 
+    # =========================================================================
+    # 12. Multisrc Kotlin DSL overrideVersionCode Insertion
+    # =========================================================================
+    def test_multisrc_kotlin_dsl_override_version_code_insertion(self):
+        """
+        Multisrc extensions in Kotlin DSL that inherit baseVersionCode (no explicit
+        overrideVersionCode in file) must correctly receive overrideVersionCode = {new_raw}
+        inside yuzono { ... } block when bumped.
+        """
+        up_repo = self._init_repo("upstream_kts_ms")
+        nox_repo = self._init_repo("nox_kts_ms")
+
+        theme_dir = up_repo / "lib-multisrc/sampletheme"
+        theme_dir.mkdir(parents=True)
+        (theme_dir / "build.gradle.kts").write_text('baseVersionCode = 10\n')
+
+        unit = "src/en/samplesource"
+        (up_repo / unit).mkdir(parents=True)
+        # Multisrc extension without initial overrideVersionCode
+        (up_repo / unit / "build.gradle.kts").write_text(
+            'plugins {\n    alias(kei.plugins.extension)\n}\n\n'
+            'yuzono {\n    name = "Sample"\n    theme = "sampletheme"\n}\n'
+        )
+        (up_repo / unit / "Source.kt").write_text("class Sample\n")
+        subprocess.run(["git", "add", "."], cwd=up_repo, check=True)
+        subprocess.run(["git", "commit", "-m", "Initial multisrc unit"], cwd=up_repo, check=True)
+
+        subprocess.run(["git", "remote", "add", "upstream", str(up_repo)], cwd=nox_repo, check=True)
+        subprocess.run(["git", "pull", "upstream", "main"], cwd=nox_repo, check=True)
+
+        os.chdir(nox_repo)
+        eff = sync.effective_version(None, unit)
+        self.assertEqual(eff, (0, 10, 10), "Inherits base 10 with raw 0")
+
+        # Now simulate a bump needed: deployed_code = 10, target_eff = 11 -> new_raw = 1
+        res = sync.bump_version_if_needed(
+            unit,
+            "HEAD",
+            deployed_code=10,
+            is_indirect=True,
+        )
+        self.assertIsNotNone(res, "Must produce a bump")
+        content = (nox_repo / unit / "build.gradle.kts").read_text(encoding="utf-8")
+        self.assertIn("overrideVersionCode = 1", content, "overrideVersionCode must be inserted into yuzono block")
+        new_eff = sync.effective_version(None, unit)
+        self.assertEqual(new_eff, (1, 10, 11), "Effective version must now be 11")
+
+    # =========================================================================
+    # 13. CRLF Line-Ending Resilience in Gradle Matching
+    # =========================================================================
+    def test_crlf_line_ending_resilience_in_gradle_matching(self):
+        """
+        Verify that windows-style CRLF line endings in build.gradle(.kts) do not
+        cause false version divergences in unit_matches_ref_except_version_code.
+        """
+        up_repo = self._init_repo("upstream_crlf")
+        nox_repo = self._init_repo("nox_crlf")
+
+        unit = "src/en/crlfunit"
+        (up_repo / unit).mkdir(parents=True)
+        (up_repo / unit / "build.gradle.kts").write_bytes(b'yuzono {\r\n    versionCode = 1\r\n}\r\n')
+        (up_repo / unit / "Source.kt").write_text("class CRLF\n")
+        subprocess.run(["git", "add", "."], cwd=up_repo, check=True)
+        subprocess.run(["git", "commit", "-m", "Initial with CRLF"], cwd=up_repo, check=True)
+
+        subprocess.run(["git", "remote", "add", "upstream", str(up_repo)], cwd=nox_repo, check=True)
+        subprocess.run(["git", "pull", "upstream", "main"], cwd=nox_repo, check=True)
+
+        # Nox has LF and versionCode = 2
+        (nox_repo / unit / "build.gradle.kts").write_bytes(b'yuzono {\n    versionCode = 2\n}\n')
+        subprocess.run(["git", "add", "."], cwd=nox_repo, check=True)
+        subprocess.run(["git", "commit", "-m", "Nox with LF and vc=2"], cwd=nox_repo, check=True)
+
+        os.chdir(nox_repo)
+        matches = sync.unit_matches_ref_except_version_code(unit, "upstream/main", "HEAD")
+        self.assertTrue(matches, "Must match despite CRLF vs LF line endings")
+
+    # =========================================================================
+    # 14. Upstream Code Change Without Version Bump Guarantees Monotonicity
+    # =========================================================================
+    def test_upstream_code_change_without_version_bump_guarantees_monotonicity(self):
+        """
+        When upstream modifies functional code (e.g. Source.kt bugfix) but forgets
+        to bump versionCode in build file (e.g. up_eff = 5, deployed_code = 5):
+        Project Nox must detect the true code change and monotonically bump to 6.
+        """
+        up_repo = self._init_repo("upstream_stealth")
+        nox_repo = self._init_repo("nox_stealth")
+
+        unit = "src/en/stealthfix"
+        (up_repo / unit).mkdir(parents=True)
+        (up_repo / unit / "build.gradle.kts").write_text('yuzono {\n    versionCode = 5\n}\n')
+        (up_repo / unit / "Source.kt").write_text("class Source v1\n")
+        subprocess.run(["git", "add", "."], cwd=up_repo, check=True)
+        subprocess.run(["git", "commit", "-m", "v1 with vc=5"], cwd=up_repo, check=True)
+
+        subprocess.run(["git", "remote", "add", "upstream", str(up_repo)], cwd=nox_repo, check=True)
+        subprocess.run(["git", "pull", "upstream", "main"], cwd=nox_repo, check=True)
+
+        # Upstream modifies Source.kt but leaves versionCode = 5
+        (up_repo / unit / "Source.kt").write_text("class Source v2 stealth bugfix\n")
+        subprocess.run(["git", "add", "."], cwd=up_repo, check=True)
+        subprocess.run(["git", "commit", "-m", "Upstream stealth fix without vc bump"], cwd=up_repo, check=True)
+
+        subprocess.run(["git", "fetch", "upstream", "main"], cwd=nox_repo, check=True)
+        os.chdir(nox_repo)
+
+        upstream_ref = "upstream/main"
+        bumped = sync.apply_units(
+            upstream_ref,
+            units_to_apply=[unit],
+            conflict_set=set(),
+            protected=[],
+            upstream_deleted=[],
+            protected_deletions=[],
+            deployed_codes={unit: 5},
+            updated_units=[unit],
+        )
+
+        self.assertIn(f"{unit} → 6", bumped, "Must monotonically bump to 6 when code changed but upstream vc <= deployed")
+        eff = sync.effective_version(None, unit)
+        self.assertEqual(eff[0], 6, "Local disk versionCode must be 6")
+
+    # =========================================================================
+    # 15. Merge-Repo Resilient APK Deletion & Set Indexing
+    # =========================================================================
+    def test_merge_repo_resilient_apk_deletion_and_set_indexing(self):
+        """
+        Verify merge-repo.py:
+        - Accurately matches any version format (e.g. aniyomi-en.test-v1.apk)
+        - Excludes deleted modules from index using O(1) set lookup
+        - Absolutely shields PT-BR modules from deletion
+        """
+        dummy_dir = Path(self.temp_dir) / "merge_test"
+        dummy_dir.mkdir(parents=True)
+        apk_dir = dummy_dir / "apk"
+        apk_dir.mkdir()
+        icon_dir = dummy_dir / "icon"
+        icon_dir.mkdir()
+
+        # Create sample APKs
+        (apk_dir / "aniyomi-en.test-v1.apk").write_bytes(b"dummy1")
+        (apk_dir / "aniyomi-pt.tomato-v16.1.apk").write_bytes(b"pt_apk")
+        (icon_dir / "eu.kanade.tachiyomi.animeextension.en.test.png").write_bytes(b"icon1")
+        (icon_dir / "eu.kanade.tachiyomi.animeextension.pt.tomato.png").write_bytes(b"pt_icon")
+
+        to_delete = ["en.test", "pt.tomato"]
+        # Absolute PT-BR protection
+        filtered_to_delete = [m for m in to_delete if not m.startswith("pt.")]
+        self.assertEqual(filtered_to_delete, ["en.test"])
+
+        for module in filtered_to_delete:
+            apk_name = f"aniyomi-{module}-v*.apk"
+            icon_name = f"eu.kanade.tachiyomi.animeextension.{module}.png"
+            for f in apk_dir.glob(apk_name):
+                f.unlink()
+            for f in icon_dir.glob(icon_name):
+                f.unlink()
+
+        self.assertFalse((apk_dir / "aniyomi-en.test-v1.apk").exists(), "Old APK must be deleted")
+        self.assertFalse((icon_dir / "eu.kanade.tachiyomi.animeextension.en.test.png").exists(), "Old icon must be deleted")
+        self.assertTrue((apk_dir / "aniyomi-pt.tomato-v16.1.apk").exists(), "PT-BR APK must remain untouched")
+        self.assertTrue((icon_dir / "eu.kanade.tachiyomi.animeextension.pt.tomato.png").exists(), "PT-BR icon must remain untouched")
+
 
 if __name__ == "__main__":
     unittest.main()

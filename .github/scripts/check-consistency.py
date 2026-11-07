@@ -61,13 +61,31 @@ def get_protected_units() -> set[str]:
 
 
 def get_deployed_catalog() -> list[dict]:
-    try:
-        req = urllib.request.Request(DISTRIBUTION_INDEX_URL, headers={"User-Agent": "Nox-Consistency/1.0"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except Exception as e:
-        print(f"Warning: could not fetch distribution catalog ({e})")
-        return []
+    candidate_sources = [
+        ("url", DISTRIBUTION_INDEX_URL),
+        ("url", f"https://cdn.jsdelivr.net/gh/{DISTRIBUTION_REPO}@repo/index.min.json"),
+        ("file", str(Path(__file__).resolve().parents[3] / "anime-extensoes/index.min.json")),
+        ("file", str(Path(__file__).resolve().parents[2] / "../anime-extensoes/index.min.json")),
+    ]
+    for kind, target in candidate_sources:
+        try:
+            raw = None
+            if kind == "url":
+                req = urllib.request.Request(target, headers={"User-Agent": "Nox-Consistency/1.0"})
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    raw = resp.read().decode("utf-8")
+            elif kind == "file":
+                p = Path(target)
+                if p.is_file():
+                    raw = p.read_text(encoding="utf-8")
+            if raw:
+                data = json.loads(raw)
+                if isinstance(data, list) and len(data) > 0:
+                    return data
+        except Exception:
+            continue
+    print("Warning: could not fetch distribution catalog from any source")
+    return []
 
 
 def get_local_source_modules() -> set[str]:

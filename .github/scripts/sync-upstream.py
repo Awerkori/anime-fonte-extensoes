@@ -349,6 +349,7 @@ def upstream_historical_units(upstream_ref: str) -> set[str]:
     }
 
 
+
 def read_base_version_code(ref: str | None, theme: str) -> int:
     """Read baseVersionCode from lib-multisrc/<theme>/build.gradle.kts (or .gradle)."""
     for fn in ("build.gradle.kts", "build.gradle"):
@@ -376,8 +377,8 @@ def effective_version(ref: str | None, unit: str) -> tuple[int, int, int] | None
         theme = theme_match.group(1)
         vc_match = _KTS_VERSION_CODE_RE.search(content)
         if not vc_match:
-            return None
-        raw = int(vc_match.group(1))
+            vc_match = _EXT_VERSION_CODE_RE.search(content)
+        raw = int(vc_match.group(1)) if vc_match else 0
         base = read_base_version_code(ref, theme)
         return raw, base, raw + base
     else:
@@ -439,7 +440,8 @@ def unit_matches_ref_except_version_code(
         return False
 
     def normalize_gradle(text: str) -> str:
-        t = re.sub(r"(?:extVersionCode|overrideVersionCode|versionCode)\s*=\s*\d+", "versionCode = <VC>", text)
+        t = text.replace("\r\n", "\n")
+        t = re.sub(r"(?:extVersionCode|overrideVersionCode|versionCode)\s*=\s*\d+", "versionCode = <VC>", t)
         return t.strip()
 
     return normalize_gradle(ref_gradle) == normalize_gradle(loc_gradle)
@@ -722,57 +724,6 @@ def detect_indirect_impacts(upstream_units: list[str]) -> set[str]:
 # Versioning & Monotonic Version Guard
 # ──────────────────────────────────────────────────────────────────────────────
 
-def read_base_version_code(ref: str | None, theme: str) -> int:
-    """Read baseVersionCode from lib-multisrc/<theme>/build.gradle.kts (or .gradle)."""
-    for fn in ("build.gradle.kts", "build.gradle"):
-        content = read_file_at(ref, f"lib-multisrc/{theme}/{fn}")
-        if content:
-            m = _BASE_VERSION_CODE_RE.search(content)
-            if m:
-                return int(m.group(1))
-    return 0
-
-
-def effective_version(ref: str | None, unit: str) -> tuple[int, int, int] | None:
-    """
-    Returns (raw, base, effective) for an extension unit.
-    Works for both Groovy and Kotlin DSL.
-    """
-    content = read_file_at(ref, f"{unit}/build.gradle.kts")
-    if not content:
-        content = read_file_at(ref, f"{unit}/build.gradle")
-    if not content:
-        return None
-
-    theme_match = _THEME_RE.search(content)
-    if theme_match:
-        theme = theme_match.group(1)
-        vc_match = _KTS_VERSION_CODE_RE.search(content)
-        if not vc_match:
-            return None
-        raw = int(vc_match.group(1))
-        base = read_base_version_code(ref, theme)
-        return raw, base, raw + base
-    else:
-        vc_match = _KTS_VERSION_CODE_RE.search(content)
-        if not vc_match:
-            vc_match = _EXT_VERSION_CODE_RE.search(content)
-        if not vc_match:
-            return None
-        raw = int(vc_match.group(1))
-        return raw, 0, raw
-
-
-def read_lib_version(ref: str | None, unit: str) -> int:
-    """Read libVersion from extension build file. Defaults to 14 if omitted."""
-    for fn in ("build.gradle.kts", "build.gradle"):
-        content = read_file_at(ref, f"{unit}/{fn}")
-        if content:
-            m = _LIB_VERSION_RE.search(content)
-            if m:
-                return int(m.group(1))
-    return 14
-
 
 def fetch_deployed_version_codes() -> dict[str, int]:
     """Fetch currently deployed extension codes from distribution repo with multi-source fallback."""
@@ -925,6 +876,12 @@ def bump_version_if_needed(
         if target_eff > disk_eff:
             if re.search(r'(versionCode|overrideVersionCode)\s*=\s*\d+', text):
                 text = re.sub(r'(versionCode|overrideVersionCode)\s*=\s*\d+', rf'\g<1> = {new_raw}', text, count=1)
+            else:
+                marker = re.search(r"(?m)^(\s*)yuzono\s*\{", text)
+                if marker:
+                    indent = marker.group(1) + "    "
+                    field_name = "overrideVersionCode" if theme else "versionCode"
+                    text = text[:marker.end()] + f'\n{indent}{field_name} = {new_raw}' + text[marker.end():]
     else:
         if needs_disk_lib_write and target_lib > 14:
             if re.search(r"libVersion\s*=\s*\d+", text):

@@ -81,7 +81,7 @@ to_delete = [m for m in to_delete if not m.startswith("pt.")]
 
 # Delete old files
 for module in to_delete:
-    apk_name = f"aniyomi-{module}-v*.*.apk"
+    apk_name = f"aniyomi-{module}-v*.apk"
     icon_name = f"eu.kanade.tachiyomi.animeextension.{module}.png"
     for file in REMOTE_REPO.joinpath("apk").glob(apk_name):
         print(f"Removing old APK: {file.name}")
@@ -110,9 +110,10 @@ for file in LOCAL_REPO.joinpath("icon").glob("*"):
 
 
 # Build final index: map by package name to eliminate any duplicates
+to_delete_set = set(to_delete)
 index_by_pkg = {}
 for item in remote_index:
-    if not any(item["pkg"].endswith(f".{module}") for module in to_delete):
+    if pkg_to_module(item["pkg"]) not in to_delete_set:
         index_by_pkg[item["pkg"]] = item
 
 # Overwrite/insert with freshly built local items
