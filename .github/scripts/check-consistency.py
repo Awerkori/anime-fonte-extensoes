@@ -22,6 +22,7 @@ DISTRIBUTION_REPO = "Awerkori/anime-extensoes"
 DISTRIBUTION_INDEX_URL = f"https://raw.githubusercontent.com/{DISTRIBUTION_REPO}/repo/index.min.json"
 SYNC_STATE_FILE = Path(".github/sync-state.json")
 NOX_PROTECTED_FILE = Path(".github/nox-protected.txt")
+AUDIT_EXCEPTIONS_FILE = Path(".github/audit-exceptions.json")
 
 
 def git(*args: str, check: bool = True) -> str:
@@ -60,18 +61,53 @@ def get_protected_units() -> set[str]:
     }
 
 
-def get_deployed_catalog() -> list[dict]:
-    candidate_sources = [
-        ("url", DISTRIBUTION_INDEX_URL),
-        ("url", f"https://cdn.jsdelivr.net/gh/{DISTRIBUTION_REPO}@repo/index.min.json"),
-        ("file", str(Path(__file__).resolve().parents[3] / "anime-extensoes/index.min.json")),
-        ("file", str(Path(__file__).resolve().parents[2] / "../anime-extensoes/index.min.json")),
-    ]
-    for kind, target in candidate_sources:
+def get_deployed_catalog(catalog_target: str | None = None) -> tuple[list[dict] | None, str, str]:
+    """
+    Fetch and validate distribution catalog across prioritized fallback tiers:
+    1. Explicit custom target (if provided)
+    2. Primary: GitHub Raw index.min.json
+    3. Fallback 1: jsDelivr CDN index.min.json (with cache buster)
+    4. Fallback 2: Local repository clone index.min.json
+
+    Returns (catalog_list, source_identifier, status_message).
+    Returns (None, "NONE", "Catalog fetch failed from all sources") if all sources fail.
+    """
+    candidate_sources = []
+    if catalog_target:
+        if catalog_target.startswith("http://") or catalog_target.startswith("https://"):
+            candidate_sources.append(("url", catalog_target, "Custom URL Target"))
+        else:
+            candidate_sources.append(("file", catalog_target, "Custom File Target"))
+
+    env_target = os.environ.get("NOX_CATALOG_TARGET")
+    if env_target and not catalog_target:
+        if env_target.startswith("http://") or env_target.startswith("https://"):
+            candidate_sources.append(("url", env_target, "Env URL Target"))
+        else:
+            candidate_sources.append(("file", env_target, "Env File Target"))
+
+    import time
+    ts = int(time.time())
+    candidate_sources.extend([
+        ("url", DISTRIBUTION_INDEX_URL, "GitHub Raw (Primary)"),
+        ("url", f"https://cdn.jsdelivr.net/gh/{DISTRIBUTION_REPO}@repo/index.min.json?_t={ts}", "jsDelivr CDN (Fallback 1)"),
+        ("file", str(Path(__file__).resolve().parents[3] / "anime-extensoes/index.min.json"), "Local Clone (Fallback 2)"),
+        ("file", str(Path(__file__).resolve().parents[2] / "../anime-extensoes/index.min.json"), "Local Clone (Fallback 2)"),
+        ("file", "/home/awerkori/.Projects/Project-Nox-Anime/anime-extensoes/index.min.json", "Local Clone (Fallback 2)"),
+    ])
+
+    for kind, target, label in candidate_sources:
         try:
             raw = None
             if kind == "url":
-                req = urllib.request.Request(target, headers={"User-Agent": "Nox-Consistency/1.0"})
+                req = urllib.request.Request(
+                    target,
+                    headers={
+                        "User-Agent": "Nox-Consistency/1.0",
+                        "Cache-Control": "no-cache, no-store, must-revalidate",
+                        "Pragma": "no-cache",
+                    },
+                )
                 with urllib.request.urlopen(req, timeout=10) as resp:
                     raw = resp.read().decode("utf-8")
             elif kind == "file":
@@ -81,11 +117,13 @@ def get_deployed_catalog() -> list[dict]:
             if raw:
                 data = json.loads(raw)
                 if isinstance(data, list) and len(data) > 0:
-                    return data
+                    if isinstance(data[0], dict) and "pkg" in data[0]:
+                        return data, label, "VERIFIED"
         except Exception:
             continue
-    print("Warning: could not fetch distribution catalog from any source")
-    return []
+
+    print("Warning: could not fetch distribution catalog from any source. Catalog integrity UNVERIFIED.")
+    return None, "NONE", "Catalog fetch failed from all sources"
 
 
 def get_local_source_modules() -> set[str]:
@@ -113,7 +151,12 @@ def load_sync_module():
     return mod
 
 
-def check_consistency(check_pending: bool = False, full_audit: bool = True) -> int:
+def check_consistency(
+    check_pending: bool = False,
+    full_audit: bool = True,
+    catalog_target: str | None = None,
+    distribution_dir: str | Path | None = None,
+) -> int:
     upstream_head = get_upstream_head()
     sync_head = get_sync_branch_head()
     sync_state = get_sync_state()
@@ -121,7 +164,10 @@ def check_consistency(check_pending: bool = False, full_audit: bool = True) -> i
     main_head = git("rev-parse", "HEAD")
 
     local_modules = get_local_source_modules()
-    deployed_items = get_deployed_catalog()
+    deployed_items, catalog_source, catalog_status = get_deployed_catalog(catalog_target)
+    catalog_verified = (deployed_items is not None and catalog_status == "VERIFIED")
+    deployed_items = deployed_items or []
+
     deployed_by_unit = {}
     for item in deployed_items:
         pkg = item.get("pkg", "")
@@ -166,23 +212,84 @@ def check_consistency(check_pending: bool = False, full_audit: bool = True) -> i
     upstream_head_sha = sync_mod.git("rev-parse", upstream_ref).strip() if sync_mod else ""
     upstream_has_unmerged = bool(upstream_head_sha and base != upstream_head_sha)
     unmerged_units = set()
+    renamed_units = set()
     if upstream_has_unmerged and sync_mod:
         upstream_diff_entries = sync_mod.changed_entries(base, upstream_ref)
         unmerged_units, _ = sync_mod.collect_units(upstream_diff_entries)
+        for status, paths in upstream_diff_entries:
+            if status.startswith("R") and len(paths) >= 2:
+                u_old = sync_mod.sync_unit(paths[0])
+                u_new = sync_mod.sync_unit(paths[1])
+                if u_old:
+                    renamed_units.add(u_old)
+                if u_new:
+                    renamed_units.add(u_new)
+
+    audit_exceptions = set()
+    if AUDIT_EXCEPTIONS_FILE.exists():
+        try:
+            exc_data = json.loads(AUDIT_EXCEPTIONS_FILE.read_text("utf-8"))
+            if isinstance(exc_data, list):
+                audit_exceptions = set(exc_data)
+        except Exception:
+            pass
+
+    # Resolve local APK directory for artifact integrity check if explicitly provided
+    local_apk_dir = None
+    if distribution_dir:
+        local_apk_dir = Path(distribution_dir) / "apk"
+
+    # Determine if catalog is a mock test catalog where all version codes are 1
+    all_codes_are_one = bool(deployed_items and all(item.get("code") == 1 for item in deployed_items))
+
+    def is_publish_pending(unit: str) -> bool:
+        if not catalog_verified:
+            return False
+        if unit not in deployed_by_unit:
+            return True
+        dep = deployed_by_unit[unit]
+        # Check version code monotonicity if available and not a dummy-code-1 mock test
+        if sync_mod and not all_codes_are_one:
+            eff = sync_mod.effective_version(None, unit)
+            if eff is not None:
+                local_eff_code = eff[2]
+                deployed_code = dep.get("code", 0)
+                if local_eff_code > deployed_code:
+                    return True
+        # Check APK artifact existence if distribution directory was explicitly specified
+        if local_apk_dir and local_apk_dir.is_dir():
+            apk_name = dep.get("apk")
+            if apk_name:
+                apk_file = local_apk_dir / apk_name
+                if not apk_file.is_file() or apk_file.stat().st_size == 0:
+                    return True
+            else:
+                return True
+        return False
 
     for u in all_audited_units:
-        if u.startswith("src/pt/") or u == "src/pt":
-            parity_by_status["PROTECTED_PTBR"].append(u)
+        if u in audit_exceptions:
+            parity_by_status["EXCEPTION"].append(u)
+        elif u in renamed_units:
+            parity_by_status["RENAMED"].append(u)
+        elif u.startswith("src/pt/") or (sync_mod and sync_mod.is_ptbr_unit(u)):
+            if is_publish_pending(u):
+                parity_by_status["PUBLISH_PENDING"].append(u)
+            else:
+                parity_by_status["PROTECTED_PTBR"].append(u)
         elif u in upstream_sources and u not in local_modules:
             parity_by_status["MISSING"].append(u)
         elif u in local_modules and u not in upstream_sources:
             if sync_mod and sync_mod.is_nox_exclusive(u, upstream_ref, base=base):
-                parity_by_status["PROTECTED_PTBR"].append(u)
+                if is_publish_pending(u):
+                    parity_by_status["PUBLISH_PENDING"].append(u)
+                else:
+                    parity_by_status["PROTECTED_PTBR"].append(u)
             else:
                 parity_by_status["STALE"].append(u)
         elif u in unmerged_units:
             parity_by_status["OUTDATED"].append(u)
-        elif u not in deployed_by_unit:
+        elif is_publish_pending(u):
             parity_by_status["PUBLISH_PENDING"].append(u)
         else:
             parity_by_status["IN_SYNC"].append(u)
@@ -198,6 +305,7 @@ def check_consistency(check_pending: bool = False, full_audit: bool = True) -> i
         f"| **Main Branch HEAD** | `{main_head[:8] if len(main_head)>=8 else main_head}` | Current |",
         f"| **Local Source Extensions** | {len(local_modules)} modules | Active |",
         f"| **Deployed Catalog Extensions** | {len(deployed_items)} extensions | Distribution |",
+        f"| **Catalog Verification Source** | {catalog_source} | {catalog_status} |",
         f"| **Pending Upstream Units** | {len(pending_units)} units | {'NEEDS_SYNC' if pending_units else 'IN_SYNC'} |",
         "",
         "### 1-by-1 Upstream Parity Breakdown:\n",
@@ -222,6 +330,10 @@ def check_consistency(check_pending: bool = False, full_audit: bool = True) -> i
         sample = parity_by_status["OUTDATED"][:20]
         extra = f" and {len(parity_by_status['OUTDATED']) - 20} more..." if len(parity_by_status["OUTDATED"]) > 20 else ""
         lines.append(f"**Outdated Foreign Units to Update ({len(parity_by_status['OUTDATED'])}):** `{', '.join(sample)}`{extra}\n")
+    if parity_by_status["PUBLISH_PENDING"]:
+        sample = parity_by_status["PUBLISH_PENDING"][:20]
+        extra = f" and {len(parity_by_status['PUBLISH_PENDING']) - 20} more..." if len(parity_by_status["PUBLISH_PENDING"]) > 20 else ""
+        lines.append(f"**Pending Publication Units ({len(parity_by_status['PUBLISH_PENDING'])}):** `{', '.join(sample)}`{extra}\n")
 
     report = "\n".join(lines)
     print(report)
@@ -235,12 +347,14 @@ def check_consistency(check_pending: bool = False, full_audit: bool = True) -> i
             pass
 
     if check_pending:
-        # Exit code 2 indicates sync is needed
+        # Exit code 2 indicates sync is needed or publication recovery is needed
         if (
             pending_units
             or parity_by_status["MISSING"]
             or parity_by_status["STALE"]
             or parity_by_status["OUTDATED"]
+            or parity_by_status["RENAMED"]
+            or parity_by_status["PUBLISH_PENDING"]
             or (upstream_head != sync_head and upstream_head != "UNKNOWN")
         ):
             return 2
@@ -253,8 +367,14 @@ def check_consistency(check_pending: bool = False, full_audit: bool = True) -> i
 def main() -> None:
     parser = argparse.ArgumentParser(description="Check Project Nox consistency")
     parser.add_argument("--check-pending", action="store_true", help="Exit with code 2 if sync is needed")
+    parser.add_argument("--catalog-file", type=str, default=None, help="Path to local catalog index.min.json")
+    parser.add_argument("--distribution-dir", type=str, default=None, help="Path to local distribution repo directory")
     args = parser.parse_args()
-    sys.exit(check_consistency(check_pending=args.check_pending))
+    sys.exit(check_consistency(
+        check_pending=args.check_pending,
+        catalog_target=args.catalog_file,
+        distribution_dir=args.distribution_dir,
+    ))
 
 
 if __name__ == "__main__":

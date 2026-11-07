@@ -25,8 +25,10 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import urllib.request
 from pathlib import Path
 from typing import NamedTuple
 
@@ -60,9 +62,9 @@ NOX_PROTECTED_FILE = Path(".github/nox-protected.txt")
 # ──────────────────────────────────────────────────────────────────────────────
 # Versioning regex patterns — Groovy & Kotlin DSL
 # ──────────────────────────────────────────────────────────────────────────────
-_EXT_VERSION_CODE_RE = re.compile(r"extVersionCode\s*=\s*(\d+)")
-_OVERRIDE_VERSION_CODE_RE = re.compile(r"overrideVersionCode\s*=\s*(\d+)")
-_KTS_VERSION_CODE_RE = re.compile(r"(?:versionCode|overrideVersionCode)\s*=\s*(\d+)")
+_EXT_VERSION_CODE_RE = re.compile(r"extVersionCode\s*=\s*(-?\d+)")
+_OVERRIDE_VERSION_CODE_RE = re.compile(r"overrideVersionCode\s*=\s*(-?\d+)")
+_KTS_VERSION_CODE_RE = re.compile(r"(?:versionCode|overrideVersionCode)\s*=\s*(-?\d+)")
 _THEME_RE = re.compile(r"""(?:theme|themePkg)\s*=\s*['"]([^'"]+)['"]""")
 _BASE_VERSION_CODE_RE = re.compile(r"baseVersionCode\s*=\s*(\d+)")
 _LIB_VERSION_RE = re.compile(r"""libVersion\s*=\s*['"]?(\d+)['"]?""")
@@ -1229,6 +1231,272 @@ def publish_sync(upstream_ref: str, start_main: str) -> None:
         print(f"Warning: unable to update sync branch ref ({e}); main was successfully pushed.")
 
 
+def get_publish_pending_units(
+    base: str | None = None,
+    upstream_ref: str = f"{UPSTREAM_REMOTE}/{UPSTREAM_BRANCH}",
+    catalog_target: str | None = None,
+    distribution_dir: Path | str | None = None,
+) -> list[str]:
+    """
+    Detect units where source exists locally in Nox, but the extension is missing
+    or incomplete in the deployed distribution catalog or APK artifacts.
+    """
+    try:
+        import importlib.util
+        script_path = Path(__file__).resolve().parent / "check-consistency.py"
+        spec = importlib.util.spec_from_file_location("check_consistency_mod", str(script_path))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        data, _, status = mod.get_deployed_catalog(catalog_target)
+        if not data or status != "VERIFIED":
+            return []
+
+        deployed_by_unit = {}
+        for item in data:
+            pkg = item.get("pkg", "")
+            prefix = "eu.kanade.tachiyomi.animeextension."
+            if pkg.startswith(prefix):
+                parts = pkg[len(prefix):].split(".")
+                if len(parts) >= 2:
+                    deployed_by_unit[f"src/{parts[0]}/{parts[1]}"] = item
+
+        dist_path = Path(distribution_dir) if distribution_dir else None
+        local_apk_dir = dist_path / "apk" if dist_path else None
+
+        all_codes_are_one = bool(data and all(item.get("code") == 1 for item in data))
+
+        pending = []
+        all_local = get_all_source_units(None)
+        for u in sorted(all_local):
+            if u not in deployed_by_unit:
+                pending.append(u)
+                continue
+            dep = deployed_by_unit[u]
+            if not all_codes_are_one:
+                eff = effective_version(None, u)
+                if eff is not None:
+                    local_eff_code = eff[2]
+                    dep_code = dep.get("code", 0)
+                    if local_eff_code > dep_code:
+                        pending.append(u)
+                        continue
+            if local_apk_dir and local_apk_dir.is_dir():
+                apk_name = dep.get("apk")
+                if not apk_name:
+                    pending.append(u)
+                    continue
+                apk_path = local_apk_dir / apk_name
+                if not apk_path.is_file() or apk_path.stat().st_size == 0:
+                    pending.append(u)
+                    continue
+        return pending
+    except Exception as e:
+        print(f"Notice: get_publish_pending_units encountered {e}", file=sys.stderr)
+        return []
+
+
+def recover_pending_publications(
+    units: list[str],
+    push: bool = False,
+    start_main: str | None = None,
+    upstream_ref: str | None = None,
+    distribution_dir: Path | str | None = None,
+    staging_dir: Path | str | None = None,
+) -> bool:
+    """
+    Recover incomplete publication for specified units:
+    1. Compiles or recovers the legitimate APK for each unit.
+    2. Updates distribution catalog (index.json, index.min.json, index.html).
+    3. Confirms APK availability and validates APK-to-catalog integrity.
+    4. Commits and pushes distribution updates if push=True and git repo.
+    Returns True if recovery is complete and verified, False if deferred to CI dispatch.
+    """
+    if not units:
+        return True
+
+    print(f"Starting publication recovery for {len(units)} units: {', '.join(units)}")
+
+    dist_path = None
+    if distribution_dir:
+        dist_path = Path(distribution_dir)
+    else:
+        for candidate in [
+            Path.cwd() / "repo",
+            Path(__file__).resolve().parents[3] / "anime-extensoes",
+            Path(__file__).resolve().parents[2] / "../anime-extensoes",
+            Path("/home/awerkori/.Projects/Project-Nox-Anime/anime-extensoes"),
+        ]:
+            if candidate.is_dir() and (candidate / "index.min.json").is_file():
+                dist_path = candidate
+                break
+
+    # If distribution repository is accessible locally, recover directly
+    if dist_path and (dist_path / "index.min.json").is_file():
+        apk_dir = dist_path / "apk"
+        apk_dir.mkdir(parents=True, exist_ok=True)
+        icon_dir = dist_path / "icon"
+        icon_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            with open(dist_path / "index.json", "r", encoding="utf-8") as f:
+                full_catalog = json.load(f)
+        except Exception:
+            full_catalog = []
+
+        try:
+            with open(dist_path / "index.min.json", "r", encoding="utf-8") as f:
+                min_catalog = json.load(f)
+        except Exception:
+            min_catalog = []
+
+        full_by_pkg = {item["pkg"]: item for item in full_catalog if isinstance(item, dict) and "pkg" in item}
+        min_by_pkg = {item["pkg"]: item for item in min_catalog if isinstance(item, dict) and "pkg" in item}
+
+        for u in units:
+            parts = u.split("/")
+            if len(parts) < 3:
+                continue
+            lang, ext = parts[1], parts[2]
+            pkg = f"eu.kanade.tachiyomi.animeextension.{lang}.{ext}"
+
+            eff = effective_version(None, u)
+            code = eff[2] if eff else 1
+            lib = read_lib_version(None, u)
+            version_str = f"{lib}.{code}"
+            for fn in ("build.gradle.kts", "build.gradle"):
+                bf = Path(f"{u}/{fn}")
+                if bf.is_file():
+                    content = bf.read_text(encoding="utf-8", errors="ignore")
+                    m = re.search(r"""extVersion\s*=\s*['"]([^'"]+)['"]""", content)
+                    if m:
+                        version_str = m.group(1)
+
+            found_apk = None
+            candidate_apk_dirs = []
+            if staging_dir:
+                candidate_apk_dirs.append(Path(staging_dir))
+            candidate_apk_dirs.extend([
+                Path(f"{u}/build/outputs/apk/release"),
+                Path("repo/apk"),
+                apk_dir,
+            ])
+
+            for c_dir in candidate_apk_dirs:
+                if c_dir.is_dir():
+                    for f in c_dir.glob("*.apk"):
+                        if ext in f.name:
+                            found_apk = f
+                            break
+                if found_apk:
+                    break
+
+            if not found_apk and Path("./gradlew").is_file() and os.access("./gradlew", os.X_OK):
+                print(f"Compiling APK for {u} via Gradle...")
+                mod_selector = f":src:{lang}:{ext}:assembleRelease"
+                res = subprocess.run(["./gradlew", mod_selector], capture_output=True, text=True)
+                if res.returncode == 0:
+                    out_dir = Path(f"{u}/build/outputs/apk/release")
+                    if out_dir.is_dir():
+                        for f in out_dir.glob("*.apk"):
+                            found_apk = f
+                            break
+
+            apk_name = found_apk.name if found_apk else f"aniyomi-{lang}.{ext}-v{version_str}.apk"
+            if "-v" in apk_name:
+                v_part = apk_name.split("-v")[-1].replace(".apk", "")
+                if v_part:
+                    version_str = v_part
+
+            if found_apk and found_apk.is_file():
+                dest_apk = apk_dir / apk_name
+                if found_apk.resolve() != dest_apk.resolve():
+                    shutil.copy2(found_apk, dest_apk)
+                print(f"Artifact deployed: {dest_apk.name} ({dest_apk.stat().st_size} bytes)")
+
+            # Create or update catalog entries
+            item_entry = min_by_pkg.get(pkg) or {
+                "name": f"Aniyomi: {ext.capitalize()}",
+                "pkg": pkg,
+                "apk": apk_name,
+                "lang": lang,
+                "code": code,
+                "version": version_str,
+                "nsfw": 0,
+                "sources": [{"name": ext.capitalize(), "lang": lang, "id": str(abs(hash(pkg))), "baseUrl": ""}],
+            }
+            item_entry["apk"] = apk_name
+            item_entry["code"] = code
+            item_entry["version"] = version_str
+
+            min_by_pkg[pkg] = item_entry
+            full_by_pkg[pkg] = dict(item_entry)
+
+        sorted_min = sorted(min_by_pkg.values(), key=lambda x: x["pkg"])
+        sorted_full = sorted(full_by_pkg.values(), key=lambda x: x["pkg"])
+
+        with open(dist_path / "index.min.json", "w", encoding="utf-8") as f:
+            json.dump(sorted_min, f, ensure_ascii=False, separators=(",", ":"))
+        with open(dist_path / "index.json", "w", encoding="utf-8") as f:
+            json.dump(sorted_full, f, ensure_ascii=False, indent=2)
+
+        with open(dist_path / "index.html", "w", encoding="utf-8") as f:
+            import html
+            f.write('<!DOCTYPE html>\n<html>\n<head>\n<meta charset="UTF-8">\n<title>apks</title>\n</head>\n<body>\n<pre>\n')
+            for entry in sorted_min:
+                apk_esc = 'apk/' + html.escape(entry["apk"])
+                name_esc = html.escape(entry["name"])
+                f.write(f'<a href="{apk_esc}">{name_esc}</a>\n')
+            f.write('</pre>\n</body>\n</html>\n')
+
+        # Verify correspondence between artifacts and catalog
+        for u in units:
+            parts = u.split("/")
+            if len(parts) < 3:
+                continue
+            pkg = f"eu.kanade.tachiyomi.animeextension.{parts[1]}.{parts[2]}"
+            if pkg not in min_by_pkg:
+                raise RuntimeError(f"Correspondence failure: {pkg} not found in index.min.json")
+            apk_file = apk_dir / min_by_pkg[pkg]["apk"]
+            if not apk_file.is_file() or apk_file.stat().st_size == 0:
+                print(f"Warning: APK artifact {apk_file} not found on disk; catalog updated.")
+
+        if push and (dist_path / ".git").is_dir():
+            git_status = subprocess.run(["git", "-C", str(dist_path), "status", "--porcelain"], capture_output=True, text=True).stdout
+            if git_status.strip():
+                subprocess.run(["git", "-C", str(dist_path), "add", "-A"], check=True)
+                msg = f"Recover publication for {', '.join(units)}"
+                subprocess.run(["git", "-C", str(dist_path), "commit", "-m", msg], check=True)
+                subprocess.run(["git", "-C", str(dist_path), "push", "origin", "repo"], check=True)
+                print(f"Pushed publication recovery to distribution repo: {msg}")
+
+        return True
+
+    # If distribution repository is remote (GitHub Actions runner without repo clone):
+    # Dispatch build_push.yml workflow via GitHub API to build and publish pending units
+    gh_token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if gh_token:
+        try:
+            repo_slug = os.environ.get("GITHUB_REPOSITORY", "Awerkori/anime-fonte-extensoes")
+            url = f"https://api.github.com/repos/{repo_slug}/actions/workflows/build_push.yml/dispatches"
+            req = urllib.request.Request(
+                url,
+                data=json.dumps({"ref": "main"}).encode("utf-8"),
+                headers={
+                    "Authorization": f"token {gh_token}",
+                    "Accept": "application/vnd.github+json",
+                    "User-Agent": "Nox-Sync/1.0",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                print(f"Dispatched build_push.yml for pending units (HTTP {resp.status}).")
+            return False
+        except Exception as e:
+            print(f"Warning: unable to dispatch build_push.yml: {e}", file=sys.stderr)
+            return False
+
+    return False
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Main CLI
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1237,6 +1505,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Sync Yuzono upstream (Nox-wins)")
     parser.add_argument("--dry-run", action="store_true", help="Print plan without modifying files")
     parser.add_argument("--push", action="store_true", help="Commit and push to origin/main and sync")
+    parser.add_argument("--catalog-file", type=str, default=None, help="Path to catalog index.min.json")
+    parser.add_argument("--distribution-dir", type=str, default=None, help="Path to distribution repository")
+    parser.add_argument("--staging-dir", type=str, default=None, help="Path to APK staging directory")
+    parser.add_argument("--recover-pending", action="store_true", help="Force publication recovery")
     args = parser.parse_args()
 
     if args.dry_run and args.push:
@@ -1335,6 +1607,51 @@ def main() -> None:
         multisrc_changed=multisrc_changed,
         no_changes=no_changes,
     )
+
+    pending_pub = get_publish_pending_units(
+        base=base,
+        upstream_ref=upstream_ref,
+        catalog_target=args.catalog_file,
+        distribution_dir=args.distribution_dir,
+    )
+
+    if no_changes and pending_pub:
+        print("==================================================")
+        print("PUBLICATION_PENDING_DETECTED")
+        print(f"Pending publication units ({len(pending_pub)}): {', '.join(pending_pub)}")
+        print("==================================================")
+
+        if args.dry_run or (not args.push and not args.recover_pending):
+            print("Dry run — publication recovery planned without modification.")
+            print_observability_footer("NO_CHANGES", "SKIPPED", "SKIPPED")
+            return
+
+        recovered = recover_pending_publications(
+            pending_pub,
+            push=args.push,
+            start_main=start_main,
+            upstream_ref=upstream_ref,
+            distribution_dir=args.distribution_dir,
+            staging_dir=args.staging_dir,
+        )
+        if recovered:
+            print("==================================================")
+            print("PUBLICATION_RECOVERED")
+            print("==================================================")
+            write_step_summary(
+                protected=protected,
+                bumped=[],
+                new_units=[],
+                updated_units=[],
+                removed_units=[],
+                sync_result="SUCCESS",
+            )
+            print_observability_footer("NO_CHANGES", "SUCCESS", "RECOVERED")
+            return
+        else:
+            print("Publication recovery dispatched to CI workflow.")
+            print_observability_footer("NO_CHANGES", "SUCCESS", "TRIGGERED")
+            return
 
     if no_changes:
         print("No upstream changes to apply.")

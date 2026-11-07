@@ -391,6 +391,20 @@ class ForensicParityTest(unittest.TestCase):
             res_sync = checker.check_consistency(check_pending=True)
             self.assertEqual(res_sync, 0, "Clean sync state must exit code 0")
 
+        # Sub-scenario 4: Missing extension in catalog -> PUBLISH_PENDING -> exit code 2
+        incomplete_catalog = [
+            {"pkg": f"eu.kanade.tachiyomi.animeextension.{u[4:].replace('/', '.')}", "code": 1}
+            for u in local_modules if u != "src/en/anipm"
+        ]
+        mock_incomplete = MagicMock()
+        mock_incomplete.read.return_value = json.dumps(incomplete_catalog).encode("utf-8")
+        mock_urlopen.return_value.__enter__.return_value = mock_incomplete
+
+        with patch("check_consistency_mod.get_upstream_head", return_value="f21e729f"), \
+             patch("check_consistency_mod.get_sync_branch_head", return_value="f21e729f"):
+            res_pending = checker.check_consistency(check_pending=True)
+            self.assertEqual(res_pending, 2, "PUBLISH_PENDING must trigger exit code 2")
+
     # =========================================================================
     # 8. Shared Library Indirect Update Triggers Monotonic Bump
     # =========================================================================
@@ -772,6 +786,96 @@ class ForensicParityTest(unittest.TestCase):
         self.assertFalse((icon_dir / "eu.kanade.tachiyomi.animeextension.en.test.png").exists(), "Old icon must be deleted")
         self.assertTrue((apk_dir / "aniyomi-pt.tomato-v16.1.apk").exists(), "PT-BR APK must remain untouched")
         self.assertTrue((icon_dir / "eu.kanade.tachiyomi.animeextension.pt.tomato.png").exists(), "PT-BR icon must remain untouched")
+
+    # =========================================================================
+    # 16. Incomplete Publication Detection & End-to-End Recovery (Section 4)
+    # =========================================================================
+    def test_incomplete_publication_recovery_pipeline(self):
+        """
+        Controlled non-destructive test simulating incomplete publication:
+        1. Detect missing publication for an extension with valid code.
+        2. Classify unit as PUBLISH_PENDING.
+        3. Return exit code 2 on check_pending=True.
+        4. Trigger recovery via sync.recover_pending_publications.
+        5. Recover legitimate artifact into distribution catalog.
+        6. Verify APK availability and validate APK-to-catalog correspondence.
+        7. Confirm PUBLICATION_RECOVERED status.
+        8. Subsequent check returns exit code 0 (NO_CHANGES).
+        9. Idempotence preserved on repeat check.
+        """
+        os.chdir(REPO_ROOT)
+        temp_dist = Path(self.temp_dir) / "dist_recovery_test"
+        temp_dist.mkdir(parents=True, exist_ok=True)
+        apk_dir = temp_dist / "apk"
+        apk_dir.mkdir(parents=True, exist_ok=True)
+        staging_dir = Path(self.temp_dir) / "apk_staging"
+        staging_dir.mkdir(parents=True, exist_ok=True)
+
+        target_unit = "src/en/anipm"
+        target_pkg = "eu.kanade.tachiyomi.animeextension.en.anipm"
+        target_apk_name = "aniyomi-en.anipm-v16.14.apk"
+
+        # Prepare staging legitimate artifact
+        staging_apk = staging_dir / target_apk_name
+        staging_apk.write_bytes(b"PK\x03\x04" + b"\x00" * 50)  # Valid zip magic header
+
+        # Build initial incomplete catalog using production catalog minus target_unit
+        prod_catalog_file = Path("/home/awerkori/.Projects/Project-Nox-Anime/anime-extensoes/index.min.json")
+        if not prod_catalog_file.is_file():
+            prod_catalog_file = Path(__file__).resolve().parents[3] / "anime-extensoes/index.min.json"
+        prod_catalog = json.loads(prod_catalog_file.read_text("utf-8"))
+
+        incomplete_catalog = [item for item in prod_catalog if item["pkg"] != target_pkg]
+        for item in incomplete_catalog:
+            (apk_dir / item["apk"]).write_bytes(b"dummy_apk")
+
+        test_index_min = temp_dist / "index.min.json"
+        test_index = temp_dist / "index.json"
+        with open(test_index_min, "w", encoding="utf-8") as f:
+            json.dump(incomplete_catalog, f, separators=(",", ":"))
+        with open(test_index, "w", encoding="utf-8") as f:
+            json.dump(incomplete_catalog, f, indent=2)
+
+        # 1-3. Detect absence, classify PUBLISH_PENDING, and return exit code 2
+        with patch("check_consistency_mod.get_upstream_head", return_value="f21e729f"), \
+             patch("check_consistency_mod.get_sync_branch_head", return_value="f21e729f"):
+            ret_detect = checker.check_consistency(
+                check_pending=True,
+                catalog_target=str(test_index_min),
+                distribution_dir=temp_dist,
+            )
+            self.assertEqual(ret_detect, 2, "Pending publication must return exit code 2")
+
+        # 4-7. Trigger recovery mechanism
+        recovered = sync.recover_pending_publications(
+            [target_unit],
+            distribution_dir=temp_dist,
+            staging_dir=staging_dir,
+        )
+        self.assertTrue(recovered, "Publication recovery must succeed")
+
+        # Verify APK exists and has non-zero size
+        recovered_apk = apk_dir / target_apk_name
+        self.assertTrue(recovered_apk.is_file(), "Recovered APK must exist in distribution directory")
+        self.assertGreater(recovered_apk.stat().st_size, 0, "Recovered APK must not be empty")
+
+        # 8. Validate correspondence between catalog and artifact
+        with open(test_index_min, "r", encoding="utf-8") as f:
+            updated_min = json.load(f)
+        recovered_entry = next((e for e in updated_min if e["pkg"] == target_pkg), None)
+        self.assertIsNotNone(recovered_entry, "Recovered entry must exist in index.min.json")
+        self.assertEqual(recovered_entry["apk"], target_apk_name, "Catalog APK name must match artifact")
+        self.assertEqual(recovered_entry["code"], 14, "Catalog versionCode must match source")
+
+        # 9-10. Subsequent check returns exit code 0 (NO_CHANGES)
+        with patch("check_consistency_mod.get_upstream_head", return_value="f21e729f"), \
+             patch("check_consistency_mod.get_sync_branch_head", return_value="f21e729f"):
+            ret_clean = checker.check_consistency(
+                check_pending=True,
+                catalog_target=str(test_index_min),
+                distribution_dir=temp_dist,
+            )
+            self.assertEqual(ret_clean, 0, "Recovered state must return exit code 0 (IN_SYNC)")
 
 
 if __name__ == "__main__":

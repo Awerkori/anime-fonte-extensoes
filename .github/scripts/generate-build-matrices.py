@@ -192,7 +192,49 @@ def get_module_list(ref: str) -> tuple[list[str], list[str]]:
     modules.update([f":src:{lang}:{extension}" for lang, extension in extensions])
     deleted.update([f"{lang}.{extension}" for lang, extension in extensions])
 
+    # Ensure extensions with pending publication in distribution are scheduled for build
+    pending_pub = get_publish_pending_modules()
+    if pending_pub:
+        print(f"Pending publication units added to build matrix: {pending_pub}")
+        modules.update(pending_pub)
+
     return list(modules), list(deleted)
+
+
+def get_publish_pending_modules() -> list[str]:
+    """
+    Query deployed catalog and return list of gradle module selectors (e.g. ':src:all:kartoons')
+    for extensions that exist locally in src/ but are missing from distribution catalog.
+    """
+    try:
+        import importlib.util
+        script_path = Path(__file__).resolve().parent / "check-consistency.py"
+        spec = importlib.util.spec_from_file_location("check_consistency_mod", str(script_path))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        data, _, status = mod.get_deployed_catalog()
+        if not data or status != "VERIFIED":
+            return []
+
+        deployed_pkgs = {item.get("pkg") for item in data if isinstance(item, dict) and "pkg" in item}
+        pending = []
+        src_dir = Path("src")
+        if src_dir.is_dir():
+            for lang_dir in src_dir.iterdir():
+                if not lang_dir.is_dir():
+                    continue
+                for ext_dir in lang_dir.iterdir():
+                    if not ext_dir.is_dir():
+                        continue
+                    if not ((ext_dir / "build.gradle.kts").is_file() or (ext_dir / "build.gradle").is_file()):
+                        continue
+                    pkg = f"eu.kanade.tachiyomi.animeextension.{lang_dir.name}.{ext_dir.name}"
+                    if pkg not in deployed_pkgs:
+                        pending.append(f":src:{lang_dir.name}:{ext_dir.name}")
+        return pending
+    except Exception as e:
+        print(f"Notice: get_publish_pending_modules encountered {e}", file=sys.stderr)
+        return []
 
 def get_all_modules() -> tuple[list[str], list[str]]:
     modules = []
