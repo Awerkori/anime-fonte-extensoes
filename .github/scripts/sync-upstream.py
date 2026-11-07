@@ -28,10 +28,26 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 class ConcurrencyRaceError(Exception):
     """Raised when origin/main advances concurrently during sync execution."""
     pass
+
+
+class ExtensionVersion(NamedTuple):
+    raw: int
+    base: int
+    suffix: int
+    lib: int
+
+    @property
+    def android_code(self) -> int:
+        return self.lib * 100000 + self.suffix
+
+    @property
+    def name(self) -> str:
+        return f"{self.lib}.{self.suffix}"
 
 
 UPSTREAM_REMOTE = "upstream"
@@ -333,6 +349,153 @@ def upstream_historical_units(upstream_ref: str) -> set[str]:
     }
 
 
+def read_base_version_code(ref: str | None, theme: str) -> int:
+    """Read baseVersionCode from lib-multisrc/<theme>/build.gradle.kts (or .gradle)."""
+    for fn in ("build.gradle.kts", "build.gradle"):
+        content = read_file_at(ref, f"lib-multisrc/{theme}/{fn}")
+        if content:
+            m = _BASE_VERSION_CODE_RE.search(content)
+            if m:
+                return int(m.group(1))
+    return 0
+
+
+def effective_version(ref: str | None, unit: str) -> tuple[int, int, int] | None:
+    """
+    Returns (raw, base, effective) for an extension unit.
+    Works for both Groovy and Kotlin DSL.
+    """
+    content = read_file_at(ref, f"{unit}/build.gradle.kts")
+    if not content:
+        content = read_file_at(ref, f"{unit}/build.gradle")
+    if not content:
+        return None
+
+    theme_match = _THEME_RE.search(content)
+    if theme_match:
+        theme = theme_match.group(1)
+        vc_match = _KTS_VERSION_CODE_RE.search(content)
+        if not vc_match:
+            return None
+        raw = int(vc_match.group(1))
+        base = read_base_version_code(ref, theme)
+        return raw, base, raw + base
+    else:
+        vc_match = _KTS_VERSION_CODE_RE.search(content)
+        if not vc_match:
+            vc_match = _EXT_VERSION_CODE_RE.search(content)
+        if not vc_match:
+            return None
+        raw = int(vc_match.group(1))
+        return raw, 0, raw
+
+
+def read_lib_version(ref: str | None, unit: str) -> int:
+    """Read libVersion from extension build file. Defaults to 14 if omitted."""
+    for fn in ("build.gradle.kts", "build.gradle"):
+        content = read_file_at(ref, f"{unit}/{fn}")
+        if content:
+            m = _LIB_VERSION_RE.search(content)
+            if m:
+                return int(m.group(1))
+    return 14
+
+
+def effective_version_code(ref: str | None, unit: str) -> ExtensionVersion | None:
+    """Read effective version and library compatibility metadata."""
+    eff = effective_version(ref, unit)
+    if eff is None:
+        return None
+    raw, base, suffix = eff
+    lib = read_lib_version(ref, unit)
+    return ExtensionVersion(raw, base, suffix, lib)
+
+
+def unit_matches_ref_except_version_code(
+    unit: str,
+    reference: str,
+    local_ref: str = "HEAD",
+) -> bool:
+    """Whether a complete unit differs from a reference only by versionCode."""
+    local_tree = git("rev-parse", f"{local_ref}:{unit}", check=False).strip()
+    if not local_tree:
+        return False
+    ref_tree = git("rev-parse", f"{reference}:{unit}", check=False).strip()
+    if not ref_tree:
+        return False
+    if ref_tree == local_tree:
+        return True
+
+    changed_paths = git(
+        "diff", "--name-only", reference, local_ref, "--", unit, check=False,
+    ).splitlines()
+    valid_gradle_files = {f"{unit}/build.gradle.kts", f"{unit}/build.gradle"}
+    if not changed_paths or any(p not in valid_gradle_files for p in changed_paths):
+        return False
+
+    ref_gradle = read_file_at(reference, f"{unit}/build.gradle.kts") or read_file_at(reference, f"{unit}/build.gradle")
+    loc_gradle = read_file_at(local_ref, f"{unit}/build.gradle.kts") or read_file_at(local_ref, f"{unit}/build.gradle")
+    if ref_gradle is None or loc_gradle is None:
+        return False
+
+    def normalize_gradle(text: str) -> str:
+        t = re.sub(r"(?:extVersionCode|overrideVersionCode|versionCode)\s*=\s*\d+", "versionCode = <VC>", text)
+        return t.strip()
+
+    return normalize_gradle(ref_gradle) == normalize_gradle(loc_gradle)
+
+
+def matching_upstream_history_revision(
+    unit: str,
+    upstream_ref: str,
+    local_ref: str = "HEAD",
+) -> str | None:
+    """Return the upstream snapshot matching a complete local unit."""
+    revisions = git("log", "--format=%H", upstream_ref, "--", unit, check=False).splitlines()
+    for revision in revisions:
+        if unit_matches_ref_except_version_code(unit, revision, local_ref):
+            return revision
+    return None
+
+
+def local_version_ahead_of_upstream(
+    unit: str,
+    upstream_ref: str,
+    local_ref: str = "HEAD",
+) -> tuple[ExtensionVersion, ExtensionVersion] | None:
+    """Return local/upstream versions when local version is ahead of upstream."""
+    local_info = effective_version_code(local_ref, unit)
+    upstream_info = effective_version_code(upstream_ref, unit)
+    if local_info is None or upstream_info is None:
+        return None
+    if local_info.android_code <= upstream_info.android_code:
+        return None
+    return local_info, upstream_info
+
+
+def has_newer_upstream_for_version_only_unit(
+    unit: str,
+    upstream_ref: str,
+    local_ref: str = "HEAD",
+) -> bool:
+    """Whether a version-only local divergence masks newer upstream content."""
+    if not unit.startswith("src/"):
+        return False
+    local_info = effective_version_code(local_ref, unit)
+    upstream_info = effective_version_code(upstream_ref, unit)
+    if local_info is None or upstream_info is None:
+        return False
+    if unit_matches_ref_except_version_code(unit, upstream_ref, local_ref):
+        return False
+    matched_revision = matching_upstream_history_revision(unit, upstream_ref, local_ref)
+    if matched_revision is None:
+        return True
+    matched_info = effective_version_code(matched_revision, unit)
+    if matched_info is None:
+        return True
+    return upstream_info.android_code > matched_info.android_code
+
+
 def classify_sync_units(
     base: str,
     upstream_ref: str,
@@ -358,11 +521,18 @@ def classify_sync_units(
         if not is_ptbr_unit(u) and not path_exists("HEAD", u)
     }
 
-    # Divergent foreign units present in both whose contents differ:
+    # Divergent foreign units present in both whose functional contents differ:
     divergent_foreign = set()
     for u in all_upstream & all_local:
         if is_ptbr_unit(u):
             continue
+        # Expected divergence: if the local unit matches upstream except versionCode
+        if unit_matches_ref_except_version_code(u, upstream_ref, "HEAD"):
+            continue
+        # Expected divergence: if local version is ahead of upstream and upstream has no newer content
+        if local_version_ahead_of_upstream(u, upstream_ref) is not None:
+            if not has_newer_upstream_for_version_only_unit(u, upstream_ref):
+                continue
         diff = git("diff", "--name-only", "HEAD", upstream_ref, "--", u, check=False).strip()
         if diff:
             divergent_foreign.add(u)
@@ -373,15 +543,15 @@ def classify_sync_units(
         if unit.startswith("src/")
         and path_exists("HEAD", unit)
         and not path_exists(upstream_ref, unit)
-        and (path_exists(base, unit) or unit in historically_upstream or not is_nox_exclusive(unit, upstream_ref, base=base))
+        and not is_nox_exclusive(unit, upstream_ref, base=base)
+        and (path_exists(base, unit) or unit in historically_upstream)
     }
 
-    
     deleted_protected = sorted({
         u for u in deleted
-        if u in explicitly_protected or is_ptbr_unit(u) or is_nox_exclusive(u, upstream_ref, base=base)
+        if is_ptbr_unit(u) or u in explicitly_protected
     })
-    deleted_remove = sorted({u for u in deleted if not is_ptbr_unit(u) and u not in deleted_protected})
+    deleted_remove = sorted({u for u in deleted if u not in deleted_protected})
 
     protected_updates = {
         unit for unit in (upstream_set & explicitly_protected) - deleted
@@ -433,6 +603,13 @@ def pending_sync_units(
             if is_ptbr_unit(unit) or unit in explicit_protected or is_nox_exclusive(unit, upstream_ref, base=base):
                 continue
             if not path_exists(upstream_ref, unit):
+                continue
+            if local_version_ahead_of_upstream(unit, upstream_ref) is not None:
+                if has_newer_upstream_for_version_only_unit(unit, upstream_ref):
+                    print(f"Version-only divergence: applying upstream update for {unit}")
+                    pending.add(unit)
+                    continue
+                print(f"Expected version divergence: local {unit} is ahead of upstream")
                 continue
             pending.add(unit)
 
@@ -598,27 +775,44 @@ def read_lib_version(ref: str | None, unit: str) -> int:
 
 
 def fetch_deployed_version_codes() -> dict[str, int]:
-    """Fetch currently deployed extension codes from distribution repo."""
-    try:
-        import urllib.request
-        url = "https://raw.githubusercontent.com/Awerkori/anime-extensoes/repo/index.min.json"
-        req = urllib.request.Request(url, headers={"User-Agent": "Nox-Sync/1.0"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            codes = {}
-            for item in data:
-                pkg = item.get("pkg", "")
-                prefix = "eu.kanade.tachiyomi.animeextension."
-                if pkg.startswith(prefix):
-                    module = pkg[len(prefix):]
-                    parts = module.split(".")
-                    if len(parts) >= 2:
-                        unit = f"src/{parts[0]}/{parts[1]}"
-                        codes[unit] = int(item.get("code", 0))
-            return codes
-    except Exception as e:
-        print(f"Notice: unable to fetch deployed version codes ({e}); continuing with local evaluation")
-        return {}
+    """Fetch currently deployed extension codes from distribution repo with multi-source fallback."""
+    candidate_sources = [
+        ("url", "https://raw.githubusercontent.com/Awerkori/anime-extensoes/repo/index.min.json"),
+        ("url", "https://cdn.jsdelivr.net/gh/Awerkori/anime-extensoes@repo/index.min.json"),
+        ("file", str(Path(__file__).resolve().parents[3] / "anime-extensoes/index.min.json")),
+        ("file", str(Path(__file__).resolve().parents[2] / "../anime-extensoes/index.min.json")),
+    ]
+    for kind, target in candidate_sources:
+        try:
+            raw = None
+            if kind == "url":
+                import urllib.request
+                req = urllib.request.Request(target, headers={"User-Agent": "Nox-Sync/1.0"})
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    raw = resp.read().decode("utf-8")
+            elif kind == "file":
+                p = Path(target)
+                if p.is_file():
+                    raw = p.read_text(encoding="utf-8")
+
+            if raw:
+                data = json.loads(raw)
+                codes = {}
+                for item in data:
+                    pkg = item.get("pkg", "")
+                    prefix = "eu.kanade.tachiyomi.animeextension."
+                    if pkg.startswith(prefix):
+                        module = pkg[len(prefix):]
+                        parts = module.split(".")
+                        if len(parts) >= 2:
+                            unit = f"src/{parts[0]}/{parts[1]}"
+                            codes[unit] = int(item.get("code", 0))
+                if codes:
+                    return codes
+        except Exception:
+            continue
+    print("Notice: unable to fetch deployed version codes; continuing with local evaluation")
+    return {}
 
 
 def bump_version_if_needed(
@@ -627,16 +821,28 @@ def bump_version_if_needed(
     pre_sync_effective: tuple[int, int, int] | None = None,
     pre_sync_lib: int | None = None,
     deployed_code: int = 0,
+    is_new: bool = False,
+    is_protected: bool = False,
+    is_indirect: bool = False,
 ) -> tuple[int, int, int, int, int, int, int] | None:
     """
     Ensure local version code and libVersion are monotonically ahead of upstream and deployed.
     PT-BR units are strictly forbidden from being bumped or modified here.
+
+    Monotonicity Policy:
+    - Case A (New unit): If the unit did not exist locally (is_new or pre_sync_effective is None):
+      Keep upstream version as-is (16.1 stays 16.1) unless deployed_code >= up_eff.
+    - Case B (Unchanged unit): If code matches upstream except versionCode and local >= deployed_code, no bump.
+    - Case C (Upstream update): If upstream updated and up_eff > deployed_code, keep upstream version directly;
+      only bump to deployed_code + 1 if up_eff <= deployed_code.
+    - Case D (Protected unit): Nox modifications win. Bump to max(up_eff + 1, loc_eff + 1) only if upstream >= local.
+    - Case E (libVersion upgrade): If upstream libVersion > local libVersion, upgrade libVersion.
+    - Case F (Indirect library update): If shared lib changed, bump to max(disk_eff + 1, deployed_code + 1).
     """
     if is_ptbr_unit(unit):
         return None
 
     local = pre_sync_effective if pre_sync_effective is not None else effective_version(None, unit)
-
     upstream = effective_version(upstream_ref, unit)
 
     if local is None and upstream is None:
@@ -648,13 +854,46 @@ def bump_version_if_needed(
     loc_lib = pre_sync_lib if pre_sync_lib is not None else read_lib_version(None, unit)
     up_lib = read_lib_version(upstream_ref, unit) if upstream is not None else loc_lib
 
-    needs_vc_bump = (up_eff >= loc_eff) or (loc_eff <= deployed_code)
-    needs_lib_upgrade = up_lib > loc_lib
+    disk_eff_tuple = effective_version(None, unit)
+    if disk_eff_tuple is None:
+        return None
+    disk_raw, cur_base, disk_eff = disk_eff_tuple
+    disk_lib = read_lib_version(None, unit)
 
-    if not needs_vc_bump and not needs_lib_upgrade:
+    target_lib = max(loc_lib, up_lib)
+    is_lib_upgrade = up_lib > loc_lib
+    needs_disk_lib_write = target_lib > disk_lib
+
+    is_brand_new = is_new or (pre_sync_effective is None and not path_exists("HEAD", unit))
+
+    if is_brand_new:
+        if deployed_code >= up_eff and deployed_code > 0:
+            target_eff = deployed_code + 1
+        else:
+            target_eff = up_eff
+    elif is_protected:
+        if up_eff >= loc_eff or is_lib_upgrade or loc_eff < deployed_code:
+            target_eff = max(up_eff + 1, loc_eff + 1, deployed_code + 1 if loc_eff < deployed_code else 0)
+        else:
+            target_eff = loc_eff
+    elif is_indirect:
+        target_eff = max(disk_eff + 1, deployed_code + 1)
+    else:
+        if unit_matches_ref_except_version_code(unit, upstream_ref, "HEAD"):
+            if disk_eff < deployed_code:
+                target_eff = deployed_code + 1
+            else:
+                target_eff = disk_eff
+        else:
+            if up_eff > deployed_code:
+                target_eff = up_eff
+            else:
+                target_eff = max(deployed_code + 1, up_eff)
+
+    if target_eff <= disk_eff and not needs_disk_lib_write:
         return None
 
-    target_eff = max(up_eff + 1, loc_eff + 1, deployed_code + 1)
+    new_raw = target_eff - cur_base
 
     kts_path = Path(f"{unit}/build.gradle.kts")
     groovy_path = Path(f"{unit}/build.gradle")
@@ -671,12 +910,9 @@ def bump_version_if_needed(
     text = build_file.read_text(encoding="utf-8")
     theme_match = _THEME_RE.search(text)
     theme = theme_match.group(1) if theme_match else None
-    cur_base = read_base_version_code(None, theme) if theme else 0
-    new_raw = target_eff - cur_base
 
-    target_lib = max(loc_lib, up_lib)
     if is_kts:
-        if target_lib > 14:
+        if needs_disk_lib_write and target_lib > 14:
             if re.search(r'libVersion\s*=\s*["\']\d+["\']', text):
                 text = re.sub(r'libVersion\s*=\s*["\']\d+["\']', f'libVersion = "{target_lib}"', text, count=1)
             elif re.search(r'libVersion\s*=\s*\d+', text):
@@ -686,24 +922,26 @@ def bump_version_if_needed(
                 if marker:
                     indent = marker.group(1) + "    "
                     text = text[:marker.end()] + f'\n{indent}libVersion = "{target_lib}"' + text[marker.end():]
-        if re.search(r'(versionCode|overrideVersionCode)\s*=\s*\d+', text):
-            text = re.sub(r'(versionCode|overrideVersionCode)\s*=\s*\d+', rf'\g<1> = {new_raw}', text, count=1)
+        if target_eff > disk_eff:
+            if re.search(r'(versionCode|overrideVersionCode)\s*=\s*\d+', text):
+                text = re.sub(r'(versionCode|overrideVersionCode)\s*=\s*\d+', rf'\g<1> = {new_raw}', text, count=1)
     else:
-        if target_lib > 14:
+        if needs_disk_lib_write and target_lib > 14:
             if re.search(r"libVersion\s*=\s*\d+", text):
                 text = re.sub(r"libVersion\s*=\s*\d+", f"libVersion = {target_lib}", text, count=1)
             else:
                 text = re.sub(r"(ext\s*\{)", rf"\1\n    libVersion = {target_lib}", text, count=1)
-        if theme:
-            if re.search(r"overrideVersionCode\s*=\s*\d+", text):
-                text = re.sub(r"overrideVersionCode\s*=\s*\d+", f"overrideVersionCode = {new_raw}", text, count=1)
+        if target_eff > disk_eff:
+            if theme:
+                if re.search(r"overrideVersionCode\s*=\s*\d+", text):
+                    text = re.sub(r"overrideVersionCode\s*=\s*\d+", f"overrideVersionCode = {new_raw}", text, count=1)
+                else:
+                    text = re.sub(r"(ext\s*\{)", rf"\1\n    overrideVersionCode = {new_raw}", text, count=1)
             else:
-                text = re.sub(r"(ext\s*\{)", rf"\1\n    overrideVersionCode = {new_raw}", text, count=1)
-        else:
-            if re.search(r"extVersionCode\s*=\s*\d+", text):
-                text = re.sub(r"extVersionCode\s*=\s*\d+", f"extVersionCode = {new_raw}", text, count=1)
-            else:
-                text = re.sub(r"(ext\s*\{)", rf"\1\n    extVersionCode = {new_raw}", text, count=1)
+                if re.search(r"extVersionCode\s*=\s*\d+", text):
+                    text = re.sub(r"extVersionCode\s*=\s*\d+", f"extVersionCode = {new_raw}", text, count=1)
+                else:
+                    text = re.sub(r"(ext\s*\{)", rf"\1\n    extVersionCode = {new_raw}", text, count=1)
 
     build_file.write_text(text, encoding="utf-8")
     return loc_raw, loc_base, loc_eff, up_raw, up_base, up_eff, new_raw
@@ -718,12 +956,13 @@ def apply_units(
     units_to_apply: list[str],
     conflict_set: set[str],
     protected: list[str],
-    upstream_deleted: list[str],
-    protected_deletions: list[str],
+    upstream_deleted: list[str] | None = None,
+    protected_deletions: list[str] | None = None,
     deployed_codes: dict[str, int] | None = None,
     new_units: list[str] | None = None,
     updated_units: list[str] | None = None,
     removed_units: list[str] | None = None,
+    indirect_units: set[str] | None = None,
 ) -> list[str]:
     """Apply upstream updates, preserves Nox-protected code, and guarantees version monotonicity."""
     deployed_codes = deployed_codes or {}
@@ -814,6 +1053,9 @@ def apply_units(
             pre_sync_effective=pre_sync_effective.get(unit),
             pre_sync_lib=pre_sync_lib.get(unit),
             deployed_code=deployed_code,
+            is_new=(unit in (new_units or []) or unit not in pre_sync_effective),
+            is_protected=(unit in protected),
+            is_indirect=(unit in (indirect_units or set())),
         )
         if res is not None:
             loc_raw, _, _, _, _, _, new_raw = res
@@ -1100,8 +1342,9 @@ def main() -> None:
     )
 
     new_units = [u for u in upstream_only if not path_exists(base, u)]
-    updated_units = [u for u in upstream_only if path_exists(base, u)] + conflict_units
-    removed_units = sorted(set(upstream_deleted) | set(protected_deletions))
+    indirect_clean = sorted({u for u in indirect if not is_ptbr_unit(u) and path_exists("HEAD", u)})
+    updated_units = sorted(set([u for u in upstream_only if path_exists(base, u)] + conflict_units) | set(indirect_clean))
+    removed_units = sorted({u for u in upstream_deleted if not is_ptbr_unit(u) and u not in protected_deletions})
 
     core_changed = any(
         path in {"core", "common", "extractor"} or path.startswith(("core/", "common/", "extractor/"))
@@ -1153,7 +1396,7 @@ def main() -> None:
         return
 
     deployed_codes = fetch_deployed_version_codes()
-    units_to_apply = sorted(set(upstream_units) | set(upstream_deleted) | set(protected_deletions) | set(effective_diff))
+    units_to_apply = sorted(set(upstream_units) | set(upstream_deleted) | set(protected_deletions) | set(effective_diff) | set(indirect_clean))
     bumped = apply_units(
         upstream_ref,
         units_to_apply,
@@ -1165,6 +1408,7 @@ def main() -> None:
         new_units=new_units,
         updated_units=updated_units,
         removed_units=removed_units,
+        indirect_units=set(indirect_clean),
     )
     write_step_summary(
         protected=protected,

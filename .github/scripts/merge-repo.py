@@ -19,8 +19,8 @@ def pkg_to_module(pkg: str) -> str:
 
 def get_existing_modules() -> set[str] | None:
     modules = set()
-    # sys.argv[2] contains the ref_name and 'repo', e.g., 'main/repo'
-    branch_dir_name = sys.argv[2].split('/')[0]
+    # sys.argv[2] contains the ref_name and 'repo', e.g., 'main/repo' or 'work/branch/repo'
+    branch_dir_name = sys.argv[2].removesuffix("/repo") if sys.argv[2].endswith("/repo") else sys.argv[2].split('/')[0]
     src_dir = REMOTE_REPO.parent.joinpath(branch_dir_name, "src")
 
     if not src_dir.is_dir():
