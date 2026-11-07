@@ -832,9 +832,8 @@ class ForensicParityTest(unittest.TestCase):
                 parts = u.split("/")
                 l_lang, l_ext = parts[1], parts[2]
                 l_pkg = f"eu.kanade.tachiyomi.animeextension.{l_lang}.{l_ext}"
-                code = checker.get_source_version_code(u)
                 eff = sync.effective_version(None, u)
-                eff_code = eff[2] if eff else code
+                eff_code = eff[2] if eff else 1
                 prod_catalog.append({
                     "name": f"Aniyomi: {l_ext.capitalize()}",
                     "pkg": l_pkg,
