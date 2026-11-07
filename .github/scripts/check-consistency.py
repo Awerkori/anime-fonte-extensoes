@@ -273,7 +273,7 @@ def check_consistency(
         elif u in renamed_units:
             parity_by_status["RENAMED"].append(u)
         elif u.startswith("src/pt/") or (sync_mod and sync_mod.is_ptbr_unit(u)):
-            if is_publish_pending(u):
+            if u in local_modules and is_publish_pending(u):
                 parity_by_status["PUBLISH_PENDING"].append(u)
             else:
                 parity_by_status["PROTECTED_PTBR"].append(u)
@@ -281,7 +281,7 @@ def check_consistency(
             parity_by_status["MISSING"].append(u)
         elif u in local_modules and u not in upstream_sources:
             if sync_mod and sync_mod.is_nox_exclusive(u, upstream_ref, base=base):
-                if is_publish_pending(u):
+                if u in local_modules and is_publish_pending(u):
                     parity_by_status["PUBLISH_PENDING"].append(u)
                 else:
                     parity_by_status["PROTECTED_PTBR"].append(u)
@@ -289,7 +289,7 @@ def check_consistency(
                 parity_by_status["STALE"].append(u)
         elif u in unmerged_units:
             parity_by_status["OUTDATED"].append(u)
-        elif is_publish_pending(u):
+        elif u in local_modules and is_publish_pending(u):
             parity_by_status["PUBLISH_PENDING"].append(u)
         else:
             parity_by_status["IN_SYNC"].append(u)

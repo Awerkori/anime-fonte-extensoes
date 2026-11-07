@@ -823,7 +823,28 @@ class ForensicParityTest(unittest.TestCase):
         prod_catalog_file = Path("/home/awerkori/.Projects/Project-Nox-Anime/anime-extensoes/index.min.json")
         if not prod_catalog_file.is_file():
             prod_catalog_file = Path(__file__).resolve().parents[3] / "anime-extensoes/index.min.json"
-        prod_catalog = json.loads(prod_catalog_file.read_text("utf-8"))
+        if prod_catalog_file.is_file():
+            prod_catalog = json.loads(prod_catalog_file.read_text("utf-8"))
+        else:
+            all_units = checker.get_local_source_modules()
+            prod_catalog = []
+            for u in sorted(all_units):
+                parts = u.split("/")
+                l_lang, l_ext = parts[1], parts[2]
+                l_pkg = f"eu.kanade.tachiyomi.animeextension.{l_lang}.{l_ext}"
+                code = checker.get_source_version_code(u)
+                eff = sync.effective_version(None, u)
+                eff_code = eff[2] if eff else code
+                prod_catalog.append({
+                    "name": f"Aniyomi: {l_ext.capitalize()}",
+                    "pkg": l_pkg,
+                    "apk": f"aniyomi-{l_lang}.{l_ext}-v16.{eff_code}.apk",
+                    "lang": l_lang,
+                    "code": eff_code,
+                    "version": f"16.{eff_code}",
+                    "nsfw": 0,
+                    "sources": [{"name": l_ext.capitalize(), "lang": l_lang, "id": "1", "baseUrl": ""}],
+                })
 
         incomplete_catalog = [item for item in prod_catalog if item["pkg"] != target_pkg]
         for item in incomplete_catalog:
@@ -852,7 +873,7 @@ class ForensicParityTest(unittest.TestCase):
             distribution_dir=temp_dist,
             staging_dir=staging_dir,
         )
-        self.assertTrue(recovered, "Publication recovery must succeed")
+        self.assertEqual(recovered, "RECOVERED", "Publication recovery must succeed")
 
         # Verify APK exists and has non-zero size
         recovered_apk = apk_dir / target_apk_name

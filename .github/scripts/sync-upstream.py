@@ -1302,17 +1302,19 @@ def recover_pending_publications(
     upstream_ref: str | None = None,
     distribution_dir: Path | str | None = None,
     staging_dir: Path | str | None = None,
-) -> bool:
+) -> str:
     """
     Recover incomplete publication for specified units:
-    1. Compiles or recovers the legitimate APK for each unit.
-    2. Updates distribution catalog (index.json, index.min.json, index.html).
-    3. Confirms APK availability and validates APK-to-catalog integrity.
-    4. Commits and pushes distribution updates if push=True and git repo.
-    Returns True if recovery is complete and verified, False if deferred to CI dispatch.
+    1. Locate or produce valid APK artifact for each pending unit.
+    2. Verify package, version, and presence.
+    3. Update distribution index.min.json, index.json, index.html.
+    4. Commit and push recovered artifacts to distribution repo (if push=True and local clone exists).
+    5. Or dispatch build_push.yml workflow via GitHub API if remote.
+
+    Returns "RECOVERED", "DISPATCHED", or "FAILED".
     """
     if not units:
-        return True
+        return "RECOVERED"
 
     print(f"Starting publication recovery for {len(units)} units: {', '.join(units)}")
 
@@ -1352,6 +1354,8 @@ def recover_pending_publications(
         full_by_pkg = {item["pkg"]: item for item in full_catalog if isinstance(item, dict) and "pkg" in item}
         min_by_pkg = {item["pkg"]: item for item in min_catalog if isinstance(item, dict) and "pkg" in item}
 
+        deployed_apks = []
+
         for u in units:
             parts = u.split("/")
             if len(parts) < 3:
@@ -1366,8 +1370,8 @@ def recover_pending_publications(
             for fn in ("build.gradle.kts", "build.gradle"):
                 bf = Path(f"{u}/{fn}")
                 if bf.is_file():
-                    content = bf.read_text(encoding="utf-8", errors="ignore")
-                    m = re.search(r"""extVersion\s*=\s*['"]([^'"]+)['"]""", content)
+                    content_gradle = bf.read_text(encoding="utf-8", errors="ignore")
+                    m = re.search(r"""extVersion\s*=\s*['"]([^'"]+)['"]""", content_gradle)
                     if m:
                         version_str = m.group(1)
 
@@ -1381,10 +1385,11 @@ def recover_pending_publications(
                 apk_dir,
             ])
 
+            apk_expected_prefix = f"aniyomi-{lang}.{ext}-v"
             for c_dir in candidate_apk_dirs:
                 if c_dir.is_dir():
                     for f in c_dir.glob("*.apk"):
-                        if ext in f.name:
+                        if f.name.startswith(apk_expected_prefix) and f.stat().st_size > 0:
                             found_apk = f
                             break
                 if found_apk:
@@ -1398,23 +1403,31 @@ def recover_pending_publications(
                     out_dir = Path(f"{u}/build/outputs/apk/release")
                     if out_dir.is_dir():
                         for f in out_dir.glob("*.apk"):
-                            found_apk = f
-                            break
+                            if f.name.startswith(apk_expected_prefix) and f.stat().st_size > 0:
+                                found_apk = f
+                                break
 
-            apk_name = found_apk.name if found_apk else f"aniyomi-{lang}.{ext}-v{version_str}.apk"
+            if not found_apk or not found_apk.is_file() or found_apk.stat().st_size == 0:
+                print(f"Error: legitimate APK artifact for {u} cannot be located or produced.", file=sys.stderr)
+                return "FAILED"
+
+            apk_name = found_apk.name
             if "-v" in apk_name:
                 v_part = apk_name.split("-v")[-1].replace(".apk", "")
                 if v_part:
                     version_str = v_part
 
-            if found_apk and found_apk.is_file():
-                dest_apk = apk_dir / apk_name
-                if found_apk.resolve() != dest_apk.resolve():
-                    shutil.copy2(found_apk, dest_apk)
-                print(f"Artifact deployed: {dest_apk.name} ({dest_apk.stat().st_size} bytes)")
+            dest_apk = apk_dir / apk_name
+            if found_apk.resolve() != dest_apk.resolve():
+                shutil.copy2(found_apk, dest_apk)
+            print(f"Artifact deployed: {dest_apk.name} ({dest_apk.stat().st_size} bytes)")
+            deployed_apks.append(dest_apk.name)
 
-            # Create or update catalog entries
-            item_entry = min_by_pkg.get(pkg) or {
+            # Preserve full-index source metadata if already present
+            existing_min = min_by_pkg.get(pkg)
+            existing_full = full_by_pkg.get(pkg)
+
+            item_min = existing_min.copy() if existing_min else {
                 "name": f"Aniyomi: {ext.capitalize()}",
                 "pkg": pkg,
                 "apk": apk_name,
@@ -1424,12 +1437,17 @@ def recover_pending_publications(
                 "nsfw": 0,
                 "sources": [{"name": ext.capitalize(), "lang": lang, "id": str(abs(hash(pkg))), "baseUrl": ""}],
             }
-            item_entry["apk"] = apk_name
-            item_entry["code"] = code
-            item_entry["version"] = version_str
+            item_min["apk"] = apk_name
+            item_min["code"] = code
+            item_min["version"] = version_str
 
-            min_by_pkg[pkg] = item_entry
-            full_by_pkg[pkg] = dict(item_entry)
+            item_full = existing_full.copy() if existing_full else dict(item_min)
+            item_full["apk"] = apk_name
+            item_full["code"] = code
+            item_full["version"] = version_str
+
+            min_by_pkg[pkg] = item_min
+            full_by_pkg[pkg] = item_full
 
         sorted_min = sorted(min_by_pkg.values(), key=lambda x: x["pkg"])
         sorted_full = sorted(full_by_pkg.values(), key=lambda x: x["pkg"])
@@ -1455,21 +1473,29 @@ def recover_pending_publications(
                 continue
             pkg = f"eu.kanade.tachiyomi.animeextension.{parts[1]}.{parts[2]}"
             if pkg not in min_by_pkg:
-                raise RuntimeError(f"Correspondence failure: {pkg} not found in index.min.json")
+                print(f"Error: {pkg} not found in index.min.json after recovery", file=sys.stderr)
+                return "FAILED"
             apk_file = apk_dir / min_by_pkg[pkg]["apk"]
             if not apk_file.is_file() or apk_file.stat().st_size == 0:
-                print(f"Warning: APK artifact {apk_file} not found on disk; catalog updated.")
+                print(f"Error: APK artifact {apk_file} missing or empty after recovery", file=sys.stderr)
+                return "FAILED"
 
         if push and (dist_path / ".git").is_dir():
-            git_status = subprocess.run(["git", "-C", str(dist_path), "status", "--porcelain"], capture_output=True, text=True).stdout
+            files_to_stage = ["index.min.json", "index.json", "index.html"]
+            for apk_n in deployed_apks:
+                apk_rel = f"apk/{apk_n}"
+                if (dist_path / apk_rel).is_file():
+                    files_to_stage.append(apk_rel)
+
+            subprocess.run(["git", "-C", str(dist_path), "add", "--"] + files_to_stage, check=True)
+            git_status = subprocess.run(["git", "-C", str(dist_path), "diff", "--cached", "--name-only"], capture_output=True, text=True).stdout
             if git_status.strip():
-                subprocess.run(["git", "-C", str(dist_path), "add", "-A"], check=True)
                 msg = f"Recover publication for {', '.join(units)}"
                 subprocess.run(["git", "-C", str(dist_path), "commit", "-m", msg], check=True)
                 subprocess.run(["git", "-C", str(dist_path), "push", "origin", "repo"], check=True)
                 print(f"Pushed publication recovery to distribution repo: {msg}")
 
-        return True
+        return "RECOVERED"
 
     # If distribution repository is remote (GitHub Actions runner without repo clone):
     # Dispatch build_push.yml workflow via GitHub API to build and publish pending units
@@ -1489,14 +1515,12 @@ def recover_pending_publications(
             )
             with urllib.request.urlopen(req, timeout=15) as resp:
                 print(f"Dispatched build_push.yml for pending units (HTTP {resp.status}).")
-            return False
+            return "DISPATCHED"
         except Exception as e:
             print(f"Warning: unable to dispatch build_push.yml: {e}", file=sys.stderr)
-            return False
+            return "FAILED"
 
-    return False
-
-
+    return "FAILED"
 # ──────────────────────────────────────────────────────────────────────────────
 # Main CLI
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1626,7 +1650,7 @@ def main() -> None:
             print_observability_footer("NO_CHANGES", "SKIPPED", "SKIPPED")
             return
 
-        recovered = recover_pending_publications(
+        recovery_status = recover_pending_publications(
             pending_pub,
             push=args.push,
             start_main=start_main,
@@ -1634,7 +1658,15 @@ def main() -> None:
             distribution_dir=args.distribution_dir,
             staging_dir=args.staging_dir,
         )
-        if recovered:
+
+        if args.push:
+            try:
+                publish_sync(upstream_ref, start_main)
+            except ConcurrencyRaceError as e:
+                print(f"Transient concurrency conflict: {e}", file=sys.stderr)
+                sys.exit(75)
+
+        if recovery_status == "RECOVERED":
             print("==================================================")
             print("PUBLICATION_RECOVERED")
             print("==================================================")
@@ -1648,10 +1680,14 @@ def main() -> None:
             )
             print_observability_footer("NO_CHANGES", "SUCCESS", "RECOVERED")
             return
-        else:
+        elif recovery_status == "DISPATCHED":
             print("Publication recovery dispatched to CI workflow.")
             print_observability_footer("NO_CHANGES", "SUCCESS", "TRIGGERED")
             return
+        else:
+            print("Publication recovery failed: artifact unavailable or workflow dispatch failed.", file=sys.stderr)
+            print_observability_footer("NO_CHANGES", "FAILURE", "FAILED")
+            sys.exit(1)
 
     if no_changes:
         print("No upstream changes to apply.")

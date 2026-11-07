@@ -204,34 +204,16 @@ def get_module_list(ref: str) -> tuple[list[str], list[str]]:
 def get_publish_pending_modules() -> list[str]:
     """
     Query deployed catalog and return list of gradle module selectors (e.g. ':src:all:kartoons')
-    for extensions that exist locally in src/ but are missing from distribution catalog.
+    for extensions that exist locally in src/ and have pending publication (missing or outdated).
     """
     try:
         import importlib.util
-        script_path = Path(__file__).resolve().parent / "check-consistency.py"
-        spec = importlib.util.spec_from_file_location("check_consistency_mod", str(script_path))
+        script_path = Path(__file__).resolve().parent / "sync-upstream.py"
+        spec = importlib.util.spec_from_file_location("sync_mod", str(script_path))
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        data, _, status = mod.get_deployed_catalog()
-        if not data or status != "VERIFIED":
-            return []
-
-        deployed_pkgs = {item.get("pkg") for item in data if isinstance(item, dict) and "pkg" in item}
-        pending = []
-        src_dir = Path("src")
-        if src_dir.is_dir():
-            for lang_dir in src_dir.iterdir():
-                if not lang_dir.is_dir():
-                    continue
-                for ext_dir in lang_dir.iterdir():
-                    if not ext_dir.is_dir():
-                        continue
-                    if not ((ext_dir / "build.gradle.kts").is_file() or (ext_dir / "build.gradle").is_file()):
-                        continue
-                    pkg = f"eu.kanade.tachiyomi.animeextension.{lang_dir.name}.{ext_dir.name}"
-                    if pkg not in deployed_pkgs:
-                        pending.append(f":src:{lang_dir.name}:{ext_dir.name}")
-        return pending
+        pending_units = mod.get_publish_pending_units()
+        return [f":{u.replace('/', ':')}" for u in pending_units]
     except Exception as e:
         print(f"Notice: get_publish_pending_modules encountered {e}", file=sys.stderr)
         return []
