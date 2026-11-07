@@ -28,6 +28,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import urllib.request
 from pathlib import Path
 from typing import NamedTuple
@@ -1231,25 +1232,68 @@ def publish_sync(upstream_ref: str, start_main: str) -> None:
         print(f"Warning: unable to update sync branch ref ({e}); main was successfully pushed.")
 
 
+def get_check_consistency_mod():
+    mod = sys.modules.get("check_consistency_mod")
+    if mod is None:
+        import importlib.util
+        script_path = Path(__file__).resolve().parent / "check-consistency.py"
+        spec = importlib.util.spec_from_file_location("check_consistency_mod", str(script_path))
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["check_consistency_mod"] = mod
+        spec.loader.exec_module(mod)
+    return mod
+
+
 def get_publish_pending_units(
     base: str | None = None,
     upstream_ref: str = f"{UPSTREAM_REMOTE}/{UPSTREAM_BRANCH}",
     catalog_target: str | None = None,
     distribution_dir: Path | str | None = None,
-) -> list[str]:
+    return_context: bool = False,
+) -> list[str] | tuple[list[str], Path | None, bool]:
     """
     Detect units where source exists locally in Nox, but the extension is missing
     or incomplete in the deployed distribution catalog or APK artifacts.
     """
+    resolved_dist_dir = None
+    has_inconclusive = False
+    target_kind = "file" if distribution_dir else "url"
+    resolved_target = None
     try:
-        import importlib.util
-        script_path = Path(__file__).resolve().parent / "check-consistency.py"
-        spec = importlib.util.spec_from_file_location("check_consistency_mod", str(script_path))
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        data, _, status = mod.get_deployed_catalog(catalog_target)
-        if not data or status != "VERIFIED":
-            return []
+        mod = get_check_consistency_mod()
+        res_ctx = mod.resolve_distribution_context(
+            catalog_target=catalog_target,
+            distribution_dir=distribution_dir,
+        )
+        resolved_target_url = None
+        if len(res_ctx) >= 6:
+            data, catalog_source, status, local_apk_dir, remote_apks, target = res_ctx[:6]
+            resolved_target = target
+            if target:
+                if target.startswith("http://") or target.startswith("https://"):
+                    target_kind = "url"
+                    resolved_target_url = target
+                else:
+                    target_kind = "file"
+                    resolved_dist_dir = Path(target).resolve().parent
+            if local_apk_dir and not resolved_dist_dir:
+                if (local_apk_dir / "index.min.json").is_file():
+                    resolved_dist_dir = local_apk_dir
+                elif (local_apk_dir.parent / "index.min.json").is_file():
+                    resolved_dist_dir = local_apk_dir.parent
+                else:
+                    resolved_dist_dir = local_apk_dir.parent
+        elif len(res_ctx) >= 5:
+            data, catalog_source, status, local_apk_dir, remote_apks = res_ctx[:5]
+        else:
+            data, catalog_source, status = res_ctx[:3]
+            local_apk_dir, remote_apks = None, None
+
+        if status == "UNVERIFIED_ARTIFACTS":
+            has_inconclusive = True
+
+        if not data:
+            return ([], resolved_dist_dir, True, target_kind, resolved_target) if return_context else []
 
         deployed_by_unit = {}
         for item in data:
@@ -1260,10 +1304,29 @@ def get_publish_pending_units(
                 if len(parts) >= 2:
                     deployed_by_unit[f"src/{parts[0]}/{parts[1]}"] = item
 
-        dist_path = Path(distribution_dir) if distribution_dir else None
-        local_apk_dir = dist_path / "apk" if dist_path else None
+        # When Git Tree API is unavailable or APKs are missing from the Git tree, verify needed APKs
+        # concurrently with bounded worker concurrency (Codex Findings P1 & P2)
+        remote_probed_map = {}
+        if local_apk_dir is None:
+            target_url = resolved_target_url or catalog_target or DISTRIBUTION_INDEX_URL
+            if target_url.startswith("http://") or target_url.startswith("https://"):
+                all_deployed_apks = list({
+                    dep.get("apk") for dep in deployed_by_unit.values()
+                    if dep.get("apk")
+                })
+                if remote_apks is not None:
+                    valid_apks = remote_apks[0] if isinstance(remote_apks, tuple) else remote_apks
+                    empty_apks = remote_apks[1] if isinstance(remote_apks, tuple) else set()
+                    apks_to_probe = [a for a in all_deployed_apks if a not in valid_apks and a not in empty_apks]
+                else:
+                    apks_to_probe = all_deployed_apks
 
-        all_codes_are_one = bool(data and all(item.get("code") == 1 for item in data))
+                if apks_to_probe and hasattr(mod, "check_remote_apks_concurrent"):
+                    remote_probed_map = mod.check_remote_apks_concurrent(target_url, apks_to_probe)
+                    # Upgrade status if full probe conclusively reached the server (Codex Finding P2)
+                    if status == "UNVERIFIED_ARTIFACTS" and any(st in ("EXISTS", "MISSING") for st in remote_probed_map.values()):
+                        status = "VERIFIED"
+                        has_inconclusive = False
 
         pending = []
         all_local = get_all_source_units(None)
@@ -1272,27 +1335,65 @@ def get_publish_pending_units(
                 pending.append(u)
                 continue
             dep = deployed_by_unit[u]
-            if not all_codes_are_one:
-                eff = effective_version(None, u)
-                if eff is not None:
-                    local_eff_code = eff[2]
-                    dep_code = dep.get("code", 0)
-                    if local_eff_code > dep_code:
-                        pending.append(u)
-                        continue
-            if local_apk_dir and local_apk_dir.is_dir():
-                apk_name = dep.get("apk")
-                if not apk_name:
+            eff = effective_version(None, u)
+            if eff is not None:
+                local_eff_code = eff[2]
+                dep_code = dep.get("code", 0)
+                if local_eff_code > dep_code:
+                    pending.append(u)
+                    continue
+            apk_name = dep.get("apk")
+            if not apk_name:
+                pending.append(u)
+                continue
+            if local_apk_dir is not None:
+                if not local_apk_dir.is_dir():
                     pending.append(u)
                     continue
                 apk_path = local_apk_dir / apk_name
                 if not apk_path.is_file() or apk_path.stat().st_size == 0:
                     pending.append(u)
                     continue
-        return pending
+            elif remote_apks is not None:
+                if isinstance(remote_apks, tuple):
+                    valid_apks, empty_apks = remote_apks
+                    if apk_name in empty_apks:
+                        pending.append(u)
+                        continue
+                else:
+                    valid_apks = remote_apks
+                if apk_name not in valid_apks:
+                    # Concurrent probe result for APKs missing from Git tree (Codex Finding P1)
+                    apk_status = remote_probed_map.get(apk_name, "ERROR")
+                    if apk_status == "MISSING":
+                        pending.append(u)
+                    elif apk_status == "ERROR":
+                        has_inconclusive = True
+            elif local_apk_dir is None:
+                # Custom URL target without Git Tree API (Codex Findings P1 & P2)
+                apk_status = remote_probed_map.get(apk_name, "ERROR")
+                if apk_status == "MISSING":
+                    pending.append(u)
+                elif apk_status == "ERROR":
+                    has_inconclusive = True
+            # When status == "UNVERIFIED_ARTIFACTS" (service outage or rate limit), do not perform
+            # unbounded sequential HEAD requests; catalog-proven missing/outdated units were collected above.
+        return (pending, resolved_dist_dir, has_inconclusive, target_kind, resolved_target) if return_context else pending
     except Exception as e:
         print(f"Notice: get_publish_pending_units encountered {e}", file=sys.stderr)
-        return []
+        return ([], None, True, target_kind, resolved_target) if return_context else []
+
+
+def is_valid_apk_file(p: Path | str) -> bool:
+    """Validate that path exists, is non-empty, and starts with valid zip magic header PK\x03\x04."""
+    try:
+        p = Path(p)
+        if not p.is_file() or p.stat().st_size <= 0:
+            return False
+        with open(p, "rb") as zf:
+            return zf.read(4) == b"PK\x03\x04"
+    except Exception:
+        return False
 
 
 def recover_pending_publications(
@@ -1302,6 +1403,9 @@ def recover_pending_publications(
     upstream_ref: str | None = None,
     distribution_dir: Path | str | None = None,
     staging_dir: Path | str | None = None,
+    catalog_target: str | None = None,
+    target_kind: str | None = None,
+    resolved_target: str | None = None,
 ) -> str:
     """
     Recover incomplete publication for specified units:
@@ -1311,26 +1415,40 @@ def recover_pending_publications(
     4. Commit and push recovered artifacts to distribution repo (if push=True and local clone exists).
     5. Or dispatch build_push.yml workflow via GitHub API if remote.
 
-    Returns "RECOVERED", "DISPATCHED", or "FAILED".
+    Returns "RECOVERED", "DISPATCHED", "DEFERRED", or "FAILED".
     """
     if not units:
         return "RECOVERED"
 
     print(f"Starting publication recovery for {len(units)} units: {', '.join(units)}")
 
+    is_remote_catalog = (
+        target_kind == "url"
+        or (catalog_target and (catalog_target.startswith("http://") or catalog_target.startswith("https://")))
+        or (resolved_target and (resolved_target.startswith("http://") or resolved_target.startswith("https://")))
+    )
+
     dist_path = None
     if distribution_dir:
         dist_path = Path(distribution_dir)
-    else:
-        for candidate in [
-            Path.cwd() / "repo",
-            Path(__file__).resolve().parents[3] / "anime-extensoes",
-            Path(__file__).resolve().parents[2] / "../anime-extensoes",
-            Path("/home/awerkori/.Projects/Project-Nox-Anime/anime-extensoes"),
-        ]:
-            if candidate.is_dir() and (candidate / "index.min.json").is_file():
-                dist_path = candidate
-                break
+    elif catalog_target and not (catalog_target.startswith("http://") or catalog_target.startswith("https://")):
+        cat_file = Path(catalog_target).resolve()
+        if cat_file.is_file():
+            dist_path = cat_file.parent
+        elif cat_file.is_dir():
+            dist_path = cat_file
+    elif not is_remote_catalog:
+        # If neither distribution_dir nor catalog_target was explicitly supplied,
+        # and target was not detected as remote, check local fallback (Codex Finding P1)
+        try:
+            mod = get_check_consistency_mod()
+            res_ctx = mod.resolve_distribution_context(catalog_target=None, distribution_dir=None)
+            if len(res_ctx) >= 6 and res_ctx[5] and not (str(res_ctx[5]).startswith("http://") or str(res_ctx[5]).startswith("https://")):
+                dist_path = Path(res_ctx[5]).resolve().parent
+            elif len(res_ctx) >= 4 and res_ctx[3]:
+                dist_path = res_ctx[3].parent if isinstance(res_ctx[3], Path) else Path(res_ctx[3]).parent
+        except Exception:
+            pass
 
     # If distribution repository is accessible locally, recover directly
     if dist_path and (dist_path / "index.min.json").is_file():
@@ -1364,16 +1482,43 @@ def recover_pending_publications(
             pkg = f"eu.kanade.tachiyomi.animeextension.{lang}.{ext}"
 
             eff = effective_version(None, u)
-            code = eff[2] if eff else 1
+            local_code = eff[2] if eff else 1
             lib = read_lib_version(None, u)
-            version_str = f"{lib}.{code}"
+            local_version_str = f"{lib}.{local_code}"
             for fn in ("build.gradle.kts", "build.gradle"):
                 bf = Path(f"{u}/{fn}")
                 if bf.is_file():
                     content_gradle = bf.read_text(encoding="utf-8", errors="ignore")
                     m = re.search(r"""extVersion\s*=\s*['"]([^'"]+)['"]""", content_gradle)
                     if m:
-                        version_str = m.group(1)
+                        local_version_str = m.group(1)
+
+            # Preserve deployed version if deployed catalog version is ahead (avoid downgrade)
+            dep = min_by_pkg.get(pkg) or full_by_pkg.get(pkg) or {}
+            dep_code = dep.get("code", 0)
+            dep_version = dep.get("version")
+            if dep_code > local_code and dep_version:
+                code = dep_code
+                version_str = dep_version
+                expected_apk_names = {
+                    f"aniyomi-{lang}.{ext}-v{dep_version}.apk",
+                    f"aniyomi-{lang}.{ext}-v{dep_version}-release.apk",
+                }
+                if dep.get("apk"):
+                    expected_apk_names.add(dep["apk"])
+                    expected_apk_names.add(dep["apk"].replace(".apk", "-release.apk"))
+            else:
+                code = local_code
+                version_str = local_version_str
+                expected_apk_names = {
+                    f"aniyomi-{lang}.{ext}-v{version_str}.apk",
+                    f"aniyomi-{lang}.{ext}-v{lib}.{code}.apk",
+                    f"aniyomi-{lang}.{ext}-v{version_str}-release.apk",
+                    f"aniyomi-{lang}.{ext}-v{lib}.{code}-release.apk",
+                }
+                if dep.get("apk") and dep_code >= local_code and dep.get("version") == version_str:
+                    expected_apk_names.add(dep["apk"])
+                    expected_apk_names.add(dep["apk"].replace(".apk", "-release.apk"))
 
             found_apk = None
             candidate_apk_dirs = []
@@ -1385,15 +1530,20 @@ def recover_pending_publications(
                 apk_dir,
             ])
 
-            apk_expected_prefix = f"aniyomi-{lang}.{ext}-v"
             for c_dir in candidate_apk_dirs:
                 if c_dir.is_dir():
-                    for f in c_dir.glob("*.apk"):
-                        if f.name.startswith(apk_expected_prefix) and f.stat().st_size > 0:
+                    for name in expected_apk_names:
+                        f = c_dir / name
+                        # Validate candidate before selecting it to avoid corrupt earlier artifacts blocking valid ones (Codex Finding P2)
+                        if is_valid_apk_file(f):
                             found_apk = f
                             break
                 if found_apk:
                     break
+
+            if not found_apk and local_code < code:
+                print(f"Error: local source version code ({local_code}) is behind deployed code ({code}) for {u}; cannot build outdated artifact.", file=sys.stderr)
+                return "FAILED"
 
             if not found_apk and Path("./gradlew").is_file() and os.access("./gradlew", os.X_OK):
                 print(f"Compiling APK for {u} via Gradle...")
@@ -1402,20 +1552,38 @@ def recover_pending_publications(
                 if res.returncode == 0:
                     out_dir = Path(f"{u}/build/outputs/apk/release")
                     if out_dir.is_dir():
-                        for f in out_dir.glob("*.apk"):
-                            if f.name.startswith(apk_expected_prefix) and f.stat().st_size > 0:
+                        for name in expected_apk_names:
+                            f = out_dir / name
+                            if is_valid_apk_file(f):
                                 found_apk = f
                                 break
 
-            if not found_apk or not found_apk.is_file() or found_apk.stat().st_size == 0:
+            if not found_apk or not is_valid_apk_file(found_apk):
                 print(f"Error: legitimate APK artifact for {u} cannot be located or produced.", file=sys.stderr)
                 return "FAILED"
 
-            apk_name = found_apk.name
-            if "-v" in apk_name:
-                v_part = apk_name.split("-v")[-1].replace(".apk", "")
-                if v_part:
-                    version_str = v_part
+            # Normalize Gradle release APK name (e.g. *-release.apk -> *.apk)
+            apk_name = found_apk.name.replace("-release.apk", ".apk")
+            if not apk_name.endswith(".apk"):
+                apk_name += ".apk"
+
+            # Strictly verify package prefix and version tag in artifact name
+            expected_prefix = f"aniyomi-{lang}.{ext}-v"
+            if not apk_name.startswith(expected_prefix) or "-v" not in apk_name:
+                print(f"Error: APK artifact name {apk_name} does not match expected package prefix {expected_prefix}", file=sys.stderr)
+                return "FAILED"
+
+            # Validate APK version corresponds strictly to expected catalog code and version
+            v_part = apk_name.split("-v")[-1].replace(".apk", "")
+            if dep_code > local_code and dep_version:
+                if v_part != dep_version:
+                    print(f"Error: APK artifact version ({v_part}) does not match deployed version ({dep_version}) for {u}.", file=sys.stderr)
+                    return "FAILED"
+                version_str = dep_version
+            else:
+                if v_part != version_str:
+                    print(f"Error: APK artifact version ({v_part}) does not match expected version ({version_str}) for {u}.", file=sys.stderr)
+                    return "FAILED"
 
             dest_apk = apk_dir / apk_name
             if found_apk.resolve() != dest_apk.resolve():
@@ -1459,11 +1627,13 @@ def recover_pending_publications(
 
         with open(dist_path / "index.html", "w", encoding="utf-8") as f:
             import html
+            existing_disk_apks = {f.name for f in apk_dir.glob("*.apk") if f.stat().st_size > 0}
             f.write('<!DOCTYPE html>\n<html>\n<head>\n<meta charset="UTF-8">\n<title>apks</title>\n</head>\n<body>\n<pre>\n')
             for entry in sorted_min:
-                apk_esc = 'apk/' + html.escape(entry["apk"])
-                name_esc = html.escape(entry["name"])
-                f.write(f'<a href="{apk_esc}">{name_esc}</a>\n')
+                if entry.get("apk") in existing_disk_apks:
+                    apk_esc = 'apk/' + html.escape(entry["apk"])
+                    name_esc = html.escape(entry["name"])
+                    f.write(f'<a href="{apk_esc}">{name_esc}</a>\n')
             f.write('</pre>\n</body>\n</html>\n')
 
         # Verify correspondence between artifacts and catalog
@@ -1500,13 +1670,66 @@ def recover_pending_publications(
     # If distribution repository is remote (GitHub Actions runner without repo clone):
     # Dispatch build_push.yml workflow via GitHub API to build and publish pending units
     gh_token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if not gh_token:
+        try:
+            mod = get_check_consistency_mod()
+            gh_token = mod.get_github_auth_token()
+        except Exception:
+            pass
     if gh_token:
         try:
             repo_slug = os.environ.get("GITHUB_REPOSITORY", "Awerkori/anime-fonte-extensoes")
+            # Verify if active build_push.yml runs cover pending units (Finding P1 / P2)
+            def get_active_runs() -> list[dict]:
+                runs_url = f"https://api.github.com/repos/{repo_slug}/actions/workflows/build_push.yml/runs?branch=main&per_page=5"
+                req_runs = urllib.request.Request(
+                    runs_url,
+                    headers={
+                        "Authorization": f"token {gh_token}",
+                        "Accept": "application/vnd.github+json",
+                        "User-Agent": "Nox-Sync/1.0",
+                    },
+                )
+                with urllib.request.urlopen(req_runs, timeout=10) as r_resp:
+                    runs_data = json.loads(r_resp.read().decode("utf-8"))
+                    return [
+                        r for r in runs_data.get("workflow_runs", [])
+                        if r.get("head_branch") == "main" and r.get("status") != "completed"
+                    ]
+
+            active_runs = []
+            try:
+                active_runs = get_active_runs()
+            except Exception as e_runs:
+                print(f"Warning: unable to query active runs ({e_runs}). Deferring publication recovery to avoid cancelling active publication.", file=sys.stderr)
+                return "DEFERRED"
+
+            if active_runs:
+                print(f"Active workflow build_push.yml run(s) detected ({len(active_runs)}) in progress on main. Waiting briefly for completion before dispatching recovery...")
+                import time
+                max_wait = 20
+                poll_interval = 5
+                waited = 0
+                while waited < max_wait:
+                    time.sleep(poll_interval)
+                    waited += poll_interval
+                    try:
+                        current_active = get_active_runs()
+                        if not current_active:
+                            print(f"Active runs finished after {waited}s. Proceeding with recovery dispatch.")
+                            break
+                    except Exception:
+                        pass
+                else:
+                    active_ids = [str(r.get("id")) for r in active_runs]
+                    print(f"Active build_push.yml run(s) ({', '.join(active_ids)}) still in progress on main after {max_wait}s. Deferring publication recovery to avoid cancelling active publication.")
+                    return "DEFERRED"
+
             url = f"https://api.github.com/repos/{repo_slug}/actions/workflows/build_push.yml/dispatches"
+            payload = {"ref": "main"}
             req = urllib.request.Request(
                 url,
-                data=json.dumps({"ref": "main"}).encode("utf-8"),
+                data=json.dumps(payload).encode("utf-8"),
                 headers={
                     "Authorization": f"token {gh_token}",
                     "Accept": "application/vnd.github+json",
@@ -1632,12 +1855,25 @@ def main() -> None:
         no_changes=no_changes,
     )
 
-    pending_pub = get_publish_pending_units(
+    res_pending = get_publish_pending_units(
         base=base,
         upstream_ref=upstream_ref,
         catalog_target=args.catalog_file,
         distribution_dir=args.distribution_dir,
+        return_context=True,
     )
+    if isinstance(res_pending, tuple):
+        pending_pub = res_pending[0]
+        resolved_dist_dir = res_pending[1]
+        has_inconclusive = res_pending[2]
+        target_kind = res_pending[3] if len(res_pending) > 3 else ("file" if resolved_dist_dir else "url")
+        resolved_target = res_pending[4] if len(res_pending) > 4 else None
+    else:
+        pending_pub = res_pending
+        resolved_dist_dir = None
+        has_inconclusive = False
+        target_kind = "file" if args.distribution_dir else "url"
+        resolved_target = None
 
     if no_changes and pending_pub:
         print("==================================================")
@@ -1650,23 +1886,33 @@ def main() -> None:
             print_observability_footer("NO_CHANGES", "SKIPPED", "SKIPPED")
             return
 
+        # Check for concurrent changes before starting publication recovery (Finding 1)
+        if args.push:
+            try:
+                ensure_main_unchanged(start_main)
+            except ConcurrencyRaceError as e:
+                print(f"Transient concurrency conflict: {e}", file=sys.stderr)
+                sys.exit(75)
+
         recovery_status = recover_pending_publications(
             pending_pub,
             push=args.push,
             start_main=start_main,
             upstream_ref=upstream_ref,
-            distribution_dir=args.distribution_dir,
+            distribution_dir=args.distribution_dir or resolved_dist_dir,
             staging_dir=args.staging_dir,
+            catalog_target=args.catalog_file,
+            target_kind=target_kind,
+            resolved_target=resolved_target,
         )
 
-        if args.push:
-            try:
-                publish_sync(upstream_ref, start_main)
-            except ConcurrencyRaceError as e:
-                print(f"Transient concurrency conflict: {e}", file=sys.stderr)
-                sys.exit(75)
-
         if recovery_status == "RECOVERED":
+            if args.push:
+                try:
+                    publish_sync(upstream_ref, start_main)
+                except ConcurrencyRaceError as e:
+                    print(f"Transient concurrency conflict: {e}", file=sys.stderr)
+                    sys.exit(75)
             print("==================================================")
             print("PUBLICATION_RECOVERED")
             print("==================================================")
@@ -1678,11 +1924,33 @@ def main() -> None:
                 removed_units=[],
                 sync_result="SUCCESS",
             )
+            if has_inconclusive:
+                print("::warning::Publication recovery completed for known pending units, but some artifact checks were inconclusive due to network errors.", file=sys.stderr)
+                print_observability_footer("NO_CHANGES", "SUCCESS", "RECOVERED_INCONCLUSIVE")
+                return
             print_observability_footer("NO_CHANGES", "SUCCESS", "RECOVERED")
             return
         elif recovery_status == "DISPATCHED":
+            if args.push:
+                try:
+                    publish_sync(upstream_ref, start_main)
+                except ConcurrencyRaceError as e:
+                    print(f"Transient concurrency conflict: {e}", file=sys.stderr)
+                    sys.exit(75)
             print("Publication recovery dispatched to CI workflow.")
+            if has_inconclusive:
+                print("::warning::Publication recovery dispatched for known pending units, but some artifact checks were inconclusive due to network errors.", file=sys.stderr)
+                print_observability_footer("NO_CHANGES", "SUCCESS", "TRIGGERED_INCONCLUSIVE")
+                return
             print_observability_footer("NO_CHANGES", "SUCCESS", "TRIGGERED")
+            return
+        elif recovery_status == "DEFERRED":
+            print("Publication recovery deferred: active workflow build_push.yml is in progress and will not be cancelled.")
+            if has_inconclusive:
+                print("::warning::Publication recovery deferred while active build runs, and some artifact checks were inconclusive.", file=sys.stderr)
+                print_observability_footer("NO_CHANGES", "SUCCESS", "DEFERRED_INCONCLUSIVE")
+                return
+            print_observability_footer("NO_CHANGES", "SUCCESS", "DEFERRED")
             return
         else:
             print("Publication recovery failed: artifact unavailable or workflow dispatch failed.", file=sys.stderr)
@@ -1690,6 +1958,10 @@ def main() -> None:
             sys.exit(1)
 
     if no_changes:
+        if has_inconclusive and not pending_pub:
+            print("::error::Artifact verification checks were inconclusive due to network errors. Failing controlled to avoid false clean confirmation.", file=sys.stderr)
+            print_observability_footer("NO_CHANGES", "FAILURE", "INCONCLUSIVE")
+            sys.exit(1)
         print("No upstream changes to apply.")
         if args.push:
             try:

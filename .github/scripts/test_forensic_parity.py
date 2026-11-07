@@ -22,6 +22,8 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import urllib.error
+import urllib.request
 from unittest.mock import MagicMock, patch
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -362,29 +364,85 @@ class ForensicParityTest(unittest.TestCase):
         """
         os.chdir(REPO_ROOT)
 
-        # Sub-scenario 1: Catalog network failure logs warning but evaluates gracefully
+        # Sub-scenario 1: Catalog network failure gracefully falls back to verified local catalog
         mock_urlopen.side_effect = Exception("HTTP 502 Bad Gateway")
-        with patch("check_consistency_mod.get_upstream_head", return_value="f21e729f"), \
-             patch("check_consistency_mod.get_sync_branch_head", return_value="f21e729f"):
-            res_warn = checker.check_consistency(check_pending=True)
-            self.assertEqual(res_warn, 0, "Catalog network warning must not abort workflow unless pending")
+        local_modules = checker.get_local_source_modules()
+        with tempfile.TemporaryDirectory() as td:
+            temp_dist = Path(td)
+            apk_dir = temp_dist / "apk"
+            apk_dir.mkdir(parents=True, exist_ok=True)
+            fallback_catalog = []
+            for u in local_modules:
+                parts = u.split("/")
+                eff = sync.effective_version(None, u)
+                eff_code = eff[2] if eff else 1
+                v_str = f"16.{eff_code}"
+                apk_name = f"aniyomi-{parts[1]}.{parts[2]}-v{v_str}.apk"
+                (apk_dir / apk_name).write_bytes(b"dummy")
+                fallback_catalog.append({
+                    "pkg": f"eu.kanade.tachiyomi.animeextension.{parts[1]}.{parts[2]}",
+                    "code": eff_code,
+                    "apk": apk_name,
+                    "name": f"Aniyomi: {parts[2].capitalize()}",
+                    "version": v_str,
+                })
+            cat_file = temp_dist / "index.min.json"
+            with open(cat_file, "w", encoding="utf-8") as f:
+                json.dump(fallback_catalog, f)
 
-        # Sub-scenario 2: Upstream divergence -> exit code 2
-        with patch("check_consistency_mod.get_upstream_head", return_value="f21e729f_new"), \
-             patch("check_consistency_mod.get_sync_branch_head", return_value="f21e729f_old"):
-            res_diverged = checker.check_consistency(check_pending=True)
-            self.assertEqual(res_diverged, 2, "Pending upstream divergence must exit code 2")
+            with patch("check_consistency_mod.get_upstream_head", return_value="f21e729f"), \
+                 patch("check_consistency_mod.get_sync_branch_head", return_value="f21e729f"), \
+                 patch("check_consistency_mod.get_deployed_catalog", return_value=(fallback_catalog, "Local Fallback", "VERIFIED", apk_dir, None, str(cat_file))):
+                res_warn = checker.check_consistency(check_pending=True)
+                self.assertEqual(res_warn, 0, "Verified local fallback must return exit code 0")
+
+            # Sub-scenario 2: Upstream divergence with verified catalog -> exit code 2
+            with patch("check_consistency_mod.get_upstream_head", return_value="f21e729f_new"), \
+                 patch("check_consistency_mod.get_sync_branch_head", return_value="f21e729f_old"), \
+                 patch("check_consistency_mod.get_deployed_catalog", return_value=(fallback_catalog, "Local Fallback", "VERIFIED", apk_dir, None, str(cat_file))):
+                res_diverged = checker.check_consistency(check_pending=True)
+                self.assertEqual(res_diverged, 2, "Pending upstream divergence must exit code 2")
 
         # Sub-scenario 3: Full sync -> exit code 0
-        mock_response = MagicMock()
         local_modules = checker.get_local_source_modules()
-        catalog = [
-            {"pkg": f"eu.kanade.tachiyomi.animeextension.{u[4:].replace('/', '.')}", "code": 1}
-            for u in local_modules
-        ]
-        mock_response.read.return_value = json.dumps(catalog).encode("utf-8")
-        mock_urlopen.side_effect = None
-        mock_urlopen.return_value.__enter__.return_value = mock_response
+        catalog = []
+        for u in local_modules:
+            parts = u.split("/")
+            eff = sync.effective_version(None, u)
+            eff_code = eff[2] if eff else 1
+            v_str = f"16.{eff_code}"
+            apk_name = f"aniyomi-{parts[1]}.{parts[2]}-v{v_str}.apk"
+            catalog.append({
+                "pkg": f"eu.kanade.tachiyomi.animeextension.{parts[1]}.{parts[2]}",
+                "code": eff_code,
+                "apk": apk_name,
+                "name": f"Aniyomi: {parts[2].capitalize()}",
+                "version": v_str,
+            })
+
+        def mock_dispatch(req, timeout=10):
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            resp = MagicMock()
+            if "git/trees" in url:
+                tree = [
+                    {"path": f"apk/{item['apk']}", "type": "blob", "size": 50000}
+                    for item in catalog
+                ]
+                resp.read.return_value = json.dumps({"tree": tree}).encode("utf-8")
+            elif "index.html" in url:
+                html_lines = ['<!DOCTYPE html><html><body><pre>']
+                for item in catalog:
+                    apk_n = item['apk']
+                    name_n = item['name']
+                    html_lines.append(f'<a href="apk/{apk_n}">{name_n}</a>')
+                html_lines.append('</pre></body></html>')
+                resp.read.return_value = "\n".join(html_lines).encode("utf-8")
+            else:
+                resp.read.return_value = json.dumps(catalog).encode("utf-8")
+            resp.__enter__.return_value = resp
+            return resp
+
+        mock_urlopen.side_effect = mock_dispatch
 
         with patch("check_consistency_mod.get_upstream_head", return_value="f21e729f"), \
              patch("check_consistency_mod.get_sync_branch_head", return_value="f21e729f"):
@@ -393,17 +451,45 @@ class ForensicParityTest(unittest.TestCase):
 
         # Sub-scenario 4: Missing extension in catalog -> PUBLISH_PENDING -> exit code 2
         incomplete_catalog = [
-            {"pkg": f"eu.kanade.tachiyomi.animeextension.{u[4:].replace('/', '.')}", "code": 1}
-            for u in local_modules if u != "src/en/anipm"
+            item for item in catalog
+            if item["pkg"] != "eu.kanade.tachiyomi.animeextension.en.anipm"
         ]
-        mock_incomplete = MagicMock()
-        mock_incomplete.read.return_value = json.dumps(incomplete_catalog).encode("utf-8")
-        mock_urlopen.return_value.__enter__.return_value = mock_incomplete
+
+        def mock_dispatch_incomplete(req, timeout=10):
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            resp = MagicMock()
+            if "git/trees" in url:
+                tree = [
+                    {"path": f"apk/{item['apk']}", "type": "blob", "size": 50000}
+                    for item in incomplete_catalog
+                ]
+                resp.read.return_value = json.dumps({"tree": tree}).encode("utf-8")
+            elif "index.html" in url:
+                html_lines = ['<!DOCTYPE html><html><body><pre>']
+                for item in incomplete_catalog:
+                    apk_n = item['apk']
+                    name_n = item['name']
+                    html_lines.append(f'<a href="apk/{apk_n}">{name_n}</a>')
+                html_lines.append('</pre></body></html>')
+                resp.read.return_value = "\n".join(html_lines).encode("utf-8")
+            else:
+                resp.read.return_value = json.dumps(incomplete_catalog).encode("utf-8")
+            resp.__enter__.return_value = resp
+            return resp
+
+        mock_urlopen.side_effect = mock_dispatch_incomplete
 
         with patch("check_consistency_mod.get_upstream_head", return_value="f21e729f"), \
              patch("check_consistency_mod.get_sync_branch_head", return_value="f21e729f"):
             res_pending = checker.check_consistency(check_pending=True)
             self.assertEqual(res_pending, 2, "PUBLISH_PENDING must trigger exit code 2")
+
+        # Sub-scenario 5: Unverified catalog (all sources fail) -> controlled failure -> exit code 1 (Section 5)
+        with patch("check_consistency_mod.get_deployed_catalog", return_value=(None, "NONE", "Failed", None, None)), \
+             patch("check_consistency_mod.get_upstream_head", return_value="f21e729f"), \
+             patch("check_consistency_mod.get_sync_branch_head", return_value="f21e729f"):
+            res_unverified = checker.check_consistency(check_pending=True)
+            self.assertEqual(res_unverified, 1, "Unverified catalog must return controlled failure exit code 1")
 
     # =========================================================================
     # 8. Shared Library Indirect Update Triggers Monotonic Bump
@@ -820,7 +906,9 @@ class ForensicParityTest(unittest.TestCase):
         staging_apk.write_bytes(b"PK\x03\x04" + b"\x00" * 50)  # Valid zip magic header
 
         # Build initial incomplete catalog using production catalog minus target_unit
-        prod_catalog_file = Path("/home/awerkori/.Projects/Project-Nox-Anime/anime-extensoes/index.min.json")
+        prod_catalog_file = Path(__file__).resolve().parents[2].parent / "anime-extensoes/index.min.json"
+        if not prod_catalog_file.is_file():
+            prod_catalog_file = Path("../anime-extensoes/index.min.json")
         if not prod_catalog_file.is_file():
             prod_catalog_file = Path(__file__).resolve().parents[3] / "anime-extensoes/index.min.json"
         if prod_catalog_file.is_file():
@@ -857,6 +945,7 @@ class ForensicParityTest(unittest.TestCase):
             json.dump(incomplete_catalog, f, indent=2)
 
         # 1-3. Detect absence, classify PUBLISH_PENDING, and return exit code 2
+        # (Verified both with explicit distribution_dir and auto-inferred from catalog path)
         with patch("check_consistency_mod.get_upstream_head", return_value="f21e729f"), \
              patch("check_consistency_mod.get_sync_branch_head", return_value="f21e729f"):
             ret_detect = checker.check_consistency(
@@ -865,6 +954,12 @@ class ForensicParityTest(unittest.TestCase):
                 distribution_dir=temp_dist,
             )
             self.assertEqual(ret_detect, 2, "Pending publication must return exit code 2")
+
+            ret_detect_auto = checker.check_consistency(
+                check_pending=True,
+                catalog_target=str(test_index_min),
+            )
+            self.assertEqual(ret_detect_auto, 2, "Auto-inferred distribution must also return exit code 2")
 
         # 4-7. Trigger recovery mechanism
         recovered = sync.recover_pending_publications(
@@ -896,6 +991,251 @@ class ForensicParityTest(unittest.TestCase):
                 distribution_dir=temp_dist,
             )
             self.assertEqual(ret_clean, 0, "Recovered state must return exit code 0 (IN_SYNC)")
+
+        # Verify missing APK with present catalog entry also triggers PUBLISH_PENDING
+        recovered_apk.unlink()
+        with patch("check_consistency_mod.get_upstream_head", return_value="f21e729f"), \
+             patch("check_consistency_mod.get_sync_branch_head", return_value="f21e729f"):
+            ret_missing_apk = checker.check_consistency(
+                check_pending=True,
+                catalog_target=str(test_index_min),
+                distribution_dir=temp_dist,
+            )
+            self.assertEqual(ret_missing_apk, 2, "Missing APK on disk must trigger exit code 2")
+
+        # Re-recover missing APK
+        sync.recover_pending_publications(
+            [target_unit],
+            distribution_dir=temp_dist,
+            staging_dir=staging_dir,
+        )
+        self.assertTrue(recovered_apk.is_file(), "Re-recovered APK must exist")
+        with patch("check_consistency_mod.get_upstream_head", return_value="f21e729f"), \
+             patch("check_consistency_mod.get_sync_branch_head", return_value="f21e729f"):
+            ret_clean2 = checker.check_consistency(
+                check_pending=True,
+                catalog_target=str(test_index_min),
+                distribution_dir=temp_dist,
+            )
+            self.assertEqual(ret_clean2, 0, "Re-recovered state must return exit code 0")
+
+        # =====================================================================
+        # Active Run Deferral & Dispatch Verification (Codex Findings P1 & P2)
+        # =====================================================================
+        # Case A: Active run in progress defers recovery rather than preempting/cancelling
+        with patch.dict(os.environ, {"GH_TOKEN": "mock-pat", "GITHUB_REPOSITORY": "Awerkori/anime-fonte-extensoes"}), \
+             patch("time.sleep"), \
+             patch("urllib.request.urlopen") as mock_url:
+            mock_runs = MagicMock()
+            mock_runs.read.return_value = json.dumps({
+                "workflow_runs": [{"id": 9999, "head_branch": "main", "status": "in_progress", "head_sha": "def5678"}]
+            }).encode("utf-8")
+            mock_runs.__enter__.return_value = mock_runs
+            mock_url.return_value = mock_runs
+
+            res_deferred = sync.recover_pending_publications(
+                [target_unit],
+                distribution_dir=None,
+                staging_dir=None,
+                catalog_target="https://raw.githubusercontent.com/Awerkori/anime-extensoes/repo/index.min.json",
+            )
+            self.assertEqual(res_deferred, "DEFERRED", "Active build must defer recovery instead of cancelling active run")
+
+        # Case B: No active run in progress proceeds to dispatch recovery workflow
+        with patch.dict(os.environ, {"GH_TOKEN": "mock-pat", "GITHUB_REPOSITORY": "Awerkori/anime-fonte-extensoes"}), \
+             patch("urllib.request.urlopen") as mock_url:
+            # First call queries runs (empty), second call dispatches (HTTP 204)
+            mock_runs = MagicMock()
+            mock_runs.read.return_value = json.dumps({"workflow_runs": []}).encode("utf-8")
+            mock_runs.__enter__.return_value = mock_runs
+
+            mock_dispatch = MagicMock()
+            mock_dispatch.status = 204
+            mock_dispatch.__enter__.return_value = mock_dispatch
+
+            mock_url.side_effect = [mock_runs, mock_dispatch]
+
+            res_dispatched = sync.recover_pending_publications(
+                [target_unit],
+                distribution_dir=None,
+                staging_dir=None,
+                catalog_target="https://raw.githubusercontent.com/Awerkori/anime-extensoes/repo/index.min.json",
+            )
+            self.assertEqual(res_dispatched, "DISPATCHED", "Clean state without active runs must dispatch recovery")
+
+        # Case C: Active run finishes during wait window, then proceeds to dispatch
+        with patch.dict(os.environ, {"GH_TOKEN": "mock-pat", "GITHUB_REPOSITORY": "Awerkori/anime-fonte-extensoes"}), \
+             patch("time.sleep"), \
+             patch("urllib.request.urlopen") as mock_url:
+            mock_active = MagicMock()
+            mock_active.read.return_value = json.dumps({
+                "workflow_runs": [{"id": 9999, "head_branch": "main", "status": "in_progress"}]
+            }).encode("utf-8")
+            mock_active.__enter__.return_value = mock_active
+
+            mock_finished = MagicMock()
+            mock_finished.read.return_value = json.dumps({"workflow_runs": []}).encode("utf-8")
+            mock_finished.__enter__.return_value = mock_finished
+
+            mock_dispatch = MagicMock()
+            mock_dispatch.status = 204
+            mock_dispatch.__enter__.return_value = mock_dispatch
+
+            mock_url.side_effect = [mock_active, mock_finished, mock_dispatch]
+
+            res_wait_and_dispatch = sync.recover_pending_publications(
+                [target_unit],
+                distribution_dir=None,
+                staging_dir=None,
+                catalog_target="https://raw.githubusercontent.com/Awerkori/anime-extensoes/repo/index.min.json",
+            )
+            self.assertEqual(res_wait_and_dispatch, "DISPATCHED", "Active run finishing during wait must dispatch recovery")
+
+        # Case D: Active run check fails (API outage/timeout) -> defers rather than risking cancellation
+        with patch.dict(os.environ, {"GH_TOKEN": "mock-pat", "GITHUB_REPOSITORY": "Awerkori/anime-fonte-extensoes"}), \
+             patch("urllib.request.urlopen", side_effect=urllib.error.URLError("Connection refused")):
+            res_error_deferred = sync.recover_pending_publications(
+                [target_unit],
+                distribution_dir=None,
+                staging_dir=None,
+                catalog_target="https://raw.githubusercontent.com/Awerkori/anime-extensoes/repo/index.min.json",
+            )
+            self.assertEqual(res_error_deferred, "DEFERRED", "Active run check failure must defer recovery")
+
+        # Case E: Nonterminal statuses ("requested", "pending") are recognized as active (Codex Finding P2)
+        for nonterminal_status in ("requested", "pending", "queued", "waiting", "in_progress"):
+            with patch.dict(os.environ, {"GH_TOKEN": "mock-pat", "GITHUB_REPOSITORY": "Awerkori/anime-fonte-extensoes"}), \
+                 patch("time.sleep"), \
+                 patch("urllib.request.urlopen") as mock_url:
+                mock_active = MagicMock()
+                mock_active.read.return_value = json.dumps({
+                    "workflow_runs": [{"id": 8888, "head_branch": "main", "status": nonterminal_status}]
+                }).encode("utf-8")
+                mock_active.__enter__.return_value = mock_active
+                mock_url.return_value = mock_active
+
+                res_nonterminal = sync.recover_pending_publications(
+                    [target_unit],
+                    distribution_dir=None,
+                    staging_dir=None,
+                    catalog_target="https://raw.githubusercontent.com/Awerkori/anime-extensoes/repo/index.min.json",
+                )
+                self.assertEqual(res_nonterminal, "DEFERRED", f"Status '{nonterminal_status}' must be recognized as active and deferred")
+
+        # Case F: Corrupt staging APK candidate is skipped, valid build APK candidate recovered (Codex Finding P2)
+        corrupt_staging_dir = Path(self.temp_dir) / "corrupt_staging"
+        corrupt_staging_dir.mkdir(parents=True, exist_ok=True)
+        corrupt_apk = corrupt_staging_dir / target_apk_name
+        corrupt_apk.write_bytes(b"CORRUPT_NOT_ZIP_HEADER_DATA_12345")
+
+        valid_out_dir = Path(f"{target_unit}/build/outputs/apk/release")
+        valid_out_dir.mkdir(parents=True, exist_ok=True)
+        valid_apk = valid_out_dir / target_apk_name
+        valid_apk.write_bytes(b"PK\x03\x04" + b"\x00" * 50)
+
+        # Clear existing disk apk from earlier test
+        if recovered_apk.is_file():
+            recovered_apk.unlink()
+
+        # Recovery should skip corrupt_staging_dir and pick valid_apk from valid_out_dir
+        res_skip_corrupt = sync.recover_pending_publications(
+            [target_unit],
+            distribution_dir=temp_dist,
+            staging_dir=corrupt_staging_dir,
+            catalog_target=str(test_index_min),
+        )
+        self.assertEqual(res_skip_corrupt, "RECOVERED", "Recovery must skip corrupt candidate and recover valid artifact")
+        self.assertTrue(recovered_apk.is_file(), "Recovered APK must exist")
+        self.assertTrue(sync.is_valid_apk_file(recovered_apk), "Recovered APK must have valid PK magic header")
+
+        # Case G: Concurrent remote probing and target resolution verification (Codex Finding P1)
+        remote_catalog_url = "https://raw.githubusercontent.com/Awerkori/anime-extensoes/repo/index.min.json"
+        with patch.object(
+            checker,
+            "resolve_distribution_context",
+            return_value=(
+                [{"name": "Aniyomi: Anipm", "pkg": target_pkg, "apk": target_apk_name, "code": 14, "version": "16.14"}],
+                "Mock Remote",
+                "VERIFIED",
+                None,
+                None,
+                remote_catalog_url,
+            ),
+        ), patch.object(
+            checker,
+            "check_remote_apks_concurrent",
+            return_value={target_apk_name: "MISSING"},
+        ) as mock_concurrent:
+            pending_res, dist_d, has_incon, t_kind, res_tgt = sync.get_publish_pending_units(
+                catalog_target=remote_catalog_url,
+                return_context=True,
+            )
+            self.assertEqual(t_kind, "url", "Target kind must resolve to 'url'")
+            self.assertEqual(res_tgt, remote_catalog_url, "Resolved target URL must match catalog target")
+            self.assertIn(target_unit, pending_res, "Missing remote APK detected via concurrent check must be pending")
+            self.assertTrue(mock_concurrent.called, "check_remote_apks_concurrent must be used for custom verified URL")
+
+        # Case H: Bounded concurrent fallback probing for APKs absent from Git tree (Codex Finding P1)
+        with patch.object(
+            checker,
+            "resolve_distribution_context",
+            return_value=(
+                [{"name": "Aniyomi: Anipm", "pkg": target_pkg, "apk": target_apk_name, "code": 14, "version": "16.14"}],
+                "Mock Git Tree",
+                "VERIFIED",
+                None,
+                (set(), set()),  # Tree succeeded, but target_apk_name is absent
+                remote_catalog_url,
+            ),
+        ), patch.object(
+            checker,
+            "check_remote_apks_concurrent",
+            return_value={target_apk_name: "MISSING"},
+        ) as mock_tree_fallback:
+            pending_tree, _, _, _, _ = sync.get_publish_pending_units(
+                catalog_target=remote_catalog_url,
+                return_context=True,
+            )
+            self.assertIn(target_unit, pending_tree, "Missing tree APK probed concurrently must be pending")
+            self.assertTrue(mock_tree_fallback.called, "Fallback probes for missing tree APKs must use check_remote_apks_concurrent")
+
+        # Case I: Inconclusive sample upgraded by conclusive full probe (Codex Finding P2)
+        with patch.object(
+            checker,
+            "resolve_distribution_context",
+            return_value=(
+                [{"name": "Aniyomi: Anipm", "pkg": target_pkg, "apk": target_apk_name, "code": 14, "version": "16.14"}],
+                "Mock Remote Transient Outage",
+                "UNVERIFIED_ARTIFACTS",  # Initial sample failed
+                None,
+                None,
+                remote_catalog_url,
+            ),
+        ), patch.object(
+            checker,
+            "check_remote_apks_concurrent",
+            return_value={target_apk_name: "MISSING"},  # Conclusive full probe
+        ), patch("check_consistency_mod.get_upstream_head", return_value="f21e729f"), \
+           patch("check_consistency_mod.get_sync_branch_head", return_value="f21e729f"):
+            ret_upgrade = checker.check_consistency(
+                check_pending=True,
+                catalog_target=remote_catalog_url,
+            )
+            self.assertEqual(ret_upgrade, 2, "Conclusive full probe must upgrade UNVERIFIED_ARTIFACTS and exit 2 for pending publication")
+
+        # Case J: generate-build-matrices adds pending modules to both modules and deleted sets
+        import importlib.util
+        gbm_path = Path(__file__).resolve().parent / "generate-build-matrices.py"
+        spec_gbm = importlib.util.spec_from_file_location("gbm_mod", str(gbm_path))
+        gbm_mod = importlib.util.module_from_spec(spec_gbm)
+        spec_gbm.loader.exec_module(gbm_mod)
+
+        with patch.object(gbm_mod, "get_publish_pending_modules", return_value=[":src:en:anipm"]):
+            with patch("subprocess.run") as mock_sub:
+                mock_sub.return_value = MagicMock(returncode=0, stdout="")
+                mods, dels = gbm_mod.get_module_list("HEAD~1")
+                self.assertIn(":src:en:anipm", mods, "Pending publication module must be added to build matrix")
+                self.assertIn("en.anipm", dels, "Pending publication module must be added to delete set for APK cleanup")
 
 
 if __name__ == "__main__":

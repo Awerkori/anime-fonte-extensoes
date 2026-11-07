@@ -197,6 +197,10 @@ def get_module_list(ref: str) -> tuple[list[str], list[str]]:
     if pending_pub:
         print(f"Pending publication units added to build matrix: {pending_pub}")
         modules.update(pending_pub)
+        for mod_sel in pending_pub:
+            parts = mod_sel.split(":")
+            if len(parts) >= 4:
+                deleted.add(f"{parts[2]}.{parts[3]}")
 
     return list(modules), list(deleted)
 

@@ -149,8 +149,10 @@ with REMOTE_REPO.joinpath("index.min.json").open("w", encoding="utf-8") as index
 
 with REMOTE_REPO.joinpath("index.html").open("w", encoding="utf-8") as index_html_file:
     index_html_file.write('<!DOCTYPE html>\n<html>\n<head>\n<meta charset="UTF-8">\n<title>apks</title>\n</head>\n<body>\n<pre>\n')
+    existing_apks = {f.name for f in remote_apk_dir.glob("*.apk") if f.stat().st_size > 0}
     for entry in index:
-        apk_escaped = 'apk/' + html.escape(entry["apk"])
-        name_escaped = html.escape(entry["name"])
-        index_html_file.write(f'<a href="{apk_escaped}">{name_escaped}</a>\n')
+        if entry.get("apk") in existing_apks:
+            apk_escaped = 'apk/' + html.escape(entry["apk"])
+            name_escaped = html.escape(entry["name"])
+            index_html_file.write(f'<a href="{apk_escaped}">{name_escaped}</a>\n')
     index_html_file.write('</pre>\n</body>\n</html>\n')
