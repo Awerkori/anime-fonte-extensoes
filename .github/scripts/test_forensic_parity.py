@@ -1237,6 +1237,57 @@ class ForensicParityTest(unittest.TestCase):
                 self.assertIn(":src:en:anipm", mods, "Pending publication module must be added to build matrix")
                 self.assertIn("en.anipm", dels, "Pending publication module must be added to delete set for APK cleanup")
 
+    def test_inspector_corruption_resilience_and_recovery(self):
+        """
+        Scenario 17: Forensic validation of Inspector.jar corruption resilience:
+        - Simulates the exact 92-byte corrupted payload from CI run 42466754903.
+        - Verifies validate_jar rejects sub-minimum size and non-zip payloads.
+        - Verifies fetch_and_verify_inspector replaces corrupt jar and recovers valid jar.
+        - Verifies idempotency: subsequent invocations reuse valid jar without redundant downloads.
+        """
+        import fetch_inspector
+        import zipfile
+        import io
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            jar_path = Path(tmp_dir) / "Inspector.jar"
+
+            # 1. Simulate 92-byte corrupted file from run 42466754903
+            jar_path.write_bytes(b"A" * 92)
+            self.assertEqual(jar_path.stat().st_size, 92)
+            is_valid, reason = fetch_inspector.validate_jar(jar_path, min_size=1000)
+            self.assertFalse(is_valid, "92-byte file must be classified as invalid")
+            self.assertIn("too small", reason)
+
+            # 2. Mock valid recovery download
+            valid_buf = io.BytesIO()
+            with zipfile.ZipFile(valid_buf, "w", compression=zipfile.ZIP_STORED) as zf:
+                zf.writestr("META-INF/MANIFEST.MF", "Manifest-Version: 1.0\n")
+                zf.writestr("dummy.class", b"\xca\xfe\xba\xbe" + b"\x00" * 2000)
+            valid_bytes = valid_buf.getvalue()
+
+            mock_resp = MagicMock()
+            mock_resp.status = 200
+            mock_resp.headers = {"Content-Length": str(len(valid_bytes))}
+            mock_resp.read.side_effect = [valid_bytes, b""]
+            mock_resp.__enter__.return_value = mock_resp
+
+            with patch("fetch_inspector.resolve_inspector_url", return_value="https://example.com/latest.jar"), \
+                 patch("urllib.request.urlopen", return_value=mock_resp), \
+                 patch("time.sleep"):
+                recovered_path = fetch_inspector.fetch_and_verify_inspector(jar_path, min_size=1000)
+                self.assertEqual(recovered_path, jar_path)
+                self.assertTrue(jar_path.is_file())
+                self.assertEqual(jar_path.stat().st_size, len(valid_bytes))
+                is_valid2, reason2 = fetch_inspector.validate_jar(jar_path, min_size=1000)
+                self.assertTrue(is_valid2, f"Recovered jar must be valid: {reason2}")
+
+            # 3. Idempotency: subsequent call reuses valid jar without any network calls
+            with patch("fetch_inspector.resolve_inspector_url") as mock_resolve:
+                cached_path = fetch_inspector.fetch_and_verify_inspector(jar_path, min_size=1000)
+                self.assertEqual(cached_path, jar_path)
+                mock_resolve.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

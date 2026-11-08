@@ -82,6 +82,9 @@ jobs:
           main-branch-name: ${{ github.ref_name }}
           fallback-sha: 4b825dc642cb6eb9a060e54bf8d69288fbee4904 # empty tree
 
+      - name: Validate Inspector fetcher
+        run: PYTHONPATH=.github/scripts python ./.github/scripts/test_fetch_inspector.py
+
       - id: generate-matrices
         name: Create output matrices
         run: |
@@ -171,12 +174,13 @@ jobs:
           persist-credentials: false
 
       - name: Create repo artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           cd ${{ github.ref_name }}
           python ./.github/scripts/move-built-apks.py
           if [ -n "$(find repo/apk -name '*.apk' -print -quit)" ]; then
-            INSPECTOR_LINK="$(curl -s "https://api.github.com/repos/komikku-app/aniyomi-extensions-inspector/releases/latest" | jq -r '.assets[0].browser_download_url')"
-            curl -L "$INSPECTOR_LINK" -o ./Inspector.jar
+            python ./.github/scripts/fetch_inspector.py -o ./Inspector.jar
             java -jar ./Inspector.jar "repo/apk" "output.json" "tmp"
           else
             echo '{}' > output.json
