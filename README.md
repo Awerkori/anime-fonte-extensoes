@@ -115,7 +115,7 @@ Identificou uma extensão de anime quebrada, falha ao carregar episódios ou err
 
 ---
 
-## ⚖️ Licença e Governança
+## ⚖️ Licença e Copyright
 
 O trabalho combinado deste repositório é distribuído sob os termos da **GNU Affero General Public License versão 3.0** (`AGPL-3.0-only`), respeitando a compatibilidade e preservando integralmente os direitos dos autores originais:
 
