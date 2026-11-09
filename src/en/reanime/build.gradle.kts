@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "Re:ANIME"
-    versionCode = 14
+    versionCode = 20
     contentWarning = ContentWarning.MIXED
     libVersion = "16"
 
