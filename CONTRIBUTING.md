@@ -1,12 +1,17 @@
-# Contributing
+# Contributing to Project Nox · Anime Extensions
 
-This guide has some instructions and tips on how to create a new Anikku extension. Please **read
-it carefully** if you're a new contributor or don't have any experience on the required languages
-and knowledges.
+Welcome to the **Project Nox** anime extensions repository (`Awerkori/anime-fonte-extensoes`). This repository serves as the official downstream development and source repository for anime extensions utilized in **Anikku, Aniyomi, and forks**, as well as catalog feeds for the Project Nox platform.
 
-This guide is not definitive and it's being updated over time. If you find any issues in it, feel
-free to report it through a [Meta Issue](https://github.com/yuzono/anime-extensions/issues/new?assignees=&labels=Meta+request&template=06_request_meta.yml)
-or fixing it directly by submitting a Pull Request.
+This codebase is derived from and builds upon the pioneering work of **Yūzōnō**, **Anikku**, and **Aniyomi** (licensed under the **Apache License 2.0**). All original contributions, new extensions, Portuguese language parsers, extractors, enhancements, and CI/CD automation developed for Project Nox are licensed under the **GNU Affero General Public License v3.0** (`AGPL-3.0-only`).
+
+### Downstream Scope & Where to Contribute
+- **Issues & Pull Requests:** All issues, bug reports, and Pull Requests must be submitted **exclusively to this Project Nox repository** ([`Awerkori/anime-fonte-extensoes`](https://github.com/Awerkori/anime-fonte-extensoes)). **Do not open Pull Requests or issues on upstream Yūzōnō or Aniyomi repositories** for changes intended for Project Nox.
+- **Extension Requests & Bug Reports:** Community members should submit extension requests and broken source reports through the [**Project Nox · Central de Pedidos**](https://github.com/Awerkori/project-nox-requests) and track status on the [**Project Nox · Tracker**](https://awerkori.github.io/project-nox-tracker/).
+- **Licensing & Rights:** Contributions submitted to this repository will be licensed under **GNU AGPL-3.0-only** while preserving the Apache-2.0 license headers and copyrights of inherited upstream components.
+
+This guide provides instructions and tips on creating or maintaining anime extensions. Please **read it carefully** if you are a new contributor or lack experience with the required languages and knowledge.
+
+This guide is not definitive and is updated over time. If you find any issues in it, feel free to report them through [Issues in this repository](https://github.com/Awerkori/anime-fonte-extensoes/issues) or fix them directly by submitting a Pull Request.
 
 ## Table of Contents
 
@@ -217,10 +222,9 @@ and [negative refspecs](https://github.blog/2020-10-19-git-2-29-released/#user-c
 
 ## Getting help
 
-- Join [the Discord server](https://discord.gg/85MZhUX688) for online help and to ask questions while
-  developing your extension. When doing so, please ask them in the `#dev` channel.
-- There are some features and tricks that are not explored in this document. Refer to existing
-  extension code for examples.
+- For questions, help, and technical discussions during extension development, open an [Issue or Discussion in this repository](https://github.com/Awerkori/anime-fonte-extensoes/issues).
+- For upstream architecture and ecosystem context, technical documentation from Yūzōnō, Anikku, and Aniyomi may be consulted as reference.
+- Refer to existing extension code in `src/` for real-world implementation examples.
 
 ## Writing an extension
 
@@ -1591,13 +1595,13 @@ $ ./gradlew src:<lang>:<source>:assembleDebug
 
 ## Submitting the changes
 
-When you feel confident about your changes, submit a new Pull Request so your code can be reviewed
-and merged if it's approved. We encourage following a [GitHub Standard Fork & Pull Request Workflow](https://gist.github.com/Chaser324/ce0505fbed06b947d962)
-and following the good practices of the workflow, such as not committing directly to `master`: always
-create a new branch for your changes.
+When you feel confident about your changes, submit a new Pull Request for review directly to this Project Nox repository: [`Awerkori/anime-fonte-extensoes`](https://github.com/Awerkori/anime-fonte-extensoes). We encourage following a [GitHub Standard Fork & Pull Request Workflow](https://gist.github.com/Chaser324/ce0505fbed06b947d962); avoid committing directly to `master`: always create a new branch for your changes.
+
+> [!IMPORTANT]
+> All Pull Requests for Project Nox features, fixes, extractors, and parsers must be submitted exclusively to [`Awerkori/anime-fonte-extensoes`](https://github.com/Awerkori/anime-fonte-extensoes). Do not submit Pull Requests to upstream Yūzōnō or Aniyomi repositories for changes intended for Project Nox.
 
 If you are more comfortable about using Git GUI-based tools, you can refer to [this guide](https://learntodroid.com/how-to-use-git-and-github-in-android-studio/)
-about the Git integration inside Android Studio, specifically the "How to Contribute to an to Existing
+about the Git integration inside Android Studio, specifically the "How to Contribute to an Existing
 Git Repository in Android Studio" section of the guide.
 
 > [!IMPORTANT]
@@ -1608,7 +1612,7 @@ Git Repository in Android Studio" section of the guide.
 Please **do test your changes by compiling it through Android Studio** before submitting it. Obvious
 untested PRs will not be merged, such as ones created with the GitHub web interface. Also make sure
 to follow the PR checklist available in the PR body field when creating a new PR. As a reference, you
-can find it below.
+can find it below. All merged contributions will be released under the **GNU AGPL-3.0-only** license in accordance with repository terms.
 
 ### Pull Request checklist
 
