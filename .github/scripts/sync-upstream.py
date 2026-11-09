@@ -138,7 +138,13 @@ def is_preserved(path: str) -> bool:
     """Paths that must NEVER be overwritten by upstream (our CI/scripts/build logic/custom code)."""
     if path == ".github" or path.startswith(".github/"):
         return True
-    if path.lower().startswith("readme"):
+    path_lower = path.lower()
+    if (
+        path_lower.startswith("readme")
+        or path_lower.startswith("contributing")
+        or path_lower.startswith("license")
+        or path_lower.startswith("notice")
+    ):
         return True
     if path in {
         ".gitignore",
