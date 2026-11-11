@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "WcoAnimeDub"
-    versionCode = 6
+    versionCode = 8
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
     theme = "wcotheme"

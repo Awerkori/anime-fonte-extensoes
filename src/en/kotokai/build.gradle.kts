@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "AnimeKai (Unoriginal)"
-    versionCode = 6
+    versionCode = 8
     contentWarning = ContentWarning.SAFE
     libVersion = "16"
     theme = "anikototheme"
