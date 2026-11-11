@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "Anime4up"
-    versionCode = 89
+    versionCode = 90
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

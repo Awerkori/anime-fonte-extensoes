@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "PinoyMoviePedia"
-    versionCode = 9
+    versionCode = 10
     contentWarning = ContentWarning.NSFW
     libVersion = "14"
     theme = "dooplay"

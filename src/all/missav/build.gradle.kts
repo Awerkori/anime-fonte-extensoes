@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "MissAV"
-    versionCode = 42
+    versionCode = 43
     contentWarning = ContentWarning.NSFW
     libVersion = "14"
 

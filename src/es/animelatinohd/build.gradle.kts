@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "AnimeLatinoHD"
-    versionCode = 63
+    versionCode = 64
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

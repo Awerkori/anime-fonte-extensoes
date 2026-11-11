@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "SupJav"
-    versionCode = 37
+    versionCode = 38
     contentWarning = ContentWarning.NSFW
     libVersion = "14"
 

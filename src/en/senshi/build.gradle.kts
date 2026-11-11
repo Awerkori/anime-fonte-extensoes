@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "Senshi"
-    versionCode = 8
+    versionCode = 9
     contentWarning = ContentWarning.MIXED
     libVersion = "16"
 

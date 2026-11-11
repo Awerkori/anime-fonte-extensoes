@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "Jutsu TV"
-    versionCode = 7
+    versionCode = 8
     contentWarning = ContentWarning.SAFE
     libVersion = "16"
 

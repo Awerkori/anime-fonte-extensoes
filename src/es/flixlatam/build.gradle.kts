@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "FlixLatam"
-    versionCode = 34
+    versionCode = 35
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
     theme = "dooplay"

@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "Cimaleek"
-    versionCode = 17
+    versionCode = 18
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 
