@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "DeTodoPeliculas"
-    versionCode = 20
+    versionCode = 29
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
     theme = "dooplay"

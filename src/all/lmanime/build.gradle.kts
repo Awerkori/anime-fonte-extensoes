@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "LMAnime"
-    versionCode = 22
+    versionCode = 27
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
     theme = "animestream"

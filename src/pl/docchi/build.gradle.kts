@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "Docchi"
-    versionCode = 17
+    versionCode = 23
     contentWarning = ContentWarning.NSFW
     libVersion = "16"
 

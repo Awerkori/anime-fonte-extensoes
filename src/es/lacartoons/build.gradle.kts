@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "LACartoons"
-    versionCode = 28
+    versionCode = 34
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

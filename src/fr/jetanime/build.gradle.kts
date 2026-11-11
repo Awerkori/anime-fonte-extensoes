@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "JetAnime"
-    versionCode = 20
+    versionCode = 26
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
     theme = "dooplay"

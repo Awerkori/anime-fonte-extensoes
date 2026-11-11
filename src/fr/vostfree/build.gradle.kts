@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "Vostfree"
-    versionCode = 43
+    versionCode = 51
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

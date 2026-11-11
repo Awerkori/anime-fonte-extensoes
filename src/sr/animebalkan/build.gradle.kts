@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "AnimeBalkan"
-    versionCode = 11
+    versionCode = 16
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
     theme = "animestream"

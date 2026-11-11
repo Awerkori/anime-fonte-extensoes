@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "TioanimeH"
-    versionCode = 39
+    versionCode = 45
     contentWarning = ContentWarning.MIXED
     libVersion = "14"
 

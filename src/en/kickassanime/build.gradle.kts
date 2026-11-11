@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "KickAssAnime"
-    versionCode = 63
+    versionCode = 71
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

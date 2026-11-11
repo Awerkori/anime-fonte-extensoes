@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "WCOStream"
-    versionCode = 7
+    versionCode = 11
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
     theme = "wcotheme"

@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "SeriesKao"
-    versionCode = 25
+    versionCode = 34
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

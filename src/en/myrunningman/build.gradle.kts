@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "My Running Man"
-    versionCode = 12
+    versionCode = 15
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "Serienstream"
-    versionCode = 35
+    versionCode = 40
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

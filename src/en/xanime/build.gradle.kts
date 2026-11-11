@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "XAnime"
-    versionCode = 5
+    versionCode = 13
     contentWarning = ContentWarning.NSFW
     libVersion = "16"
 

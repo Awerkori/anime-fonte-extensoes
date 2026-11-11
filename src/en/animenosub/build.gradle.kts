@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "Animenosub"
-    versionCode = 23
+    versionCode = 29
     contentWarning = ContentWarning.NSFW
     libVersion = "14"
     theme = "animestream"

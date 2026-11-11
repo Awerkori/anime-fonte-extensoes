@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "VerSeriesOnline"
-    versionCode = 22
+    versionCode = 30
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

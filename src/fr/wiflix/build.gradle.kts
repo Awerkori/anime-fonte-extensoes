@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "Wiflix"
-    versionCode = 30
+    versionCode = 38
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
     theme = "datalifeengine"

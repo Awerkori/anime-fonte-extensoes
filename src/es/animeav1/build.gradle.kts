@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "AnimeAv1"
-    versionCode = 7
+    versionCode = 14
     contentWarning = ContentWarning.SAFE
     libVersion = "16"
 

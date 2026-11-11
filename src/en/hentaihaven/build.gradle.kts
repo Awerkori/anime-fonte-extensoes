@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "HentaiHaven"
-    versionCode = 9
+    versionCode = 15
     contentWarning = ContentWarning.NSFW
     libVersion = "16"
 

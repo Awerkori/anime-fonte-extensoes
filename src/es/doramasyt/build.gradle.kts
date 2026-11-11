@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "Doramasyt"
-    versionCode = 41
+    versionCode = 49
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

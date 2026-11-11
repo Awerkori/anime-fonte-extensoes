@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "AnimeWorld India"
-    versionCode = 24
+    versionCode = 29
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

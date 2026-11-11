@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "Okanime"
-    versionCode = 28
+    versionCode = 34
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

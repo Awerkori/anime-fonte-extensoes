@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "LocoPelis"
-    versionCode = 41
+    versionCode = 47
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

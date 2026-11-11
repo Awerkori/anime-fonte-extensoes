@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "UAKino"
-    versionCode = 6
+    versionCode = 11
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

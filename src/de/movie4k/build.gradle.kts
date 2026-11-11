@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "Movie4k"
-    versionCode = 20
+    versionCode = 25
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 
