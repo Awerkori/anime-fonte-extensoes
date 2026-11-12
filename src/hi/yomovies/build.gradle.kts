@@ -6,13 +6,13 @@ plugins {
 
 yuzono {
     name = "YoMovies"
-    versionCode = 42
-    contentWarning = ContentWarning.NSFW
+    versionCode = 43
+    contentWarning = ContentWarning.MIXED
     libVersion = "14"
 
     source {
         lang = "hi"
-        baseUrl = "https://yomovies.town"
+        baseUrl = "https://yomovies.academy"
     }
 }
 

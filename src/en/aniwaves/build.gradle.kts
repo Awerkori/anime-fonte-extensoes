@@ -6,8 +6,8 @@ plugins {
 
 yuzono {
     name = "AniWaves.ru"
-    versionCode = 7
-    contentWarning = ContentWarning.SAFE
+    versionCode = 8
+    contentWarning = ContentWarning.MIXED
     libVersion = "16"
 
     source {

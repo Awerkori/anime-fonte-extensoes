@@ -6,8 +6,8 @@ plugins {
 
 yuzono {
     name = "AnimeSogo"
-    versionCode = 4
-    contentWarning = ContentWarning.SAFE
+    versionCode = 5
+    contentWarning = ContentWarning.MIXED
     libVersion = "16"
     theme = "anikototheme"
 

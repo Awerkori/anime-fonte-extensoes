@@ -6,8 +6,8 @@ plugins {
 
 yuzono {
     name = "AniWave (Unoriginal)"
-    versionCode = 10
-    contentWarning = ContentWarning.SAFE
+    versionCode = 11
+    contentWarning = ContentWarning.MIXED
     libVersion = "16"
     theme = "anikototheme"
 
