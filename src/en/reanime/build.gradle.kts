@@ -6,16 +6,17 @@ plugins {
 
 yuzono {
     name = "Re:ANIME"
-    versionCode = 23
+    versionCode = 24
     contentWarning = ContentWarning.MIXED
     libVersion = "16"
 
+    // Domain index: https://reindex.to/
     source {
         lang = "en"
         baseUrl {
             mirrors(
-                "https://reanime.to",
                 "https://reanime.cz",
+                "https://reanime.bz",
                 "https://reanime.wtf",
             )
         }
