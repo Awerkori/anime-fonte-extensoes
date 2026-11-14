@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "PelisPlusTo"
-    versionCode = 92
+    versionCode = 94
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
     theme = "pelisplus"

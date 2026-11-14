@@ -26,6 +26,6 @@ dependencies {
 }
 
 yuzono {
-    baseVersionCode = 15
+    baseVersionCode = 14
     libVersion = "14"
 }
