@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "FRAnime"
-    versionCode = 38
+    versionCode = 39
     contentWarning = ContentWarning.MIXED
     libVersion = "16"
 

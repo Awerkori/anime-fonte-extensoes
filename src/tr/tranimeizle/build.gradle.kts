@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "TR Anime Izle"
-    versionCode = 47
+    versionCode = 48
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "AniWorld"
-    versionCode = 50
+    versionCode = 51
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

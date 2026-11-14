@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "FilmiFen"
-    versionCode = 9
+    versionCode = 10
     contentWarning = ContentWarning.SAFE
     libVersion = "16"
 
