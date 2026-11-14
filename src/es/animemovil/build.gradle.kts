@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "AnimeMovil"
-    versionCode = 59
+    versionCode = 60
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "LaMovie"
-    versionCode = 9
+    versionCode = 10
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
     theme = "dopeflix"

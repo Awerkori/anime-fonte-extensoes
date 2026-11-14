@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "AnimeYT.es"
-    versionCode = 31
+    versionCode = 32
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
     theme = "animestream"

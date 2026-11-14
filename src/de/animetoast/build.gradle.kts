@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "AnimeToast"
-    versionCode = 44
+    versionCode = 45
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

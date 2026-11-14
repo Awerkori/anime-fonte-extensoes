@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "MetroSeries"
-    versionCode = 42
+    versionCode = 43
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 

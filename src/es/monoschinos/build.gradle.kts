@@ -6,7 +6,7 @@ plugins {
 
 yuzono {
     name = "MonosChinos"
-    versionCode = 66
+    versionCode = 67
     contentWarning = ContentWarning.SAFE
     libVersion = "14"
 
