@@ -256,9 +256,13 @@ jobs:
       - name: Purge CDN cache
         if: steps.bootstrap-guard.outputs.skip_deploy != 'true'
         run: |
-          curl -s "https://purge.jsdelivr.net/gh/Awerkori/anime-extensoes@repo/index.json" || true
-          curl -s "https://purge.jsdelivr.net/gh/Awerkori/anime-extensoes@repo/index.min.json" || true
-          curl -s "https://purge.jsdelivr.net/gh/Awerkori/anime-extensoes@repo/index.pb" || true
+          for catalog in index.pb index.json index.min.json; do
+            response=$(curl --fail --silent --show-error "https://purge.jsdelivr.net/gh/Awerkori/anime-extensoes@repo/${catalog}")
+            printf '%s\n' "$response" | jq -e --arg path "/gh/Awerkori/anime-extensoes@repo/${catalog}" '.status == "finished" and .paths[$path].throttled == false and .paths[$path].providers.CF == true and .paths[$path].providers.FY == true' >/dev/null || {
+              echo "CDN purge failed or was throttled for ${catalog}" >&2
+              exit 1
+            }
+          done
 
       - name: Record publication step summary
         if: steps.bootstrap-guard.outputs.skip_deploy != 'true'
