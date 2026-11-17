@@ -26,7 +26,7 @@ class PublishProtobufTest(unittest.TestCase):
                 "code": 11,
                 "version": "14.11",
                 "nsfw": 1,
-                "torrent": True,
+                "torrent": 1,
                 "sources": [
                     {
                         "name": "Torrent",

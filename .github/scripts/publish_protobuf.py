@@ -90,9 +90,13 @@ def build_catalog(entries, metadata):
         nsfw = item.get("nsfw")
         if not isinstance(nsfw, int) or isinstance(nsfw, bool) or nsfw not in (0, 1):
             raise ValueError(f"nsfw must be 0 or 1 for {package_name}")
-        torrent = item.get("torrent", False)
-        if not isinstance(torrent, bool):
-            raise ValueError(f"torrent must be a boolean for {package_name}")
+        raw_torrent = item.get("torrent", 0)
+        if isinstance(raw_torrent, bool):
+            torrent = raw_torrent
+        elif isinstance(raw_torrent, int) and raw_torrent in (0, 1):
+            torrent = bool(raw_torrent)
+        else:
+            raise ValueError(f"torrent must be 0, 1, or boolean for {package_name}")
         sources = item.get("sources")
         if not isinstance(sources, list):
             raise ValueError(f"sources must be a list for {package_name}")

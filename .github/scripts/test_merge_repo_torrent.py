@@ -60,10 +60,13 @@ class MergeRepoTorrentTest(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
 
-            published = json.loads((remote / "index.json").read_text(encoding="utf-8"))
-            by_package = {item["pkg"]: item for item in published}
-            self.assertIs(by_package[PREFIX + "all.torrent"]["torrent"], True)
-            self.assertNotIn("torrent", by_package[PREFIX + "all.regular"])
+            for catalog_name in ("index.json", "index.min.json"):
+                published = json.loads((remote / catalog_name).read_text(encoding="utf-8"))
+                by_package = {item["pkg"]: item for item in published}
+                torrent_val = by_package[PREFIX + "all.torrent"]["torrent"]
+                self.assertEqual(torrent_val, 1)
+                self.assertIs(type(torrent_val), int)
+                self.assertNotIn("torrent", by_package[PREFIX + "all.regular"])
 
 
 if __name__ == "__main__":

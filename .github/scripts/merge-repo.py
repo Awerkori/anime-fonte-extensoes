@@ -147,7 +147,8 @@ index = sorted(index_by_pkg.values(), key=lambda x: x["pkg"])
 if torrent_modules is not None:
     for item in index:
         if pkg_to_module(item["pkg"]) in torrent_modules:
-            item["torrent"] = True
+            # Anikku and Aniyomi legacy JSON expect torrent as Int (0/1), not bool
+            item["torrent"] = 1
         else:
             item.pop("torrent", None)
 
