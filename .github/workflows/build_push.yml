@@ -71,7 +71,7 @@ jobs:
 
         # If any changes to lib/ caused on main branch, bump the extensions that use the modified lib.
       - name: Bump extensions that use a modified lib
-        if: steps.modified-libs.outputs.any_changed == 'true' && github.repository == 'Awerkori/anime-fonte-extensoes'
+        if: steps.modified-libs.outputs.any_changed == 'true' && (github.repository == 'Awerkori/anime-fonte-extensoes' || github.repository == 'ProjectNox-org/anime-fonte-extensoes')
         env:
           COMMIT_MESSAGE: ${{ steps.set-env.outputs.LATEST_COMMIT_MESSAGE }}
         run: |
@@ -149,7 +149,7 @@ jobs:
 
       - name: Upload APKs (${{ matrix.chunk.number }})
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: github.repository == 'Awerkori/anime-fonte-extensoes'
+        if: github.repository == 'Awerkori/anime-fonte-extensoes' || github.repository == 'ProjectNox-org/anime-fonte-extensoes'
         with:
           name: "individual-apks-${{ matrix.chunk.number }}"
           path: "**/*.apk"
@@ -161,7 +161,7 @@ jobs:
   publish:
     name: Publish extension repo
     needs: [prepare, build]
-    if: ${{ always() && needs.prepare.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped') && github.repository == 'Awerkori/anime-fonte-extensoes' }}
+    if: ${{ always() && needs.prepare.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped') && (github.repository == 'Awerkori/anime-fonte-extensoes' || github.repository == 'ProjectNox-org/anime-fonte-extensoes') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -202,7 +202,7 @@ jobs:
       - name: Checkout repo branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: Awerkori/anime-extensoes
+          repository: ProjectNox-org/anime-extensoes
           token: ${{ secrets.BOT_PAT }}
           ref: repo
           path: repo
@@ -256,12 +256,14 @@ jobs:
       - name: Purge CDN cache
         if: steps.bootstrap-guard.outputs.skip_deploy != 'true'
         run: |
-          for catalog in index.pb index.json index.min.json; do
-            response=$(curl --fail --silent --show-error "https://purge.jsdelivr.net/gh/Awerkori/anime-extensoes@repo/${catalog}")
-            printf '%s\n' "$response" | jq -e --arg path "/gh/Awerkori/anime-extensoes@repo/${catalog}" '.status == "finished" and .paths[$path].throttled == false and .paths[$path].providers.CF == true and .paths[$path].providers.FY == true' >/dev/null || {
-              echo "CDN purge failed or was throttled for ${catalog}" >&2
-              exit 1
-            }
+          for owner in Awerkori ProjectNox-org; do
+            for catalog in index.pb index.json index.min.json; do
+              response=$(curl --fail --silent --show-error "https://purge.jsdelivr.net/gh/${owner}/anime-extensoes@repo/${catalog}")
+              printf '%s\n' "$response" | jq -e --arg path "/gh/${owner}/anime-extensoes@repo/${catalog}" '.status == "finished" and .paths[$path].throttled == false and .paths[$path].providers.CF == true and .paths[$path].providers.FY == true' >/dev/null || {
+                echo "CDN purge failed or was throttled for ${owner}/${catalog}" >&2
+                exit 1
+              }
+            done
           done
 
       - name: Record publication step summary
@@ -271,7 +273,7 @@ jobs:
             TOTAL_EXTS="$(jq '. | length' repo/index.min.json 2>/dev/null || echo 'N/A')"
             echo "## Project Nox Anime — Distribution Publication Completed" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "- **Status:** Published to \`Awerkori/anime-extensoes@repo\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "- **Status:** Published to \`ProjectNox-org/anime-extensoes@repo\`" >> "$GITHUB_STEP_SUMMARY"
             echo "- **Total Extensions Deployed:** \`$TOTAL_EXTS\`" >> "$GITHUB_STEP_SUMMARY"
             echo "- **CDN Purge:** Requested" >> "$GITHUB_STEP_SUMMARY"
             echo "- **Commit:** \`$(git -C repo rev-parse --short HEAD)\`" >> "$GITHUB_STEP_SUMMARY"
