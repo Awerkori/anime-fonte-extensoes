@@ -57,7 +57,10 @@ def build_catalog(entries, metadata):
         name=name,
         badgeLabel=badge_label,
         signingKey=signing_key,
-        contact=index_pb2.Contact(website=website),
+        contact=index_pb2.Contact(
+            website=website,
+            discord="https://discord.com/invite/qNAMYUEmGj",
+        ),
     )
     seen_packages = set()
     for item in entries:
