@@ -14,7 +14,7 @@ class PublishProtobufTest(unittest.TestCase):
         self.metadata = {
             "name": "Project Nox Anime",
             "shortName": "Nox Anime",
-            "website": "https://github.com/ProjectNox-org/project-nox-requests",
+            "website": "https://projectnox-org.github.io/",
             "signingKeyFingerprint": "144f44e865cbfae6bde110489ef7ec142f0b1681f627a093a218650e21db5dad",
         }
         self.catalog = [
@@ -56,7 +56,7 @@ class PublishProtobufTest(unittest.TestCase):
         self.assertEqual(index.name, "Project Nox Anime")
         self.assertEqual(index.badgeLabel, "Nox Anime")
         self.assertEqual(index.signingKey, self.metadata["signingKeyFingerprint"])
-        self.assertEqual(index.contact.website, "https://github.com/ProjectNox-org/project-nox-requests")
+        self.assertEqual(index.contact.website, "https://projectnox-org.github.io/")
         self.assertEqual(index.contact.discord, "https://discord.com/invite/qNAMYUEmGj")
         self.assertEqual(len(index.extensionList.extensions), 1)
 
