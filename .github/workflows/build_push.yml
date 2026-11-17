@@ -258,6 +258,7 @@ jobs:
         run: |
           curl -s "https://purge.jsdelivr.net/gh/Awerkori/anime-extensoes@repo/index.json" || true
           curl -s "https://purge.jsdelivr.net/gh/Awerkori/anime-extensoes@repo/index.min.json" || true
+          curl -s "https://purge.jsdelivr.net/gh/Awerkori/anime-extensoes@repo/index.pb" || true
 
       - name: Record publication step summary
         if: steps.bootstrap-guard.outputs.skip_deploy != 'true'
