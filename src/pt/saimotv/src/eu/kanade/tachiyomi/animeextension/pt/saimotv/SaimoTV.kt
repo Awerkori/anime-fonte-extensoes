@@ -11,9 +11,14 @@ import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.awaitSuccess
 import eu.kanade.tachiyomi.util.asJsoup
 import keiyoushi.annotation.Source
-import keiyoushi.utils.parallelCatchingMapNotNull
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -45,22 +50,23 @@ abstract class SaimoTV : ParsedAnimeHttpSource() {
 
     companion object {
         const val PREFIX_PATH_SEARCH = "path:"
-        private const val SEARCH_PAGE_SIZE = 20
+        private const val SEARCH_PAGE_SIZE = 10
+        private const val SEARCH_DETAIL_TIMEOUT_MS = 6_000L
+        private const val SITEMAP_TIMEOUT_MS = 12_000L
+        private const val MAX_HEAD_CHARS = 32_768
         private const val SITEMAP_CACHE_TTL_MS = 30 * 60 * 1000L
-        private val LOC_REGEX = Regex("""<loc>\s*(https?://[^<\s]+)\s*</loc>""")
         private val COMBINING_MARKS_REGEX = Regex("""\p{InCombiningDiacriticalMarks}+""")
         private val NON_ALNUM_REGEX = Regex("""[^a-z0-9]+""")
         private val MULTI_SPACE_REGEX = Regex("""\s+""")
     }
 
-    private data class SitemapEntry(
-        val path: String,
-        val slug: String,
-        val isSeries: Boolean,
+    private data class SitemapCatalog(
+        val seriesPaths: List<String> = emptyList(),
+        val moviePaths: List<String> = emptyList(),
     )
 
     private val sitemapMutex = Mutex()
-    private var cachedSitemapEntries: List<SitemapEntry> = emptyList()
+    private var cachedCatalog: SitemapCatalog = SitemapCatalog()
     private var sitemapCacheTimestampMs: Long = 0L
 
     // ============================== Popular Anime ==============================
@@ -159,74 +165,172 @@ abstract class SaimoTV : ParsedAnimeHttpSource() {
         val normalizedQuery = normalizeSearchText(query)
         val tokens = normalizedQuery.split(' ').filter { it.isNotBlank() }
         if (tokens.isEmpty()) return AnimesPage(emptyList(), false)
+        val hyphenQuery = tokens.joinToString("-")
 
-        val entries = getSitemapEntries()
-        val matches = entries.mapNotNull { entry ->
-            if (!tokens.all { token -> entry.slug.contains(token) }) {
-                return@mapNotNull null
+        val catalog = getSitemapCatalog()
+        val rawMatches = ArrayList<Pair<Int, String>>()
+
+        fun collectMatches(paths: List<String>, isSeries: Boolean) {
+            for (path in paths) {
+                val slugStart = path.lastIndexOf('/') + 1
+                if (slugStart <= 0 || slugStart >= path.length) continue
+                val slug = path.substring(slugStart)
+                var allFound = true
+                for (token in tokens) {
+                    if (!slug.contains(token)) {
+                        allFound = false
+                        break
+                    }
+                }
+                if (!allFound) continue
+
+                val score = when {
+                    slug == hyphenQuery -> 0
+                    slug.startsWith("$hyphenQuery-") -> 1
+                    slug.startsWith(hyphenQuery) -> 2
+                    else -> 3
+                }
+                val rank = (score shl 16) or ((if (isSeries) 0 else 1) shl 15) or slug.length.coerceAtMost(0x7FFF)
+                rawMatches.add(rank to path)
             }
-            val slugWords = entry.slug.split(' ')
-            val score = when {
-                entry.slug == normalizedQuery -> 0
-                entry.slug.startsWith("$normalizedQuery ") || entry.slug.startsWith(normalizedQuery) -> 1
-                tokens.all { it in slugWords } -> 2
-                else -> 3
-            }
-            score to entry
-        }.sortedWith(
-            compareBy(
-                { it.first },
-                { if (it.second.isSeries) 0 else 1 },
-                { it.second.slug.length },
-            ),
-        ).map { it.second }
+        }
+
+        collectMatches(catalog.seriesPaths, isSeries = true)
+        collectMatches(catalog.moviePaths, isSeries = false)
+        rawMatches.sortBy { it.first }
 
         val fromIndex = ((page - 1) * SEARCH_PAGE_SIZE).coerceAtLeast(0)
-        if (fromIndex >= matches.size) return AnimesPage(emptyList(), false)
-        val toIndex = minOf(fromIndex + SEARCH_PAGE_SIZE, matches.size)
-        val hasNextPage = toIndex < matches.size
+        if (fromIndex >= rawMatches.size) return AnimesPage(emptyList(), false)
+        val toIndex = minOf(fromIndex + SEARCH_PAGE_SIZE, rawMatches.size)
+        val hasNextPage = toIndex < rawMatches.size
 
-        val pageSlice = matches.subList(fromIndex, toIndex)
-        val animes = pageSlice.parallelCatchingMapNotNull { entry ->
-            client.newCall(GET("$baseUrl${entry.path}", headers)).awaitSuccess().use { res ->
-                animeDetailsParse(res.asJsoup())
-            }
+        val pageSlice = rawMatches.subList(fromIndex, toIndex).map { it.second }
+        val animes = coroutineScope {
+            pageSlice.map { path ->
+                async(Dispatchers.IO) {
+                    fetchSearchAnimeHead(path)
+                }
+            }.awaitAll()
         }
         return AnimesPage(animes, hasNextPage)
     }
 
-    private suspend fun getSitemapEntries(): List<SitemapEntry> = sitemapMutex.withLock {
-        val now = System.currentTimeMillis()
-        if (cachedSitemapEntries.isNotEmpty() && now - sitemapCacheTimestampMs < SITEMAP_CACHE_TTL_MS) {
-            return@withLock cachedSitemapEntries
-        }
-
-        val sitemaps = listOf(
-            "$baseUrl/serie/sitemap/0.xml" to true,
-            "$baseUrl/filme/sitemap/0.xml" to false,
-        )
-
-        val loaded = sitemaps.parallelCatchingMapNotNull { (sitemapUrl, isSeries) ->
-            client.newCall(GET(sitemapUrl, headers)).awaitSuccess().use { res ->
-                val xml = res.body.string()
-                LOC_REGEX.findAll(xml).mapNotNull { match ->
-                    val rawUrl = match.groupValues[1].trim()
-                    val httpUrl = rawUrl.toHttpUrlOrNull() ?: return@mapNotNull null
-                    val path = httpUrl.encodedPath
-                    val slugRaw = path.substringAfterLast('/').removeSuffix("/")
-                    if (slugRaw.isBlank()) return@mapNotNull null
-                    val normalizedSlug = normalizeSearchText(slugRaw.replace('-', ' '))
-                    if (normalizedSlug.isBlank()) return@mapNotNull null
-                    SitemapEntry(path = path, slug = normalizedSlug, isSeries = isSeries)
-                }.toList()
+    private suspend fun fetchSearchAnimeHead(path: String): SAnime = withTimeoutOrNull(SEARCH_DETAIL_TIMEOUT_MS) {
+        try {
+            client.newCall(GET("$baseUrl$path", headers)).awaitSuccess().use { res ->
+                val headHtml = res.body.charStream().use { reader ->
+                    val buffer = CharArray(4096)
+                    val sb = StringBuilder(4096)
+                    while (sb.length < MAX_HEAD_CHARS) {
+                        val read = reader.read(buffer)
+                        if (read == -1) break
+                        sb.append(buffer, 0, read)
+                        val endIdx = sb.indexOf("</head>", startIndex = 0, ignoreCase = true)
+                        if (endIdx != -1) {
+                            sb.setLength(endIdx + 7)
+                            break
+                        }
+                    }
+                    sb.toString()
+                }
+                val doc = Jsoup.parse(headHtml, "$baseUrl$path")
+                val ogTitle = doc.selectFirst("meta[property=og:title]")?.attr("content")?.trim()
+                val docTitle = doc.title()
+                    .substringBefore(" Online")
+                    .substringBefore(" | Saimo TV")
+                    .trim()
+                SAnime.create().apply {
+                    url = path
+                    title = ogTitle?.ifBlank { null }
+                        ?: docTitle.ifBlank { null }
+                        ?: slugToTitle(path)
+                    thumbnail_url = doc.selectFirst("meta[property=og:image]")?.attr("content")?.trim()?.ifBlank { null }
+                    description = doc.selectFirst("meta[property=og:description]")?.attr("content")?.trim()?.ifBlank { null }
+                        ?: doc.selectFirst("meta[name=description]")?.attr("content")?.trim()
+                }
             }
-        }.flatten()
-
-        if (loaded.isNotEmpty()) {
-            cachedSitemapEntries = loaded
-            sitemapCacheTimestampMs = now
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
         }
-        loaded
+    } ?: fallbackAnimeFromPath(path)
+
+    private fun fallbackAnimeFromPath(path: String): SAnime = SAnime.create().apply {
+        url = path
+        title = slugToTitle(path)
+    }
+
+    private fun slugToTitle(path: String): String = path.substringAfterLast('/')
+        .split('-')
+        .filter { it.isNotBlank() }
+        .joinToString(" ") { word ->
+            word.replaceFirstChar { ch -> ch.uppercaseChar() }
+        }
+
+    private suspend fun getSitemapCatalog(): SitemapCatalog = sitemapMutex.withLock {
+        val now = System.currentTimeMillis()
+        if ((cachedCatalog.seriesPaths.isNotEmpty() || cachedCatalog.moviePaths.isNotEmpty()) &&
+            now - sitemapCacheTimestampMs < SITEMAP_CACHE_TTL_MS
+        ) {
+            return@withLock cachedCatalog
+        }
+
+        val (series, movies) = coroutineScope {
+            val seriesJob = async(Dispatchers.IO) {
+                withTimeoutOrNull(SITEMAP_TIMEOUT_MS) {
+                    try {
+                        fetchSitemapPaths("$baseUrl/serie/sitemap/0.xml")
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        emptyList()
+                    }
+                }.orEmpty()
+            }
+            val moviesJob = async(Dispatchers.IO) {
+                withTimeoutOrNull(SITEMAP_TIMEOUT_MS) {
+                    try {
+                        fetchSitemapPaths("$baseUrl/filme/sitemap/0.xml")
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        emptyList()
+                    }
+                }.orEmpty()
+            }
+            seriesJob.await() to moviesJob.await()
+        }
+
+        if (series.isNotEmpty() || movies.isNotEmpty()) {
+            cachedCatalog = SitemapCatalog(seriesPaths = series, moviePaths = movies)
+            sitemapCacheTimestampMs = if (series.isNotEmpty() && movies.isNotEmpty()) now else 0L
+        }
+        cachedCatalog
+    }
+
+    private suspend fun fetchSitemapPaths(sitemapUrl: String): List<String> = client.newCall(GET(sitemapUrl, headers)).awaitSuccess().use { res ->
+        val xml = res.body.string()
+        val paths = ArrayList<String>(16384)
+        var idx = 0
+        while (true) {
+            val locStart = xml.indexOf("<loc>", idx)
+            if (locStart == -1) break
+            val urlStart = locStart + 5
+            val locEnd = xml.indexOf("</loc>", urlStart)
+            if (locEnd == -1) break
+            idx = locEnd + 6
+
+            val schemeIdx = xml.indexOf("://", urlStart)
+            if (schemeIdx == -1 || schemeIdx >= locEnd) continue
+            val pathStart = xml.indexOf('/', schemeIdx + 3)
+            if (pathStart == -1 || pathStart >= locEnd) continue
+            val path = xml.substring(pathStart, locEnd).trim()
+            if (path.length > 1) {
+                paths.add(path)
+            }
+        }
+        paths
     }
 
     private fun normalizeSearchText(text: String): String = Normalizer.normalize(text, Normalizer.Form.NFD)
@@ -486,6 +590,8 @@ abstract class SaimoTV : ParsedAnimeHttpSource() {
         val pattern = Regex("""\\?"$lang\\?":\s*\[(.*?)\]""")
         val match = pattern.find(html) ?: return emptyList()
         val rawList = match.groupValues[1]
+            .replace("\\u0026", "&")
+            .replace("\\/", "/")
         val urlPattern = Regex("""https?://[^\\",\s]+""")
         return urlPattern.findAll(rawList).map { it.value }.toList()
     }
