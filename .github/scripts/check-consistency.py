@@ -20,7 +20,7 @@ import urllib.request
 from pathlib import Path
 
 UPSTREAM_URL = "https://github.com/yuzono/anime-extensions.git"
-DISTRIBUTION_REPO = "Awerkori/anime-extensoes"
+DISTRIBUTION_REPO = "ProjectNox-org/anime-extensoes"
 DISTRIBUTION_INDEX_URL = f"https://raw.githubusercontent.com/{DISTRIBUTION_REPO}/repo/index.min.json"
 SYNC_STATE_FILE = Path(".github/sync-state.json")
 NOX_PROTECTED_FILE = Path(".github/nox-protected.txt")

@@ -12,8 +12,8 @@ PACKAGE_NAME = re.compile(
     r"^eu\.kanade\.tachiyomi\.animeextension(?:\.[A-Za-z0-9_]+)+$"
 )
 VERSION_NAME = re.compile(r"^([0-9]+)\.([0-9]+)$")
-APK_BASE_URL = "https://raw.githubusercontent.com/Awerkori/anime-extensoes/repo/apk/"
-ICON_BASE_URL = "https://cdn.jsdelivr.net/gh/Awerkori/anime-extensoes@repo/icon/"
+APK_BASE_URL = "https://raw.githubusercontent.com/ProjectNox-org/anime-extensoes/repo/apk/"
+ICON_BASE_URL = "https://cdn.jsdelivr.net/gh/ProjectNox-org/anime-extensoes@repo/icon/"
 SIGNING_FINGERPRINT = (
     "144f44e865cbfae6bde110489ef7ec142f0b1681f627a093a218650e21db5dad"
 )

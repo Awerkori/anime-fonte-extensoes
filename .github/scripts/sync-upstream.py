@@ -737,8 +737,8 @@ def detect_indirect_impacts(upstream_units: list[str]) -> set[str]:
 def fetch_deployed_version_codes() -> dict[str, int]:
     """Fetch currently deployed extension codes from distribution repo with multi-source fallback."""
     candidate_sources = [
-        ("url", "https://raw.githubusercontent.com/Awerkori/anime-extensoes/repo/index.min.json"),
-        ("url", "https://cdn.jsdelivr.net/gh/Awerkori/anime-extensoes@repo/index.min.json"),
+        ("url", "https://raw.githubusercontent.com/ProjectNox-org/anime-extensoes/repo/index.min.json"),
+        ("url", "https://cdn.jsdelivr.net/gh/ProjectNox-org/anime-extensoes@repo/index.min.json"),
         ("file", str(Path(__file__).resolve().parents[3] / "anime-extensoes/index.min.json")),
         ("file", str(Path(__file__).resolve().parents[2] / "../anime-extensoes/index.min.json")),
     ]
@@ -1684,7 +1684,7 @@ def recover_pending_publications(
             pass
     if gh_token:
         try:
-            repo_slug = os.environ.get("GITHUB_REPOSITORY", "Awerkori/anime-fonte-extensoes")
+            repo_slug = os.environ.get("GITHUB_REPOSITORY", "ProjectNox-org/anime-fonte-extensoes")
             # Verify if active build_push.yml runs cover pending units (Finding P1 / P2)
             def get_active_runs() -> list[dict]:
                 runs_url = f"https://api.github.com/repos/{repo_slug}/actions/workflows/build_push.yml/runs?branch=main&per_page=5"

@@ -14,7 +14,7 @@ class PublishProtobufTest(unittest.TestCase):
         self.metadata = {
             "name": "Project Nox Anime",
             "shortName": "Nox Anime",
-            "website": "https://github.com/Awerkori/anime-extensoes",
+            "website": "https://github.com/ProjectNox-org/anime-extensoes",
             "signingKeyFingerprint": "144f44e865cbfae6bde110489ef7ec142f0b1681f627a093a218650e21db5dad",
         }
         self.catalog = [
@@ -66,12 +66,12 @@ class PublishProtobufTest(unittest.TestCase):
         self.assertTrue(extension.isTorrent)
         self.assertEqual(
             extension.resources.apkUrl,
-            "https://raw.githubusercontent.com/Awerkori/anime-extensoes/repo/apk/"
+            "https://raw.githubusercontent.com/ProjectNox-org/anime-extensoes/repo/apk/"
             "aniyomi-all.torrent-v14.11.apk",
         )
         self.assertEqual(
             extension.resources.iconUrl,
-            "https://cdn.jsdelivr.net/gh/Awerkori/anime-extensoes@repo/icon/"
+            "https://cdn.jsdelivr.net/gh/ProjectNox-org/anime-extensoes@repo/icon/"
             "eu.kanade.tachiyomi.animeextension.all.torrent.png",
         )
         self.assertEqual(len(extension.sources), 2)
