@@ -3,6 +3,7 @@ import sys
 import json
 from pathlib import Path
 import shutil
+import re
 
 sys.dont_write_bytecode = True
 
@@ -11,6 +12,9 @@ REMOTE_REPO: Path = Path.cwd()
 LOCAL_REPO: Path = REMOTE_REPO.parent.joinpath(sys.argv[2])
 
 to_delete: list[str] = json.loads(sys.argv[1])
+TORRENT_CONFIG = re.compile(
+    r"(?m)^[ \t]*torrent[ \t]*=[ \t]*true(?:[ \t]*(?://.*|#.*))?[ \t]*$"
+)
 
 
 def pkg_to_module(pkg: str) -> str:
@@ -37,7 +41,26 @@ def get_existing_modules() -> set[str] | None:
     return modules
 
 
+def get_torrent_modules() -> set[str] | None:
+    branch_dir_name = sys.argv[2].removesuffix("/repo") if sys.argv[2].endswith("/repo") else sys.argv[2].split('/')[0]
+    src_dir = REMOTE_REPO.parent.joinpath(branch_dir_name, "src")
+    if not src_dir.is_dir():
+        return None
+
+    modules = set()
+    for lang_dir in src_dir.iterdir():
+        if not lang_dir.is_dir():
+            continue
+        for ext_dir in lang_dir.iterdir():
+            config = ext_dir / "build.gradle.kts"
+            if config.is_file() and TORRENT_CONFIG.search(config.read_text(encoding="utf-8")):
+                modules.add(f"{lang_dir.name}.{ext_dir.name}")
+
+    return modules
+
+
 existing_modules = get_existing_modules()
+torrent_modules = get_torrent_modules()
 
 # Load indexes
 with REMOTE_REPO.joinpath("index.json").open() as remote_index_file:
@@ -121,6 +144,12 @@ for item in local_index:
     index_by_pkg[item["pkg"]] = item
 
 index = sorted(index_by_pkg.values(), key=lambda x: x["pkg"])
+if torrent_modules is not None:
+    for item in index:
+        if pkg_to_module(item["pkg"]) in torrent_modules:
+            item["torrent"] = True
+        else:
+            item.pop("torrent", None)
 
 # Garbage Collection: Remove any APK or Icon that is not in the final index
 valid_apks = {item["apk"] for item in index}
