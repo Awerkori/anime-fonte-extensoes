@@ -11,6 +11,9 @@ import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.awaitSuccess
 import eu.kanade.tachiyomi.util.asJsoup
 import keiyoushi.annotation.Source
+import keiyoushi.utils.parallelCatchingMapNotNull
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -24,6 +27,7 @@ import okhttp3.Response
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
+import java.text.Normalizer
 import java.util.concurrent.TimeUnit
 
 @Source
@@ -41,7 +45,23 @@ abstract class SaimoTV : ParsedAnimeHttpSource() {
 
     companion object {
         const val PREFIX_PATH_SEARCH = "path:"
+        private const val SEARCH_PAGE_SIZE = 20
+        private const val SITEMAP_CACHE_TTL_MS = 30 * 60 * 1000L
+        private val LOC_REGEX = Regex("""<loc>\s*(https?://[^<\s]+)\s*</loc>""")
+        private val COMBINING_MARKS_REGEX = Regex("""\p{InCombiningDiacriticalMarks}+""")
+        private val NON_ALNUM_REGEX = Regex("""[^a-z0-9]+""")
+        private val MULTI_SPACE_REGEX = Regex("""\s+""")
     }
+
+    private data class SitemapEntry(
+        val path: String,
+        val slug: String,
+        val isSeries: Boolean,
+    )
+
+    private val sitemapMutex = Mutex()
+    private var cachedSitemapEntries: List<SitemapEntry> = emptyList()
+    private var sitemapCacheTimestampMs: Long = 0L
 
     // ============================== Popular Anime ==============================
     override fun popularAnimeSelector(): String = "div.poster-grid a.poster-card, a.poster-card"
@@ -121,17 +141,102 @@ abstract class SaimoTV : ParsedAnimeHttpSource() {
                     AnimesPage(listOf(anime), false)
                 }
         }
+        if (trimmed.startsWith("/")) {
+            return client.newCall(GET(baseUrl + trimmed, headers))
+                .awaitSuccess()
+                .use { response ->
+                    val anime = animeDetailsParse(response.asJsoup())
+                    AnimesPage(listOf(anime), false)
+                }
+        }
+        if (trimmed.isNotBlank()) {
+            return searchBySitemap(page, trimmed)
+        }
         return super.getSearchAnime(page, query, filters)
     }
 
-    override fun searchAnimeRequest(page: Int, query: String, filters: AnimeFilterList): Request {
-        if (query.isNotBlank()) {
-            val trimmed = query.trim()
-            if (trimmed.startsWith("/")) {
-                return GET(baseUrl + trimmed, headers)
+    private suspend fun searchBySitemap(page: Int, query: String): AnimesPage {
+        val normalizedQuery = normalizeSearchText(query)
+        val tokens = normalizedQuery.split(' ').filter { it.isNotBlank() }
+        if (tokens.isEmpty()) return AnimesPage(emptyList(), false)
+
+        val entries = getSitemapEntries()
+        val matches = entries.mapNotNull { entry ->
+            if (!tokens.all { token -> entry.slug.contains(token) }) {
+                return@mapNotNull null
+            }
+            val slugWords = entry.slug.split(' ')
+            val score = when {
+                entry.slug == normalizedQuery -> 0
+                entry.slug.startsWith("$normalizedQuery ") || entry.slug.startsWith(normalizedQuery) -> 1
+                tokens.all { it in slugWords } -> 2
+                else -> 3
+            }
+            score to entry
+        }.sortedWith(
+            compareBy(
+                { it.first },
+                { if (it.second.isSeries) 0 else 1 },
+                { it.second.slug.length },
+            ),
+        ).map { it.second }
+
+        val fromIndex = ((page - 1) * SEARCH_PAGE_SIZE).coerceAtLeast(0)
+        if (fromIndex >= matches.size) return AnimesPage(emptyList(), false)
+        val toIndex = minOf(fromIndex + SEARCH_PAGE_SIZE, matches.size)
+        val hasNextPage = toIndex < matches.size
+
+        val pageSlice = matches.subList(fromIndex, toIndex)
+        val animes = pageSlice.parallelCatchingMapNotNull { entry ->
+            client.newCall(GET("$baseUrl${entry.path}", headers)).awaitSuccess().use { res ->
+                animeDetailsParse(res.asJsoup())
             }
         }
+        return AnimesPage(animes, hasNextPage)
+    }
 
+    private suspend fun getSitemapEntries(): List<SitemapEntry> = sitemapMutex.withLock {
+        val now = System.currentTimeMillis()
+        if (cachedSitemapEntries.isNotEmpty() && now - sitemapCacheTimestampMs < SITEMAP_CACHE_TTL_MS) {
+            return@withLock cachedSitemapEntries
+        }
+
+        val sitemaps = listOf(
+            "$baseUrl/serie/sitemap/0.xml" to true,
+            "$baseUrl/filme/sitemap/0.xml" to false,
+        )
+
+        val loaded = sitemaps.parallelCatchingMapNotNull { (sitemapUrl, isSeries) ->
+            client.newCall(GET(sitemapUrl, headers)).awaitSuccess().use { res ->
+                val xml = res.body.string()
+                LOC_REGEX.findAll(xml).mapNotNull { match ->
+                    val rawUrl = match.groupValues[1].trim()
+                    val httpUrl = rawUrl.toHttpUrlOrNull() ?: return@mapNotNull null
+                    val path = httpUrl.encodedPath
+                    val slugRaw = path.substringAfterLast('/').removeSuffix("/")
+                    if (slugRaw.isBlank()) return@mapNotNull null
+                    val normalizedSlug = normalizeSearchText(slugRaw.replace('-', ' '))
+                    if (normalizedSlug.isBlank()) return@mapNotNull null
+                    SitemapEntry(path = path, slug = normalizedSlug, isSeries = isSeries)
+                }.toList()
+            }
+        }.flatten()
+
+        if (loaded.isNotEmpty()) {
+            cachedSitemapEntries = loaded
+            sitemapCacheTimestampMs = now
+        }
+        loaded
+    }
+
+    private fun normalizeSearchText(text: String): String = Normalizer.normalize(text, Normalizer.Form.NFD)
+        .replace(COMBINING_MARKS_REGEX, "")
+        .lowercase()
+        .replace(NON_ALNUM_REGEX, " ")
+        .trim()
+        .replace(MULTI_SPACE_REGEX, " ")
+
+    override fun searchAnimeRequest(page: Int, query: String, filters: AnimeFilterList): Request {
         var tipo = "filmes"
         var genero = ""
 
