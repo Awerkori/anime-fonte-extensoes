@@ -7,7 +7,7 @@ Repositório central de desenvolvimento, código-fonte em Kotlin, desenvolviment
 > [!IMPORTANT]
 > **Procurando apenas assistir e instalar as extensões no seu player?**  
 > Este repositório destina-se a desenvolvedores e contém o código-fonte em Kotlin para manutenção e criação de fontes. Para instalar os catálogos compilados diretamente no seu aplicativo, acesse o repositório de distribuição oficial:  
-> ➡️ [**Project Nox · Extensões de Anime (Distribuição)**](https://github.com/Awerkori/anime-extensoes)
+> ➡️ [**Project Nox · Extensões de Anime (Distribuição)**](https://github.com/ProjectNox-org/anime-extensoes)
 
 ---
 
@@ -18,7 +18,7 @@ O ecossistema de anime do **Project Nox** gerencia extensões voltadas à reprod
 - **Extractors de Vídeo e Servidores Locais:** Desenvolvimento e manutenção de módulos especializados em contornar protetores de links, decodificar tokens efêmeros de players e processar manifestos HLS/M3U8 via proxy local (`m3u8server`), prevenindo travamentos e erros de buffer no player.
 - **Engenharia de Fontes em Kotlin:** Módulos que mapeiam catálogos, paginações, filtros por gênero/temporada e listas de episódios de sites populares de streaming.
 - **Pipeline de Integração Contínua (CI):** Compilação modular automatizada via Gradle e GitHub Actions, com testes sintéticos, empacotamento de APKs assinados e publicação de catálogos.
-- **Publicação Automática e Compatível:** Cada alteração aprovada na branch `main` sincroniza `index.pb` (formato principal, esquema oficial Aniyomi), `index.json` e `index.min.json` (formatos legados mantidos para clientes antigos e forks), além de `repo.json`, no repositório [`anime-extensoes`](https://github.com/Awerkori/anime-extensoes). A geração ocorre sobre o JSON final consolidado após adições, atualizações e remoções.
+- **Publicação Automática e Compatível:** Cada alteração aprovada na branch `main` sincroniza `index.pb` (formato principal, esquema oficial Aniyomi), `index.json` e `index.min.json` (formatos legados mantidos para clientes antigos e forks), além de `repo.json`, no repositório [`anime-extensoes`](https://github.com/ProjectNox-org/anime-extensoes). A geração ocorre sobre o JSON final consolidado após adições, atualizações e remoções.
 - **Sem Recompilação para Republicar:** O workflow manual `catalog_only` valida e republica os catálogos sem compilar APKs; builds normais continuam limitados aos módulos afetados.
 
 ---
@@ -44,9 +44,9 @@ O projeto segue arquitetura modular em Gradle:
 
 ### Catálogos publicados
 
-- **Principal:** [`index.pb`](https://raw.githubusercontent.com/Awerkori/anime-extensoes/repo/index.pb), Protobuf compatível com o esquema oficial Aniyomi (`isTorrent=8`, `sources=9`).
-- **Legado:** [`index.json`](https://raw.githubusercontent.com/Awerkori/anime-extensoes/repo/index.json) e [`index.min.json`](https://raw.githubusercontent.com/Awerkori/anime-extensoes/repo/index.min.json). Ambos permanecem publicados e são sincronizados pelo mesmo pipeline; `index.min.json` também atende ao link de instalação automática para clientes legados.
-- **Metadados:** [`repo.json`](https://raw.githubusercontent.com/Awerkori/anime-extensoes/repo/repo.json) referencia `index.pb` por `index_v2` sem remover os metadados existentes.
+- **Principal:** [`index.pb`](https://raw.githubusercontent.com/ProjectNox-org/anime-extensoes/repo/index.pb), Protobuf compatível com o esquema oficial Aniyomi (`isTorrent=8`, `sources=9`).
+- **Legado:** [`index.json`](https://raw.githubusercontent.com/ProjectNox-org/anime-extensoes/repo/index.json) e [`index.min.json`](https://raw.githubusercontent.com/ProjectNox-org/anime-extensoes/repo/index.min.json). Ambos permanecem publicados e são sincronizados pelo mesmo pipeline; `index.min.json` também atende ao link de instalação automática para clientes legados.
+- **Metadados:** [`repo.json`](https://raw.githubusercontent.com/ProjectNox-org/anime-extensoes/repo/repo.json) referencia `index.pb` por `index_v2` sem remover os metadados existentes.
 
 Para republicar apenas os índices, execute o workflow `CI` manualmente com `catalog_only=true` e `rebuild_all=false`.
 
@@ -60,7 +60,7 @@ Para republicar apenas os índices, execute o workflow `CI` manualmente com `cat
 
 ### Clonar o repositório
 ```bash
-git clone https://github.com/Awerkori/anime-fonte-extensoes.git
+git clone https://github.com/ProjectNox-org/anime-fonte-extensoes.git
 cd anime-fonte-extensoes
 ```
 
@@ -90,7 +90,7 @@ Para compilar e testar um extractor de vídeo específico:
 
 Contribuições da comunidade são muito apreciadas:
 
-1. **Verifique os Chamados:** Acesse a [Central de Pedidos](https://github.com/Awerkori/project-nox-requests) para checar fontes reportadas com instabilidade ou novos pedidos prioritários.
+1. **Verifique os Chamados:** Acesse a [Central de Pedidos](https://github.com/ProjectNox-org/project-nox-requests) para checar fontes reportadas com instabilidade ou novos pedidos prioritários.
 2. **Crie uma branch descritiva:** Ex: `fix/animefire-player` ou `feat/novo-extractor`.
 3. **Reutilização de Extractors:** Caso um novo site utilize um host de vídeo comum a outras fontes, implemente a lógica dentro do diretório `lib/` para reaproveitamento modular.
 4. **Envie seu Pull Request:** Explique a solução adotada, os métodos de bypass de player aplicados e os testes de reprodução realizados.
@@ -101,18 +101,18 @@ Contribuições da comunidade são muito apreciadas:
 
 Identificou uma extensão de anime quebrada, falha ao carregar episódios ou erro no player?
 
-- 🎫 **Abrir solicitação oficial:** [Project Nox · Central de Pedidos](https://github.com/Awerkori/project-nox-requests)
-- 📊 **Acompanhar status em tempo real:** [Project Nox · Tracker](https://awerkori.github.io/project-nox-tracker/)
+- 🎫 **Abrir solicitação oficial:** [Project Nox · Central de Pedidos](https://github.com/ProjectNox-org/project-nox-requests)
+- 📊 **Acompanhar status em tempo real:** [Project Nox · Tracker](https://projectnox-org.github.io/project-nox-tracker/)
 
 ---
 
 ## 🔗 Projetos Relacionados
 
-- 🎬 [**Project Nox · Extensões de Anime**](https://github.com/Awerkori/anime-extensoes) — Repositório de distribuição (APKs compilados e catálogo JSON para Aniyomi e forks).
-- 📦 [**Project Nox · Extensões de Mangá**](https://github.com/Awerkori/manga-extensoes) — Distribuição de fontes de leitura para Mihon e forks.
-- 💻 [**Project Nox · Código-fonte das Extensões de Mangá**](https://github.com/Awerkori/manga-fonte-extensoes) — Código em Kotlin das extensões de mangá.
-- 🌐 [**Project Nox · Plataforma Web de Mangá**](https://github.com/Awerkori/project-nox-manga) — Plataforma web oficial.
-- ⚙️ [**Project Nox · Importer**](https://github.com/Awerkori/project-nox-importer) — Serviço de ingestão autônoma 24/7.
+- 🎬 [**Project Nox · Extensões de Anime**](https://github.com/ProjectNox-org/anime-extensoes) — Repositório de distribuição (APKs compilados e catálogo JSON para Aniyomi e forks).
+- 📦 [**Project Nox · Extensões de Mangá**](https://github.com/ProjectNox-org/manga-extensoes) — Distribuição de fontes de leitura para Mihon e forks.
+- 💻 [**Project Nox · Código-fonte das Extensões de Mangá**](https://github.com/ProjectNox-org/manga-fonte-extensoes) — Código em Kotlin das extensões de mangá.
+- 🌐 [**Project Nox · Plataforma Web de Mangá**](https://github.com/ProjectNox-org/project-nox-manga) — Plataforma web oficial.
+- ⚙️ [**Project Nox · Importer**](https://github.com/ProjectNox-org/project-nox-importer) — Serviço de ingestão autônoma 24/7.
 
 ---
 
@@ -148,7 +148,7 @@ and combined work) and the Apache License, Version 2.0 (for upstream Yūzōnō/A
 
 ### 🔄 Sincronização Upstream e Governança
 - O Project Nox sincroniza periodicamente atualizações do ecossistema de extensões de vídeo mantendo os créditos e licenças Apache 2.0 originais intactos.
-- Todo o ciclo de vida, extractors e novos recursos do Project Nox são mantidos exclusivamente dentro da organização `Awerkori`. Nenhum Pull Request é aberto ou enviado para os repositórios upstream de Yūzōnō ou Aniyomi, garantindo estabilidade e autonomia operacional downstream.
+- Todo o ciclo de vida, extractors e novos recursos do Project Nox são mantidos exclusivamente dentro da organização `ProjectNox-org`. Nenhum Pull Request é aberto ou enviado para os repositórios upstream de Yūzōnō ou Aniyomi, garantindo estabilidade e autonomia operacional downstream.
 
 ### 📌 Interação Remota de Rede (GNU AGPLv3 Seção 13)
 O Project Nox adota oficialmente a licença **GNU AGPL versão 3.0**. Em estrita conformidade com a Seção 13 da AGPLv3, caso uma versão modificada deste software seja operada em servidores ou instâncias acessíveis através de uma rede de computadores com interação remota de usuários, o operador deve oferecer a todos esses usuários remotos a oportunidade de obter o Código-Fonte Correspondente (Corresponding Source) da versão modificada em execução, sem custos e através de meio habitual de disponibilização de software em rede.
