@@ -17,6 +17,11 @@ on:
         required: false
         type: boolean
         default: false
+      catalog_only:
+        description: 'Republicar catálogos sem recompilar APKs'
+        required: false
+        type: boolean
+        default: false
 
 permissions: {}
 
@@ -87,8 +92,15 @@ jobs:
 
       - id: generate-matrices
         name: Create output matrices
+        env:
+          CATALOG_ONLY: ${{ inputs.catalog_only }}
         run: |
-          python ./.github/scripts/generate-build-matrices.py "$NX_BASE" Release
+          if [ "$CATALOG_ONLY" = "true" ]; then
+            echo 'matrix={"chunk":[]}' >> "$GITHUB_OUTPUT"
+            echo 'delete=[]' >> "$GITHUB_OUTPUT"
+          else
+            python ./.github/scripts/generate-build-matrices.py "$NX_BASE" Release
+          fi
 
   build:
     name: Build extensions (${{ matrix.chunk.number }})

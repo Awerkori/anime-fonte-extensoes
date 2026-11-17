@@ -17,8 +17,9 @@ O ecossistema de anime do **Project Nox** gerencia extensões voltadas à reprod
 
 - **Extractors de Vídeo e Servidores Locais:** Desenvolvimento e manutenção de módulos especializados em contornar protetores de links, decodificar tokens efêmeros de players e processar manifestos HLS/M3U8 via proxy local (`m3u8server`), prevenindo travamentos e erros de buffer no player.
 - **Engenharia de Fontes em Kotlin:** Módulos que mapeiam catálogos, paginações, filtros por gênero/temporada e listas de episódios de sites populares de streaming.
-- **Pipeline de Integração Contínua (CI):** Compilação modular automatizada via Gradle e GitHub Actions, com testes sintéticos, empacotamento de APKs assinados e publicação de índices.
-- **Distribuição Sincronizada:** Cada merge aprovado na branch `main` dispara o empacotamento e a entrega contínua dos artefatos ao repositório [`anime-extensoes`](https://github.com/Awerkori/anime-extensoes).
+- **Pipeline de Integração Contínua (CI):** Compilação modular automatizada via Gradle e GitHub Actions, com testes sintéticos, empacotamento de APKs assinados e publicação de catálogos.
+- **Publicação Automática e Compatível:** Cada alteração aprovada na branch `main` sincroniza `index.pb` (formato principal, esquema oficial Aniyomi), `index.json` e `index.min.json` (formatos legados mantidos para clientes antigos e forks), além de `repo.json`, no repositório [`anime-extensoes`](https://github.com/Awerkori/anime-extensoes). A geração ocorre sobre o JSON final consolidado após adições, atualizações e remoções.
+- **Sem Recompilação para Republicar:** O workflow manual `catalog_only` valida e republica os catálogos sem compilar APKs; builds normais continuam limitados aos módulos afetados.
 
 ---
 
@@ -40,6 +41,14 @@ O projeto segue arquitetura modular em Gradle:
 │   └── scripts/            # Scripts em Python para consolidação do catálogo e merge
 └── build.gradle.kts        # Configurações globais de compilação
 ```
+
+### Catálogos publicados
+
+- **Principal:** [`index.pb`](https://raw.githubusercontent.com/Awerkori/anime-extensoes/repo/index.pb), Protobuf compatível com o esquema oficial Aniyomi (`isTorrent=8`, `sources=9`).
+- **Legado:** [`index.json`](https://raw.githubusercontent.com/Awerkori/anime-extensoes/repo/index.json) e [`index.min.json`](https://raw.githubusercontent.com/Awerkori/anime-extensoes/repo/index.min.json). Ambos permanecem publicados e são sincronizados pelo mesmo pipeline; `index.min.json` também atende ao link de instalação automática para clientes legados.
+- **Metadados:** [`repo.json`](https://raw.githubusercontent.com/Awerkori/anime-extensoes/repo/repo.json) referencia `index.pb` por `index_v2` sem remover os metadados existentes.
+
+Para republicar apenas os índices, execute o workflow `CI` manualmente com `catalog_only=true` e `rebuild_all=false`.
 
 ---
 
@@ -110,6 +119,7 @@ Identificou uma extensão de anime quebrada, falha ao carregar episódios ou err
 ## 🌟 Créditos e Reconhecimento
 
 - **Felipe GFA** ([@FelipeGFA](https://github.com/FelipeGFA)): Pela migração estrutural da suíte de anime, desenvolvimento e depuração de parsers avançados (RedeCanais, BetterAnime, etc.) e consolidação dos fluxos de compilação contínua.
+- **Alex** ([@Alex17273747576777](https://github.com/Alex17273747576777)): Pela proposta inicial do catálogo Protobuf para anime, usada como base para esta implementação com o esquema oficial do Aniyomi.
 - **Yūzōnō** ([@yuzono](https://github.com/yuzono)) e equipe **Aniyomi** ([@aniyomiorg](https://github.com/aniyomiorg)): Pela arquitetura upstream dos extractors de vídeo e ecossistema de extensões de reprodução.
 - **Javier Tomás** e comunidade open-source de desenvolvedores.
 
