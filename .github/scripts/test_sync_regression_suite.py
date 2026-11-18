@@ -562,6 +562,61 @@ class SyncRegressionSuiteTest(unittest.TestCase):
         )
         self.assertEqual(res_pb.returncode, 0, res_pb.stderr)
 
+    def test_16_hybrid_source_info_skips_inspector_for_modern_apks(self):
+        create_repo_mod = _load_module("create_repo_reg_mod", "create-repo.py")
+        work = self.temp_dir / "cr"
+        apk_dir = work / "repo/apk"
+        info_dir = work / "source-info"
+        apk_dir.mkdir(parents=True)
+        info_dir.mkdir(parents=True)
+        (apk_dir / "aniyomi-all.modern-v16.1.apk").write_bytes(b"modern")
+        (apk_dir / "aniyomi-pt.legacy-v16.2.apk").write_bytes(b"legacy")
+        (info_dir / "eu.kanade.tachiyomi.animeextension.all.modern.json").write_text(
+            json.dumps({
+                "packageName": "eu.kanade.tachiyomi.animeextension.all.modern",
+                "sources": [{"name": "Modern", "lang": "all", "id": 123456, "baseUrl": "https://modern.test"}],
+            }),
+            encoding="utf-8",
+        )
+        inspected_pkgs = []
+
+        def fake_badging(apk: Path) -> str:
+            if "modern" in apk.name:
+                return "package: name='eu.kanade.tachiyomi.animeextension.all.modern' versionCode='1' versionName='16.1'\n"
+            return "package: name='eu.kanade.tachiyomi.animeextension.pt.legacy' versionCode='2' versionName='16.2'\n"
+
+        def fake_check_call(cmd, *args, **kwargs):
+            # Only legacy APK must be copied for Inspector.jar
+            if "-jar" in cmd:
+                leg_dir = Path(cmd[3])
+                inspected_pkgs.extend(p.name for p in leg_dir.iterdir())
+                Path(cmd[4]).write_text(
+                    json.dumps({
+                        "eu.kanade.tachiyomi.animeextension.pt.legacy": [
+                            {"name": "Legacy", "lang": "pt-BR", "id": "999", "baseUrl": "https://legacy.test", "versionId": 1}
+                        ]
+                    }),
+                    encoding="utf-8",
+                )
+
+        inspector_dummy = work / "Inspector.jar"
+        inspector_dummy.write_bytes(b"jar")
+        out_json = work / "output.json"
+        orig = Path.cwd()
+        os.chdir(work)
+        try:
+            with patch.object(create_repo_mod, "_aapt_badging", side_effect=fake_badging), \
+                 patch.object(create_repo_mod.subprocess, "check_call", side_effect=fake_check_call):
+                data = create_repo_mod.resolve_inspector_and_source_info(
+                    apk_dir=apk_dir, source_info_dir=info_dir, output_path=out_json
+                )
+        finally:
+            os.chdir(orig)
+        self.assertEqual(inspected_pkgs, ["aniyomi-pt.legacy-v16.2.apk"])
+        self.assertIn("eu.kanade.tachiyomi.animeextension.all.modern", data)
+        self.assertIn("eu.kanade.tachiyomi.animeextension.pt.legacy", data)
+        self.assertEqual(data["eu.kanade.tachiyomi.animeextension.all.modern"][0]["id"], "123456")
+
 
 if __name__ == "__main__":
     unittest.main()
