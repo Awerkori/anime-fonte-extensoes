@@ -32,6 +32,7 @@ import tempfile
 import time
 import tomllib
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import NamedTuple
@@ -2677,6 +2678,22 @@ def recover_pending_publications(
                         if not job_id:
                             continue
                         try:
+                            class _NoAuthCrossHostRedirect(urllib.request.HTTPRedirectHandler):
+                                def redirect_request(self, req, fp, code, msg, headers, newurl):
+                                    next_req = super().redirect_request(req, fp, code, msg, headers, newurl)
+                                    if next_req is not None:
+                                        orig_host = urllib.parse.urlparse(req.full_url).netloc
+                                        new_host = urllib.parse.urlparse(next_req.full_url).netloc
+                                        if orig_host != new_host:
+                                            for hdr in list(next_req.headers.keys()):
+                                                if hdr.lower() == "authorization":
+                                                    next_req.remove_header(hdr)
+                                            for hdr in list(next_req.unredirected_hdrs.keys()):
+                                                if hdr.lower() == "authorization":
+                                                    next_req.remove_header(hdr)
+                                    return next_req
+
+                            opener = urllib.request.build_opener(_NoAuthCrossHostRedirect())
                             req_log = urllib.request.Request(
                                 f"https://api.github.com/repos/{repo_slug}/actions/jobs/{job_id}/logs",
                                 headers={
@@ -2685,13 +2702,15 @@ def recover_pending_publications(
                                     "User-Agent": "Nox-Sync/1.0",
                                 },
                             )
-                            with urllib.request.urlopen(req_log, timeout=10) as log_resp:
-                                log_text = log_resp.read(200_000).decode("utf-8", errors="ignore")
+                            with opener.open(req_log, timeout=20) as log_resp:
+                                log_bytes = log_resp.read(8_000_000)
+                                log_text = log_bytes.decode("utf-8", errors="ignore")[-500_000:]
                             cls = classify_gradle_failure(log_text)
                             if cls == "TRANSIENT_NETWORK":
                                 return "TRANSIENT_BUILD_FAILURE", f"Transient network failure in job {job.get('name')}"
                             return "DETERMINISTIC_BUILD_FAILURE", f"Deterministic failure ({cls}) in job {job.get('name')}"
-                        except Exception:
+                        except Exception as log_exc:
+                            print(f"Warning: could not fetch log for job {job_id}: {log_exc}", file=sys.stderr)
                             failed_steps = [
                                 s.get("name", "") for s in job.get("steps", []) if s.get("conclusion") == "failure"
                             ]
