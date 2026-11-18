@@ -307,7 +307,14 @@ class SyncDeletionTest(unittest.TestCase):
 
         workflow = (ROOT / ".github/workflows/build_push.yml").read_text("utf-8")
         self.assertIn("needs.build.result == 'skipped'", workflow)
-        self.assertIn("echo '{}' > output.json", workflow)
+        self.assertIn("create-repo.py --resolve-sources", workflow)
+        result_empty = subprocess.run(
+            [sys.executable, str(ROOT / ".github/scripts/create-repo.py"), "--resolve-sources"],
+            cwd=checkout, env=env, text=True, capture_output=True,
+        )
+        self.assertEqual(result_empty.returncode, 0, result_empty.stderr)
+        self.assertEqual(json.loads((checkout / "output.json").read_text()), {})
+        self.assertEqual(json.loads((checkout / "repo/index.min.json").read_text()), [])
         sync_script = (ROOT / ".github/scripts/sync-upstream.py").read_text("utf-8")
         self.assertNotRegex(sync_script, r'git\("push"[^\n]*"--force"')
 
