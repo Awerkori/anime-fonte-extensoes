@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import urllib.request
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -351,8 +352,11 @@ class SyncRegressionSuiteTest(unittest.TestCase):
         r1 = MagicMock(); r1.read.return_value = json.dumps(runs_payload).encode(); r1.__enter__.return_value = r1
         r2 = MagicMock(); r2.read.return_value = json.dumps(jobs_payload).encode(); r2.__enter__.return_value = r2
         r3 = MagicMock(); r3.read.return_value = b"Script compilation error: Unresolved reference 'nanohttpd'"; r3.__enter__.return_value = r3
+        mock_opener = MagicMock()
+        mock_opener.open.return_value = r3
         with patch.dict(os.environ, {"GH_TOKEN": "tok", "GITHUB_REPOSITORY": "ProjectNox-org/anime-fonte-extensoes"}), \
-             patch("urllib.request.urlopen", side_effect=[r1, r2, r3]):
+             patch("urllib.request.urlopen", side_effect=[r1, r2]), \
+             patch("urllib.request.build_opener", return_value=mock_opener):
             status = sync.recover_pending_publications(
                 ["src/en/alpha"],
                 catalog_target="https://raw.githubusercontent.com/ProjectNox-org/anime-extensoes/repo/index.min.json",
@@ -362,6 +366,55 @@ class SyncRegressionSuiteTest(unittest.TestCase):
         state = json.loads((local / ".github/sync-state.json").read_text())
         self.assertEqual(state["publication_block"]["code_sha"], code_sha)
         self.assertEqual(state["publication_block"]["failure_type"], "DETERMINISTIC_BUILD_FAILURE")
+
+        # Transient 429 at tail of long redirected log -> TRANSIENT_BUILD_FAILURE + cross-host auth stripped
+        long_prefix = b"x" * 250_000
+        r_t1 = MagicMock(); r_t1.read.return_value = json.dumps(runs_payload).encode(); r_t1.__enter__.return_value = r_t1
+        r_t2 = MagicMock(); r_t2.read.return_value = json.dumps(jobs_payload).encode(); r_t2.__enter__.return_value = r_t2
+        r_t3 = MagicMock()
+        r_t3.read.return_value = long_prefix + b"\nReceived status code 429 from server: Too Many Requests\n"
+        r_t3.__enter__.return_value = r_t3
+        r_disp = MagicMock(); r_disp.status = 204; r_disp.__enter__.return_value = r_disp
+        transient_opener = MagicMock()
+
+        def _check_opener_open(req, timeout=20):
+            # Capture the redirect handler created by sync.recover_pending_publications
+            return r_t3
+
+        transient_opener.open.side_effect = _check_opener_open
+        # Reset block for fresh classification check
+        state["publication_block"] = None
+        (local / ".github/sync-state.json").write_text(json.dumps(state), encoding="utf-8")
+        captured_handlers = []
+        orig_build_opener = urllib.request.build_opener
+
+        def _spy_build_opener(*handlers):
+            captured_handlers.extend(handlers)
+            return transient_opener
+
+        with patch.dict(os.environ, {"GH_TOKEN": "tok", "GITHUB_REPOSITORY": "ProjectNox-org/anime-fonte-extensoes"}), \
+             patch("urllib.request.urlopen", side_effect=[r_t1, r_t2, r_disp]), \
+             patch("urllib.request.build_opener", side_effect=_spy_build_opener):
+            status_t = sync.recover_pending_publications(
+                ["src/en/alpha"],
+                catalog_target="https://raw.githubusercontent.com/ProjectNox-org/anime-extensoes/repo/index.min.json",
+                target_kind="url",
+            )
+        self.assertEqual(status_t, "DISPATCHED")
+        state_t = json.loads((local / ".github/sync-state.json").read_text())
+        self.assertEqual(state_t["publication_block"]["failure_type"], "TRANSIENT_BUILD_FAILURE")
+        self.assertTrue(captured_handlers)
+        redir_req = captured_handlers[0].redirect_request(
+            urllib.request.Request("https://api.github.com/logs", headers={"Authorization": "token secret"}),
+            None,
+            302,
+            "Found",
+            {},
+            "https://pipelines.actions.githubusercontent.com/sas?sig=abc",
+        )
+        self.assertIsNotNone(redir_req)
+        self.assertNotIn("Authorization", redir_req.headers)
+        self.assertNotIn("Authorization", redir_req.unredirected_hdrs)
 
     # 9. Recuperação após correção de um commit anteriormente bloqueado
     def test_09_recovery_after_fix_of_blocked_commit(self):

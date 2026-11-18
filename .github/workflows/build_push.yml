@@ -112,6 +112,7 @@ jobs:
     timeout-minutes: 30
     if: ${{ toJson(fromJson(needs.prepare.outputs.matrix).chunk) != '[]' }}
     strategy:
+      max-parallel: 6
       matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     steps:
       - name: Checkout ${{ github.ref_name }} branch
@@ -148,7 +149,24 @@ jobs:
           KAISVA: ${{ secrets.KAISVA }}
           TMDB_API: ${{ secrets.TMDB_API }}
         run: |
-          ./gradlew $MODULES
+          GRADLE_LOG="$(mktemp)"
+          for attempt in 1 2; do
+            set +e
+            ./gradlew $MODULES 2>&1 | tee "$GRADLE_LOG"
+            RC="${PIPESTATUS[0]}"
+            set -e
+            if [ "$RC" -eq 0 ]; then
+              rm -f "$GRADLE_LOG"
+              exit 0
+            fi
+            if [ "$attempt" -eq 1 ] && grep -q -E "Received status code (429|500|502|503|504)|Too Many Requests|Connection reset|Read timed out|Could not HEAD 'https?://|Could not get resource 'https?://" "$GRADLE_LOG"; then
+              echo "::warning::Transient dependency download error detected; retrying once after 15s..."
+              sleep 15
+            else
+              rm -f "$GRADLE_LOG"
+              exit "$RC"
+            fi
+          done
 
       - name: Upload APKs (${{ matrix.chunk.number }})
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
