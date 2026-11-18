@@ -426,6 +426,9 @@ def check_consistency(
     sync_head = get_sync_branch_head()
     sync_state = get_sync_state()
     synced_state_sha = sync_state.get("upstream_sha", "NONE")
+    sync_status = sync_state.get("sync_status", "VALIDATED")
+    blocked_candidate = sync_state.get("blocked_candidate") if isinstance(sync_state.get("blocked_candidate"), dict) else None
+    publication_block = sync_state.get("publication_block") if isinstance(sync_state.get("publication_block"), dict) else None
     main_head = git("rev-parse", "HEAD")
 
     local_modules = get_local_source_modules()
@@ -667,16 +670,38 @@ def check_consistency(
             pass
 
     if check_pending:
+        current_code_sha = sync_mod.get_code_sha("HEAD") if (sync_mod and hasattr(sync_mod, "get_code_sha")) else main_head
+        cand_blocked_active = bool(
+            blocked_candidate
+            and blocked_candidate.get("code_sha") == current_code_sha
+            and blocked_candidate.get("upstream_sha") == upstream_head
+            and upstream_head != "UNKNOWN"
+        )
+        pub_blocked_active = bool(
+            publication_block
+            and publication_block.get("code_sha") == current_code_sha
+            and publication_block.get("failure_type") == "DETERMINISTIC_BUILD_FAILURE"
+        )
+
         # Upstream divergence or pending source changes independently prove sync is needed
-        if (
+        has_upstream_work = bool(
             pending_units
             or (upstream_head != sync_head and upstream_head != "UNKNOWN")
             or parity_by_status["MISSING"]
             or parity_by_status["STALE"]
             or parity_by_status["OUTDATED"]
             or parity_by_status["RENAMED"]
-        ):
+        )
+        if has_upstream_work and not cand_blocked_active:
             return 2
+
+        if cand_blocked_active and (not parity_by_status["PUBLISH_PENDING"] or pub_blocked_active):
+            print(
+                f"Notice: Candidate {upstream_head[:8]} on code {current_code_sha[:8]} is deterministically blocked "
+                f"({blocked_candidate.get('failure_type')}: {blocked_candidate.get('cause')}). "
+                "Standing by until main code or upstream advances."
+            )
+            return 0
 
         # If catalog cannot be verified across all prioritized tiers, fail controlled (exit 1)
         # to prevent false confirmation of synchronization from absence of data (Section 5)
@@ -684,8 +709,14 @@ def check_consistency(
             print("::error::Catalog integrity unverified. No reliable catalog source available.", file=sys.stderr)
             return 1
 
-        # Pending publication of local source modules triggers exit code 2
+        # Pending publication of local source modules triggers exit code 2 unless deterministically blocked
         if parity_by_status["PUBLISH_PENDING"]:
+            if pub_blocked_active:
+                print(
+                    f"Notice: Publication recovery for code {current_code_sha[:8]} is deterministically suspended "
+                    f"({publication_block.get('cause')}). Standing by until code changes."
+                )
+                return 0
             return 2
 
         # If catalog was fetched but distribution artifacts could not be confirmed,
