@@ -2,5 +2,14 @@
   "upstream_sha": "db62e25e7b7954b67a1ca45556ceeed46b283842",
   "upstream_branch": "master",
   "synced_at": "2026-11-18T18:06:59.697694+00:00",
-  "base_sha": "81898d5beb9f95251f244c6b5087d21e33b2176c"
+  "base_sha": "81898d5beb9f95251f244c6b5087d21e33b2176c",
+  "publication_block": {
+    "code_sha": "fa1f261efaf6c18c238517c003316213b5c5eb9b",
+    "local_head": "fa1f261efaf6c18c238517c003316213b5c5eb9b",
+    "run_id": 44380878237,
+    "failure_type": "DETERMINISTIC_BUILD_FAILURE",
+    "cause": "CI build failed in Build extensions (17) (Build extensions (17))",
+    "attempts": 1,
+    "recorded_at": "2026-11-18T19:30:47.564046+00:00"
+  }
 }
