@@ -81,6 +81,9 @@ jobs:
           ./.github/scripts/bump-versions.py "$COMMIT_MESSAGE" ${{ steps.modified-libs.outputs.all_changed_files }}
           git push
 
+      - name: Validate structural build configuration
+        run: python ./.github/scripts/sync-upstream.py --validate-only
+
       - name: Get last successful CI commit
         uses: nrwl/nx-set-shas@afb73a62d26e41464e9254689e1fd6122ee683c1 # v5.0.1
         with:

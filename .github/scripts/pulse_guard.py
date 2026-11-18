@@ -413,8 +413,13 @@ def cmd_pulse_dispatch(args: argparse.Namespace) -> int:
     # Wait sleep interval before checking and dispatching
     if getattr(args, "only_on_changes", False) is True:
         has_changes = os.environ.get("HAS_CHANGES", "true").strip().lower()
-        if has_changes == "false":
-            print("[Pulse Guard] Standby mode: No upstream changes detected. Skipping pulse sleep & dispatch. Scheduled cron will handle next check.")
+        should_pulse = os.environ.get("SHOULD_PULSE", "true").strip().lower()
+        if has_changes == "false" or should_pulse == "false":
+            reason = "SKIPPED_NO_CHANGES_CRON_STANDBY" if has_changes == "false" else "SKIPPED_PULSE_SUSPENDED_BY_SYNC"
+            if has_changes == "false":
+                print("[Pulse Guard] Standby mode: No upstream changes detected. Skipping pulse sleep & dispatch. Scheduled cron will handle next check.")
+            else:
+                print(f"[Pulse Guard] Standby mode ({reason}). Skipping pulse sleep & dispatch. Scheduled cron will handle next check.")
             log_pulse_status(
                 pulse_mode=pulse_mode,
                 current_run_id=current_run_id,
@@ -424,7 +429,7 @@ def cmd_pulse_dispatch(args: argparse.Namespace) -> int:
                 other_active_runs="0",
                 next_pulse_required=False,
                 trigger_attempt="NONE",
-                trigger_result="SKIPPED_NO_CHANGES_CRON_STANDBY",
+                trigger_result=reason,
                 watchdog_restart=False,
                 watchdog_already_alive=False,
             )

@@ -28,7 +28,10 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
+import tomllib
+import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import NamedTuple
@@ -36,6 +39,27 @@ from typing import NamedTuple
 class ConcurrencyRaceError(Exception):
     """Raised when origin/main advances concurrently during sync execution."""
     pass
+
+
+class TransientNetworkError(RuntimeError):
+    """Raised when Gradle/network fails transiently (HTTP 429/5xx, timeouts)."""
+    pass
+
+
+class StructuralIncompatibilityError(RuntimeError):
+    """Raised when shared infra, catalogs, or modules fail structural validation."""
+
+    def __init__(self, message: str, failed_units: list[str] | None = None):
+        super().__init__(message)
+        self.failed_units = failed_units or []
+
+
+EXIT_TRANSIENT_CONCURRENCY = 75
+EXIT_TRANSIENT_NETWORK = 76
+STATE_EXCLUDED_PATHS = (
+    ":!.github/sync-state.json",
+    ":!.github/sync-deferred-incompatibilities.json",
+)
 
 
 class ExtensionVersion(NamedTuple):
@@ -58,7 +82,23 @@ UPSTREAM_URL = "https://github.com/yuzono/anime-extensions.git"
 UPSTREAM_BRANCH = "master"
 SYNC_BRANCH = "sync"
 SYNC_STATE_FILE = Path(".github/sync-state.json")
+DEFERRED_INCOMPATIBILITIES_FILE = Path(".github/sync-deferred-incompatibilities.json")
 NOX_PROTECTED_FILE = Path(".github/nox-protected.txt")
+LIBS_CATALOG_FILE = Path("gradle/libs.versions.toml")
+KEI_CATALOG_FILE = Path("gradle/kei.versions.toml")
+SETTINGS_FILE = Path("settings.gradle.kts")
+INFRA_EXACT_PATHS = {
+    "core",
+    "compiler",
+    "extensions-lib",
+    "common",
+    "build.gradle.kts",
+    "gradle.properties",
+    "settings.gradle.kts",
+    "ext-bootstrap.py",
+}
+INFRA_PREFIXES = ("core/", "compiler/", "extensions-lib/", "common/", "gradle/")
+MAX_TRANSIENT_PUB_RETRIES = 3
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Versioning regex patterns — Groovy & Kotlin DSL
@@ -148,7 +188,9 @@ def is_preserved(path: str) -> bool:
         return True
     if path in {
         ".gitignore",
+        "gradle/libs.versions.toml",
         "gradle/build-logic/build.gradle.kts",
+        "gradle/build-logic/src/main/kotlin/ExtensionPlugin.kt",
         "gradle/build-logic/src/main/kotlin/PluginExtensionLegacy.kt",
         "gradle/build-logic/src/main/kotlin/ContentWarningLegacy.kt",
         "gradle/build-logic/src/main/kotlin/io/github/keiyoushi/gradle/api/dsl/BaseUrlConfig.kt",
@@ -163,7 +205,7 @@ def is_preserved(path: str) -> bool:
 
 
 def get_ptbr_snapshot(ref: str | None = None) -> dict[str, str]:
-    """Capture sha256 checksum of every file in src/pt/**."""
+    """Capture sha256 checksum of every source/config file in src/pt/**."""
     snapshot: dict[str, str] = {}
     if ref is None:
         pt_dir = Path("src/pt")
@@ -171,6 +213,9 @@ def get_ptbr_snapshot(ref: str | None = None) -> dict[str, str]:
             return snapshot
         for p in sorted(pt_dir.rglob("*")):
             if p.is_file():
+                rel_parts = p.relative_to(pt_dir).parts
+                if any(part in {"build", ".cxx", ".gradle", ".kotlin"} for part in rel_parts):
+                    continue
                 snapshot[p.as_posix()] = hashlib.sha256(p.read_bytes()).hexdigest()
     else:
         out = git("ls-tree", "-r", ref, "src/pt", check=False)
@@ -914,6 +959,851 @@ def bump_version_if_needed(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Sync State, Structural Reconciliation & Validation
+# ──────────────────────────────────────────────────────────────────────────────
+
+_COMMENT_OR_STRING_RE = re.compile(
+    r'/\*.*?\*/|//[^\n]*|""".*?"""|"(?:\\.|[^"\\])*"',
+    re.DOTALL,
+)
+_CATALOG_REF_RE = re.compile(r"\b(libs|kei)\.([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)*)")
+_SETTINGS_INCLUDE_RE = re.compile(r'\binclude\s*\(\s*"(:?[^"$]+)"\s*\)')
+_LOCAL_PROJECT_RE = re.compile(r"""project\s*\(\s*(?:path\s*=\s*)?["'](:[^"']+)["']""")
+_TOML_SECTION_RE = re.compile(r"^\s*\[([a-zA-Z0-9_.-]+)\]\s*(?:#.*)?$")
+_TOML_ASSIGN_RE = re.compile(r"^\s*([A-Za-z0-9_-]+)\s*=\s*(.*)$")
+_CATALOG_PROVIDER_SUFFIXES = {
+    "get",
+    "orNull",
+    "orElse",
+    "version",
+    "pluginId",
+    "requiredVersion",
+    "strictVersion",
+    "preferredVersion",
+    "displayName",
+    "asProvider",
+}
+_CATALOG_IGNORED_PREFIXES = {
+    "libs.versions",
+    "libs.bundles",
+    "libs.plugins",
+    "kei.versions",
+    "kei.bundles",
+    "kei.plugins",
+    "libs.class",
+    "kei.class",
+    "libs.java",
+    "kei.java",
+    "libs.extensionsLib",
+    "libs.ktlint",
+}
+_TRANSIENT_GRADLE_MARKERS = (
+    "Could not GET",
+    "Could not HEAD",
+    "Could not download",
+    "Could not get resource",
+    "Read timed out",
+    "Connection reset",
+    "Connection timed out",
+    "Temporary failure in name resolution",
+    "UnknownHostException",
+    "Received status code 429",
+    "Received status code 500",
+    "Received status code 502",
+    "Received status code 503",
+    "Received status code 504",
+    "status code: 429",
+    "status code: 500",
+    "status code: 502",
+    "status code: 503",
+    "status code: 504",
+)
+_GRADLE_FAILED_TASK_RE = re.compile(
+    r"(?:> Task :((?:src:[^:]+:[^:]+)|(?:lib:[^:]+)|(?:lib-multisrc:[^:]+)|[a-zA-Z0-9_-]+):([a-zA-Z0-9]+)\s+FAILED|Execution failed for task ':((?:src:[^:]+:[^:]+)|(?:lib:[^:]+)|(?:lib-multisrc:[^:]+)|[a-zA-Z0-9_-]+):([a-zA-Z0-9]+)')",
+)
+_KOTLIN_ERROR_RE = re.compile(r"e:\s+file:///(.+?):(\d+):(\d+)\s*(.+)")
+
+
+def set_github_output(key: str, value: str) -> None:
+    output_path = os.environ.get("GITHUB_OUTPUT")
+    if output_path:
+        with open(output_path, "a", encoding="utf-8") as f:
+            f.write(f"{key}={value}\n")
+
+
+def merge_in_progress() -> bool:
+    return subprocess.run(
+        ["git", "rev-parse", "-q", "--verify", "MERGE_HEAD"],
+        capture_output=True,
+    ).returncode == 0
+
+
+def get_code_sha(ref: str = "HEAD") -> str:
+    """Return latest commit SHA touching any file other than sync-state files."""
+    out = git(
+        "log",
+        "-1",
+        "--format=%H",
+        ref,
+        "--",
+        ".",
+        *STATE_EXCLUDED_PATHS,
+        check=False,
+    ).strip()
+    if out:
+        return out
+    return git("rev-parse", ref, check=False).strip()
+
+
+def load_sync_state() -> dict:
+    if SYNC_STATE_FILE.exists():
+        try:
+            data = json.loads(SYNC_STATE_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+    return {}
+
+
+def save_sync_state(state: dict) -> None:
+    SYNC_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    SYNC_STATE_FILE.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+
+
+def load_deferred_incompatibilities() -> dict[str, dict[str, object]]:
+    if not DEFERRED_INCOMPATIBILITIES_FILE.exists():
+        return {}
+    try:
+        data = json.loads(DEFERRED_INCOMPATIBILITIES_FILE.read_text(encoding="utf-8"))
+        return data.get("incompatibilities", {})
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def write_deferred_incompatibilities(incompatibilities: dict[str, dict[str, object]]) -> bool:
+    if not incompatibilities:
+        if DEFERRED_INCOMPATIBILITIES_FILE.exists():
+            DEFERRED_INCOMPATIBILITIES_FILE.unlink()
+            return True
+        return False
+    DEFERRED_INCOMPATIBILITIES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"incompatibilities": incompatibilities}
+    DEFERRED_INCOMPATIBILITIES_FILE.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return True
+
+
+def compute_deterministic_signature(
+    code_sha: str,
+    upstream_head: str,
+    failure_type: str,
+    units: list[str],
+    cause: str,
+) -> str:
+    seed = f"{code_sha}:{upstream_head}:{failure_type}:{','.join(sorted(units))}:{cause[:300]}"
+    return hashlib.sha256(seed.encode("utf-8")).hexdigest()
+
+
+def commit_state_only(commit_msg: str, push: bool = False, start_main: str | None = None) -> None:
+    """Persist sync-state.json updates with [skip ci] without advancing code_sha or triggering CI."""
+    if not SYNC_STATE_FILE.exists():
+        return
+    status = git("status", "--porcelain", "--", str(SYNC_STATE_FILE), check=False).strip()
+    if not status:
+        return
+    git("add", "--", str(SYNC_STATE_FILE))
+    diff_cached = subprocess.run(["git", "diff", "--cached", "--quiet", "--", str(SYNC_STATE_FILE)])
+    if diff_cached.returncode == 0:
+        return
+    git("commit", "-m", f"[skip ci] {commit_msg}")
+    if push:
+        if start_main:
+            ensure_main_unchanged(start_main)
+        git("push", "origin", "HEAD:main")
+
+
+def _strip_comments_preserving_newlines(text: str, strip_strings: bool = False) -> str:
+    def _replacer(match: re.Match[str]) -> str:
+        token = match.group(0)
+        if not strip_strings and token.startswith('"'):
+            return token
+        return "\n" * token.count("\n")
+
+    return _COMMENT_OR_STRING_RE.sub(_replacer, text)
+
+
+def discover_local_top_level_modules(root: Path = Path(".")) -> list[Path]:
+    """Discover all top-level Gradle module directories containing build.gradle(.kts)."""
+    modules: list[Path] = []
+    for entry in sorted(root.iterdir()):
+        if not entry.is_dir() or entry.name in {".git", ".gradle", "build", "gradle", "src", "lib", "lib-multisrc"}:
+            continue
+        if (entry / "build.gradle.kts").is_file() or (entry / "build.gradle").is_file():
+            modules.append(entry)
+    return modules
+
+
+def discover_upstream_top_level_modules(upstream_ref: str) -> set[str]:
+    """Discover top-level Gradle module directories present in upstream_ref."""
+    out = git("ls-tree", "-r", "--name-only", upstream_ref, check=False)
+    modules: set[str] = set()
+    for line in out.splitlines():
+        parts = line.split("/")
+        if len(parts) == 2 and parts[1] in {"build.gradle.kts", "build.gradle"}:
+            top = parts[0]
+            if top not in {"gradle", "src", "lib", "lib-multisrc", "build"}:
+                modules.add(top)
+    return modules
+
+
+def _catalog_accessor_paths(data: dict[str, object]) -> set[str]:
+    def _norm(key: str) -> str:
+        return re.sub(r"[-_.]+", ".", key)
+
+    paths: set[str] = set()
+    for section, prefix in (
+        ("libraries", ""),
+        ("versions", "versions."),
+        ("bundles", "bundles."),
+        ("plugins", "plugins."),
+    ):
+        entries = data.get(section, {})
+        if isinstance(entries, dict):
+            for key in entries:
+                paths.add(f"{prefix}{_norm(str(key))}")
+    return paths
+
+
+def _extract_toml_section_blocks(toml_text: str) -> dict[str, dict[str, str]]:
+    blocks: dict[str, dict[str, str]] = {}
+    current_section: str | None = None
+    lines = toml_text.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        sec_m = _TOML_SECTION_RE.match(line)
+        if sec_m:
+            current_section = sec_m.group(1)
+            blocks.setdefault(current_section, {})
+            i += 1
+            continue
+        assign_m = _TOML_ASSIGN_RE.match(line)
+        if current_section and assign_m and not line.lstrip().startswith("#"):
+            key = assign_m.group(1)
+            stmt_lines = [line]
+            balance = line.count("[") - line.count("]") + line.count("{") - line.count("}")
+            while balance > 0 and i + 1 < len(lines):
+                i += 1
+                stmt_lines.append(lines[i])
+                balance += lines[i].count("[") - lines[i].count("]") + lines[i].count("{") - lines[i].count("}")
+            blocks[current_section][key] = "\n".join(stmt_lines)
+        i += 1
+    return blocks
+
+
+def _insert_toml_statements(toml_text: str, additions_by_section: dict[str, list[str]]) -> str:
+    lines = toml_text.splitlines()
+    pending = {sec: list(stmts) for sec, stmts in additions_by_section.items() if stmts}
+    if not pending:
+        return toml_text
+
+    out: list[str] = []
+    current_section: str | None = None
+
+    def _flush_section(sec: str | None) -> None:
+        if sec and sec in pending:
+            trailing_blanks = 0
+            while out and not out[-1].strip():
+                out.pop()
+                trailing_blanks += 1
+            out.extend(pending.pop(sec))
+            out.extend([""] * trailing_blanks)
+
+    for line in lines:
+        sec_m = _TOML_SECTION_RE.match(line)
+        if sec_m:
+            _flush_section(current_section)
+            current_section = sec_m.group(1)
+        out.append(line)
+
+    _flush_section(current_section)
+    for sec, stmts in pending.items():
+        if out and out[-1].strip():
+            out.append("")
+        out.append(f"[{sec}]")
+        out.extend(stmts)
+
+    return "\n".join(out) + "\n"
+
+
+def _format_toml_value(key: str, value: object) -> str:
+    if isinstance(value, str):
+        return f'{key} = "{value}"'
+    if isinstance(value, list):
+        items = ", ".join(f'"{item}"' for item in value)
+        return f"{key} = [{items}]"
+    if isinstance(value, dict):
+        parts = []
+        for sub_k, sub_v in value.items():
+            if isinstance(sub_v, str):
+                parts.append(f'{sub_k} = "{sub_v}"')
+            else:
+                parts.append(f"{sub_k} = {json.dumps(sub_v)}")
+        return f"{key} = {{ {', '.join(parts)} }}"
+    return f"{key} = {json.dumps(value)}"
+
+
+def reconcile_version_catalog(
+    upstream_ref: str,
+    catalog_file: Path = LIBS_CATALOG_FILE,
+    *,
+    apply: bool = True,
+) -> bool:
+    """Selectively integrate missing upstream entries into a TOML catalog without clobbering Nox pins."""
+    if not catalog_file.is_file():
+        return False
+    upstream_text = read_file_at(upstream_ref, catalog_file.as_posix())
+    if not upstream_text:
+        return False
+    local_text = catalog_file.read_text(encoding="utf-8")
+
+    try:
+        local_data = tomllib.loads(local_text)
+        upstream_data = tomllib.loads(upstream_text)
+    except tomllib.TOMLDecodeError:
+        return False
+
+    upstream_blocks = _extract_toml_section_blocks(upstream_text)
+    additions: dict[str, list[str]] = {}
+
+    local_versions = local_data.get("versions", {})
+    upstream_versions = upstream_data.get("versions", {})
+
+    for key, val in upstream_versions.items():
+        if key not in local_versions:
+            stmt = upstream_blocks.get("versions", {}).get(key) or _format_toml_value(key, val)
+            additions.setdefault("versions", []).append(stmt)
+
+    for section in ("libraries", "plugins"):
+        local_sec = local_data.get(section, {})
+        upstream_sec = upstream_data.get(section, {})
+        for key, val in upstream_sec.items():
+            if key not in local_sec:
+                if isinstance(val, dict) and "version.ref" in val:
+                    ref_name = val["version.ref"]
+                    if ref_name not in local_versions and ref_name in upstream_versions:
+                        if not any(
+                            s.startswith(f"{ref_name} ") or s.startswith(f"{ref_name}=")
+                            for s in additions.get("versions", [])
+                        ):
+                            stmt_v = upstream_blocks.get("versions", {}).get(ref_name) or _format_toml_value(
+                                ref_name, upstream_versions[ref_name]
+                            )
+                            additions.setdefault("versions", []).append(stmt_v)
+                stmt = upstream_blocks.get(section, {}).get(key) or _format_toml_value(key, val)
+                additions.setdefault(section, []).append(stmt)
+
+    updated_text = _insert_toml_statements(local_text, additions)
+
+    local_bundles = local_data.get("bundles", {})
+    upstream_bundles = upstream_data.get("bundles", {})
+    bundle_additions: list[str] = []
+    for bundle_name, up_items in upstream_bundles.items():
+        if not isinstance(up_items, list):
+            continue
+        if bundle_name not in local_bundles:
+            bundle_additions.append(_format_toml_value(bundle_name, up_items))
+        elif isinstance(local_bundles[bundle_name], list):
+            missing_items = [item for item in up_items if item not in local_bundles[bundle_name]]
+            if missing_items:
+                merged_items = [*local_bundles[bundle_name], *missing_items]
+                new_bundle_line = _format_toml_value(bundle_name, merged_items)
+                pattern = re.compile(rf"(?m)^[ \t]*{re.escape(bundle_name)}\s*=\s*\[[^\]]*\]")
+                updated_text = pattern.sub(new_bundle_line, updated_text, count=1)
+
+    if bundle_additions:
+        updated_text = _insert_toml_statements(updated_text, {"bundles": bundle_additions})
+
+    if updated_text == local_text:
+        return False
+
+    tomllib.loads(updated_text)
+    if apply:
+        catalog_file.write_text(updated_text, encoding="utf-8")
+        print(f"Reconciled missing entries in {catalog_file.as_posix()} from upstream while preserving Nox pins")
+    return True
+
+
+def reconcile_settings_modules(upstream_ref: str, *, apply: bool = True) -> bool:
+    """Selectively add new upstream include(...) modules to settings.gradle.kts if their dir exists."""
+    if not SETTINGS_FILE.is_file():
+        return False
+    upstream_text = read_file_at(upstream_ref, str(SETTINGS_FILE))
+    if not upstream_text:
+        return False
+    local_text = SETTINGS_FILE.read_text(encoding="utf-8")
+
+    local_clean = _strip_comments_preserving_newlines(local_text)
+    upstream_clean = _strip_comments_preserving_newlines(upstream_text)
+    local_includes = {m.group(1).lstrip(":") for m in _SETTINGS_INCLUDE_RE.finditer(local_clean)}
+    upstream_includes = [m.group(1) for m in _SETTINGS_INCLUDE_RE.finditer(upstream_clean)]
+
+    to_add: list[str] = []
+    for inc in upstream_includes:
+        norm = inc.lstrip(":")
+        if norm in local_includes:
+            continue
+        mod_dir = Path(*norm.split(":"))
+        if (mod_dir / "build.gradle.kts").is_file() or (mod_dir / "build.gradle").is_file():
+            to_add.append(f'include(":{norm}")')
+            local_includes.add(norm)
+
+    if not to_add:
+        return False
+
+    updated_text = local_text
+    core_match = re.search(r'(?m)^([ \t]*include\s*\(\s*":core"\s*\)\s*)$', updated_text)
+    insert_block = "\n".join(to_add)
+    if core_match:
+        updated_text = updated_text[:core_match.end()] + "\n" + insert_block + updated_text[core_match.end():]
+    else:
+        updated_text = updated_text.rstrip() + "\n" + insert_block + "\n"
+
+    if updated_text == local_text:
+        return False
+    if apply:
+        SETTINGS_FILE.write_text(updated_text, encoding="utf-8")
+        print(f"Reconciled new module includes in settings.gradle.kts: {', '.join(to_add)}")
+    return True
+
+
+def _sync_shared_project_deps_into_plugin(plugin_path: Path, dep_lines: list[str]) -> bool:
+    """Ensure shared module dependencies (e.g. compileOnly(project(\":extensions-lib\"))) exist in a plugin."""
+    if not plugin_path.is_file() or not dep_lines:
+        return False
+    text = plugin_path.read_text(encoding="utf-8")
+    original = text
+    missing = [line for line in dep_lines if line.strip() not in text]
+    if not missing:
+        return False
+    anchor = re.search(r"(?m)^([ \t]*)compileOnly\(libs\.bundles\.common\)\s*$", text)
+    if not anchor:
+        anchor = re.search(r"(?m)^([ \t]*)implementation\(project\(\":core\"\)\)\s*$", text)
+    if anchor:
+        indent = anchor.group(1)
+        block = "\n".join(f"{indent}{line.strip()}" for line in missing)
+        text = text[:anchor.end()] + "\n" + block + text[anchor.end():]
+    if text != original:
+        plugin_path.write_text(text, encoding="utf-8")
+        return True
+    return False
+
+
+def reconcile_build_logic_infra(upstream_ref: str) -> list[str]:
+    """Selectively reconcile shared module dependencies in preserved build-logic plugins."""
+    changed_files: list[str] = []
+    ext_plugin_rel = "gradle/build-logic/src/main/kotlin/ExtensionPlugin.kt"
+    up_ext_plugin = read_file_at(upstream_ref, ext_plugin_rel)
+    if up_ext_plugin:
+        dep_lines = re.findall(
+            r'^[ \t]*((?:compileOnly|implementation|api|ksp)\s*\(\s*project\s*\(\s*"(:[^"]+)"\s*\)\s*\))[ \t]*$',
+            up_ext_plugin,
+            re.MULTILINE,
+        )
+        shared_deps = [
+            expr for expr, mod in dep_lines
+            if mod not in {":core", ":compiler"} and not mod.startswith(":lib-multisrc:")
+        ]
+        for target_rel in (
+            ext_plugin_rel,
+            "gradle/build-logic/src/main/kotlin/PluginExtensionLegacy.kt",
+        ):
+            target_path = Path(target_rel)
+            if _sync_shared_project_deps_into_plugin(target_path, shared_deps):
+                changed_files.append(target_rel)
+    return changed_files
+
+
+def apply_infrastructure_updates(upstream_ref: str) -> list[str]:
+    """Apply non-preserved infra updates + selective reconciliation of preserved build/catalog files."""
+    applied_infra: list[str] = []
+    infra_targets = sorted(INFRA_EXACT_PATHS | discover_upstream_top_level_modules(upstream_ref))
+
+    # 1. Restore non-preserved top-level infra files/modules and non-preserved gradle/ files
+    for target in infra_targets:
+        if is_preserved(target) or not path_exists(upstream_ref, target):
+            continue
+        diff_files = git("diff", "--name-only", "HEAD", upstream_ref, "--", target, check=False).splitlines()
+        if not diff_files:
+            continue
+        print(f"Applying global infrastructure update: {target}")
+        git("rm", "-rf", "--ignore-unmatch", "--quiet", "--", target)
+        git("restore", f"--source={upstream_ref}", "--staged", "--worktree", "--", target)
+        applied_infra.append(target)
+
+    # 2. Selectively sync non-preserved files under gradle/ (e.g. LibraryPlugin.kt, ThemePlugin.kt, GenerateManifestTask.kt)
+    gradle_diff = git("diff", "--name-only", "HEAD", upstream_ref, "--", "gradle", check=False).splitlines()
+    for rel_path in gradle_diff:
+        if not rel_path or is_preserved(rel_path):
+            continue
+        if path_exists(upstream_ref, rel_path):
+            print(f"Applying upstream gradle update: {rel_path}")
+            git("restore", f"--source={upstream_ref}", "--staged", "--worktree", "--", rel_path)
+            applied_infra.append(rel_path)
+        elif Path(rel_path).exists():
+            git("rm", "-f", "--ignore-unmatch", "--quiet", "--", rel_path)
+            applied_infra.append(rel_path)
+
+    # 3. Selectively reconcile preserved catalogs, settings.gradle.kts, and build-logic plugins
+    for catalog_file in (LIBS_CATALOG_FILE, KEI_CATALOG_FILE):
+        if reconcile_version_catalog(upstream_ref, catalog_file=catalog_file, apply=True):
+            git("add", "--", str(catalog_file))
+            applied_infra.append(str(catalog_file))
+
+    if reconcile_settings_modules(upstream_ref, apply=True):
+        git("add", "--", str(SETTINGS_FILE))
+        applied_infra.append(str(SETTINGS_FILE))
+
+    for bl_rel in reconcile_build_logic_infra(upstream_ref):
+        git("add", "--", bl_rel)
+        applied_infra.append(bl_rel)
+
+    return sorted(set(applied_infra))
+
+
+def validate_local_project_dependencies() -> list[str]:
+    """Return project(':...') references whose local module directory/build file does not exist."""
+    errors: list[str] = []
+    build_files: list[Path] = []
+    if Path("build.gradle.kts").is_file():
+        build_files.append(Path("build.gradle.kts"))
+    for mod in discover_local_top_level_modules():
+        build_files.extend(mod.glob("build.gradle*"))
+    for root_name in ("gradle/build-logic/src", "lib", "lib-multisrc", "src"):
+        root = Path(root_name)
+        if root.is_dir():
+            build_files.extend(root.rglob("build.gradle.kts"))
+            build_files.extend(root.rglob("build.gradle"))
+            if root_name == "gradle/build-logic/src":
+                build_files.extend(root.rglob("*.kt"))
+
+    for build_file in sorted(set(build_files)):
+        if not build_file.is_file() or ".gradle" in build_file.parts or "build" in build_file.parts:
+            continue
+        content = _strip_comments_preserving_newlines(build_file.read_text(encoding="utf-8", errors="ignore"))
+        for match in _LOCAL_PROJECT_RE.finditer(content):
+            project_path = match.group(1)
+            if "$" in project_path:
+                continue
+            module_path = Path(*project_path.removeprefix(":").split(":"))
+            has_build_file = any(
+                (module_path / fn).is_file() for fn in ("build.gradle.kts", "build.gradle")
+            )
+            if not has_build_file:
+                line_num = content.count("\n", 0, match.start()) + 1
+                errors.append(f"{build_file.as_posix()}:{line_num}: módulo referenciado '{project_path}' não existe em {module_path}")
+    return errors
+
+
+def validate_settings_modules() -> list[str]:
+    """Verify static include(...) declarations exist on disk and top-level modules are included."""
+    if not SETTINGS_FILE.is_file():
+        return []
+    errors: list[str] = []
+    content = _strip_comments_preserving_newlines(SETTINGS_FILE.read_text(encoding="utf-8", errors="ignore"))
+    included_top: set[str] = set()
+    for match in _SETTINGS_INCLUDE_RE.finditer(content):
+        mod_ref = match.group(1)
+        norm = mod_ref.lstrip(":")
+        included_top.add(norm)
+        mod_path = Path(*norm.split(":"))
+        if not ((mod_path / "build.gradle.kts").is_file() or (mod_path / "build.gradle").is_file()):
+            line_num = content.count("\n", 0, match.start()) + 1
+            errors.append(f"settings.gradle.kts:{line_num}: módulo incluído '{mod_ref}' não existe em {mod_path}")
+
+    for mod_dir in discover_local_top_level_modules():
+        if mod_dir.name not in included_top:
+            errors.append(f"settings.gradle.kts: módulo '{mod_dir.name}' existe no disco mas não possui include(\":{mod_dir.name}\")")
+    return errors
+
+
+def validate_version_catalog_references() -> list[str]:
+    """Validate TOML catalogs and ensure every libs.*/kei.* reference across build scripts resolves."""
+    if not LIBS_CATALOG_FILE.is_file() and not KEI_CATALOG_FILE.is_file():
+        return []
+    errors: list[str] = []
+    catalog_paths: dict[str, set[str]] = {}
+
+    for cat_name, cat_file in (("libs", LIBS_CATALOG_FILE), ("kei", KEI_CATALOG_FILE)):
+        if not cat_file.is_file():
+            continue
+        try:
+            data = tomllib.loads(cat_file.read_text(encoding="utf-8"))
+        except tomllib.TOMLDecodeError as exc:
+            errors.append(f"{cat_file.as_posix()}: erro de sintaxe TOML: {exc}")
+            return errors
+        catalog_paths[cat_name] = _catalog_accessor_paths(data)
+
+        versions_tbl = data.get("versions", {})
+        libs_tbl = data.get("libraries", {})
+        plugins_tbl = data.get("plugins", {})
+        bundles_tbl = data.get("bundles", {})
+
+        for tbl_name, tbl in (("libraries", libs_tbl), ("plugins", plugins_tbl)):
+            if isinstance(tbl, dict) and isinstance(versions_tbl, dict):
+                for entry_k, entry_v in tbl.items():
+                    if isinstance(entry_v, dict) and "version.ref" in entry_v:
+                        ref_k = entry_v["version.ref"]
+                        if ref_k not in versions_tbl:
+                            errors.append(f"{cat_file.as_posix()}: {tbl_name} '{entry_k}' referencia version.ref '{ref_k}' ausente")
+        if isinstance(bundles_tbl, dict) and isinstance(libs_tbl, dict):
+            for b_k, b_items in bundles_tbl.items():
+                if isinstance(b_items, list):
+                    for item in b_items:
+                        if item not in libs_tbl:
+                            errors.append(f"{cat_file.as_posix()}: bundle '{b_k}' referencia biblioteca '{item}' ausente")
+
+    script_files: list[Path] = []
+    if Path("build.gradle.kts").is_file():
+        script_files.append(Path("build.gradle.kts"))
+    for mod in discover_local_top_level_modules():
+        script_files.extend(mod.rglob("*.gradle.kts"))
+        script_files.extend(mod.rglob("*.gradle"))
+    for root_name in ("lib", "lib-multisrc", "src", "gradle/build-logic"):
+        root = Path(root_name)
+        if root.is_dir():
+            script_files.extend(root.rglob("*.gradle.kts"))
+            script_files.extend(root.rglob("*.gradle"))
+            if root_name == "gradle/build-logic":
+                script_files.extend(root.rglob("*.kt"))
+
+    for script_file in sorted(set(script_files)):
+        if not script_file.is_file():
+            continue
+        posix_path = script_file.as_posix()
+        if "/build/" in posix_path or "/.gradle/" in posix_path or ".gradle" in script_file.parts or posix_path.startswith("gradle/build-logic/build/"):
+            continue
+        raw = script_file.read_text(encoding="utf-8", errors="ignore")
+        cleaned = _strip_comments_preserving_newlines(raw, strip_strings=True)
+        for line_num, line in enumerate(cleaned.splitlines(), 1):
+            for m in _CATALOG_REF_RE.finditer(line):
+                cat, chain = m.group(1), m.group(2)
+                if cat not in catalog_paths:
+                    continue
+                parts = chain.split(".")
+                while parts and parts[-1] in _CATALOG_PROVIDER_SUFFIXES:
+                    parts.pop()
+                if not parts:
+                    continue
+                cand = ".".join(parts)
+                full = f"{cat}.{cand}"
+                if full in _CATALOG_IGNORED_PREFIXES or cand in {"java", "class"}:
+                    continue
+                declared = catalog_paths[cat]
+                if not any(cand == entry or cand.startswith(entry + ".") for entry in declared):
+                    errors.append(f"{posix_path}:{line_num}: alias '{full}' não encontrado em gradle/{cat}.versions.toml")
+    return errors
+
+
+def validate_multisrc_compatibility() -> list[str]:
+    """Validate theme/themePkg and libVersion compatibility between extensions and lib-multisrc."""
+    errors: list[str] = []
+    src_dir = Path("src")
+    if not src_dir.is_dir():
+        return errors
+    for lang_dir in sorted(src_dir.iterdir()):
+        if not lang_dir.is_dir():
+            continue
+        for ext_dir in sorted(lang_dir.iterdir()):
+            if not ext_dir.is_dir():
+                continue
+            bf = ext_dir / "build.gradle.kts"
+            if not bf.is_file():
+                bf = ext_dir / "build.gradle"
+            if not bf.is_file():
+                continue
+            unit = f"src/{lang_dir.name}/{ext_dir.name}"
+            content = bf.read_text(encoding="utf-8", errors="ignore")
+            theme_match = _THEME_RE.search(content)
+            if not theme_match:
+                continue
+            theme = theme_match.group(1)
+            ms_bf = Path(f"lib-multisrc/{theme}/build.gradle.kts")
+            if not ms_bf.is_file():
+                ms_bf = Path(f"lib-multisrc/{theme}/build.gradle")
+            if not ms_bf.is_file():
+                errors.append(f"{unit}: multisrc '{theme}' não existe")
+                continue
+            ext_lib = read_lib_version(None, unit)
+            ms_match = _LIB_VERSION_RE.search(ms_bf.read_text(encoding="utf-8", errors="ignore"))
+            ms_lib = int(ms_match.group(1)) if ms_match else 14
+            if ext_lib < ms_lib:
+                errors.append(f"{unit}: extensão libVersion {ext_lib} < multisrc {theme} libVersion {ms_lib}")
+    return errors
+
+
+def run_structural_validations() -> list[str]:
+    """Run all static structural validations before invoking Gradle or pushing."""
+    return (
+        validate_local_project_dependencies()
+        + validate_settings_modules()
+        + validate_version_catalog_references()
+        + validate_multisrc_compatibility()
+    )
+
+
+def classify_gradle_failure(output: str) -> str:
+    """Distinguish transient network/Maven failures from deterministic compilation/config failures."""
+    if any(marker in output for marker in _TRANSIENT_GRADLE_MARKERS):
+        if "Script compilation error" not in output and "Unresolved reference" not in output:
+            return "TRANSIENT_NETWORK"
+    if "Script compilation error" in output:
+        return "DETERMINISTIC_SCRIPT_ERROR"
+    if "Unresolved reference" in output or "Compilation error" in output:
+        return "DETERMINISTIC_COMPILATION_ERROR"
+    if "Project with path" in output or "not found in root project" in output or "Plugin [id:" in output:
+        return "DETERMINISTIC_CONFIG_ERROR"
+    return "DETERMINISTIC_BUILD_ERROR"
+
+
+def parse_gradle_failures(output: str) -> dict[str, dict[str, object]]:
+    """Extract failing units and diagnostic messages from Gradle output."""
+    failed_units: dict[str, dict[str, object]] = {}
+    for match in _GRADLE_FAILED_TASK_RE.finditer(output):
+        gradle_module = match.group(1) or match.group(3)
+        unit = gradle_module.replace(":", "/")
+        if unit not in failed_units:
+            failed_units[unit] = {
+                "unit": unit,
+                "cause": "Compilation/build failure",
+                "evidence": "",
+                "incompatibility_type": "KOTLIN_COMPILATION_ERROR",
+            }
+    for m in _KOTLIN_ERROR_RE.finditer(output):
+        file_path, _, _, msg = m.group(1), m.group(2), m.group(3), m.group(4)
+        matched_unit = None
+        for unit in list(failed_units.keys()):
+            if unit in file_path:
+                matched_unit = unit
+                failed_units[unit]["cause"] = msg.strip()
+                break
+        if not matched_unit:
+            parts = file_path.split("/")
+            for infra_name in ("core", "compiler", "extensions-lib"):
+                if infra_name in parts:
+                    failed_units.setdefault(
+                        infra_name,
+                        {
+                            "unit": infra_name,
+                            "cause": msg.strip(),
+                            "evidence": "",
+                            "incompatibility_type": "CORE_INCOMPATIBILITY",
+                        },
+                    )
+                    matched_unit = infra_name
+                    break
+            if not matched_unit and "gradle" in parts and "build-logic" in parts:
+                failed_units.setdefault(
+                    "gradle/build-logic",
+                    {
+                        "unit": "gradle/build-logic",
+                        "cause": msg.strip(),
+                        "evidence": "",
+                        "incompatibility_type": "CORE_INCOMPATIBILITY",
+                    },
+                )
+    lines = output.splitlines()
+    for unit, info in failed_units.items():
+        relevant = [ln for ln in lines if unit in ln or (info["cause"] in ln)]
+        info["evidence"] = "\n".join(relevant[:30]) or str(info["cause"])
+    return failed_units
+
+
+def _run_gradle_in_sandbox(sandbox: Path, tasks: list[str]) -> tuple[int, str]:
+    gradlew = sandbox / "gradlew"
+    cmd = [str(gradlew), "--no-daemon", "--no-scan", "--console=plain", "--continue", *tasks]
+    res = subprocess.run(cmd, cwd=sandbox, capture_output=True, text=True)
+    combined = f"{res.stdout or ''}\n{res.stderr or ''}"
+    return res.returncode, combined
+
+
+def validate_candidate_with_gradle(
+    candidate_ref: str,
+    infra_changed: bool,
+    validation_units: list[str],
+) -> tuple[bool, list[str], str]:
+    """
+    Validate a candidate commit using real Gradle execution inside an isolated git worktree.
+    Returns (ok, failed_units, output_tail_or_error).
+    Raises TransientNetworkError if Gradle failed due to transient network/Maven outage.
+    """
+    if not Path("gradlew").is_file():
+        return True, [], ""
+
+    root = Path.cwd()
+    with tempfile.TemporaryDirectory(prefix="nox-anime-preflight-") as tmpdir:
+        sandbox = Path(tmpdir) / "repo"
+        git("worktree", "add", "--detach", str(sandbox), candidate_ref)
+        try:
+            if Path("local.properties").is_file():
+                shutil.copy2("local.properties", sandbox / "local.properties")
+
+            infra_tasks: list[str] = []
+            if infra_changed:
+                for mod_dir in discover_local_top_level_modules(sandbox):
+                    if mod_dir.name == "core":
+                        infra_tasks.append(":core:testDebugUnitTest")
+                    elif mod_dir.name == "compiler":
+                        infra_tasks.append(":compiler:compileKotlin")
+                    else:
+                        infra_tasks.append(f":{mod_dir.name}:compileReleaseKotlin")
+                for rep_pt in ("src/pt/animefire", "src/pt/redecanais", "src/pt/anikyuu"):
+                    if (sandbox / rep_pt).is_dir():
+                        if rep_pt in {"src/pt/animefire", "src/pt/redecanais"}:
+                            infra_tasks.append(f":{rep_pt.replace('/', ':')}:mergeReleaseJavaResource")
+                        infra_tasks.append(f":{rep_pt.replace('/', ':')}:compileReleaseKotlin")
+
+            ext_tasks: list[str] = []
+            for unit in sorted(set(validation_units)):
+                unit_dir = sandbox / unit
+                if not unit.startswith("src/") or not unit_dir.is_dir():
+                    continue
+                gradle_mod = ":" + unit.replace("/", ":")
+                ext_tasks.append(f"{gradle_mod}:compileReleaseKotlin")
+                if (unit_dir / "build.gradle.kts").is_file():
+                    ext_tasks.append(f"{gradle_mod}:generateSourceInfo")
+
+            if not (infra_tasks or ext_tasks):
+                return True, [], ""
+
+            if infra_tasks:
+                print(f"Validating Gradle infrastructure tasks in sandbox: {' '.join(infra_tasks)}")
+                rc, out = _run_gradle_in_sandbox(sandbox, infra_tasks)
+                if rc != 0:
+                    if classify_gradle_failure(out) == "TRANSIENT_NETWORK":
+                        raise TransientNetworkError(out[-1500:])
+                    failures = parse_gradle_failures(out)
+                    failed_units = sorted(failures.keys()) or ["gradle-infra"]
+                    return False, failed_units, out[-2000:]
+            if ext_tasks:
+                print(f"Validating {len(validation_units)} affected extension(s) in sandbox...")
+                rc, out = _run_gradle_in_sandbox(sandbox, ext_tasks)
+                if rc != 0:
+                    if classify_gradle_failure(out) == "TRANSIENT_NETWORK":
+                        raise TransientNetworkError(out[-1500:])
+                    failures = parse_gradle_failures(out)
+                    failed_units = sorted(failures.keys()) or sorted(validation_units)
+                    return False, failed_units, out[-2000:]
+            return True, [], ""
+        finally:
+            os.chdir(root)
+            git("worktree", "remove", "--force", str(sandbox), check=False)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Application & Merge
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -929,8 +1819,46 @@ def apply_units(
     updated_units: list[str] | None = None,
     removed_units: list[str] | None = None,
     indirect_units: set[str] | None = None,
+    deferred_incompatibilities: dict[str, dict[str, object]] | None = None,
 ) -> list[str]:
-    """Apply upstream updates, preserves Nox-protected code, and guarantees version monotonicity."""
+    """Apply upstream updates atomically, preserving Nox-protected code and validating structure before commit."""
+    start_head = git("rev-parse", "HEAD").strip()
+    try:
+        return _apply_units_inner(
+            upstream_ref=upstream_ref,
+            units_to_apply=units_to_apply,
+            conflict_set=conflict_set,
+            protected=protected,
+            upstream_deleted=upstream_deleted,
+            protected_deletions=protected_deletions,
+            deployed_codes=deployed_codes,
+            new_units=new_units,
+            updated_units=updated_units,
+            removed_units=removed_units,
+            indirect_units=indirect_units,
+            deferred_incompatibilities=deferred_incompatibilities,
+        )
+    except BaseException:
+        if merge_in_progress():
+            git("merge", "--abort", check=False)
+        git("reset", "--hard", start_head, check=False)
+        raise
+
+
+def _apply_units_inner(
+    upstream_ref: str,
+    units_to_apply: list[str],
+    conflict_set: set[str],
+    protected: list[str],
+    upstream_deleted: list[str] | None = None,
+    protected_deletions: list[str] | None = None,
+    deployed_codes: dict[str, int] | None = None,
+    new_units: list[str] | None = None,
+    updated_units: list[str] | None = None,
+    removed_units: list[str] | None = None,
+    indirect_units: set[str] | None = None,
+    deferred_incompatibilities: dict[str, dict[str, object]] | None = None,
+) -> list[str]:
     deployed_codes = deployed_codes or {}
     base = git("merge-base", "HEAD", upstream_ref).strip()
 
@@ -950,8 +1878,12 @@ def apply_units(
     deleted_set = set(upstream_deleted or [])
     deletion_protection_set = set(protected_deletions or [])
     explicit_protection_set = deletion_protection_set | get_explicit_code_protections()
+    deferred_units = set((deferred_incompatibilities or {}).keys())
 
     for unit in units_to_apply:
+        if unit in deferred_units:
+            print(f"Deferring incompatible unit (preserving last functional state): {unit}")
+            continue
         if is_ptbr_unit(unit):
             print(f"Preserving untouchable PT-BR unit: {unit}")
             continue
@@ -998,17 +1930,18 @@ def apply_units(
                     stale_gradle.unlink(missing_ok=True)
                     git("rm", "-f", "--cached", "--ignore-unmatch", "--quiet", "--", str(stale_gradle))
 
-    # Apply global structural updates from upstream (compiler, core, ext-bootstrap)
-    for p in ["compiler", "core", "ext-bootstrap.py"]:
-        if path_exists(upstream_ref, p):
-            if git("diff", "--name-only", "HEAD", upstream_ref, "--", p).strip():
-                print(f"Applying global infrastructure update: {p}")
-                git("rm", "-rf", "--ignore-unmatch", "--quiet", "--", p)
-                git("restore", f"--source={upstream_ref}", "--staged", "--worktree", "--", p)
+    # Apply infrastructure & selective build/catalog updates from upstream
+    apply_infrastructure_updates(upstream_ref)
 
     bumped: list[str] = []
     guard_units = sorted(
-        {u for u in units_to_apply if u.startswith("src/") and not is_ptbr_unit(u) and u not in explicit_protection_set}
+        {
+            u for u in units_to_apply
+            if u.startswith("src/")
+            and not is_ptbr_unit(u)
+            and u not in explicit_protection_set
+            and u not in deferred_units
+        }
     )
 
     for unit in guard_units:
@@ -1032,17 +1965,35 @@ def apply_units(
             bumped.append(f"{unit} → {new_raw}")
             print(f"Version guard: bumped {unit} ({loc_raw} → {new_raw})")
 
-    # Record sync state
+    # Static structural validation BEFORE staging sync-state as validated (when Gradle workspace files exist)
+    structural_errors = run_structural_validations() if (SETTINGS_FILE.is_file() or LIBS_CATALOG_FILE.is_file()) else []
+    if structural_errors:
+        print("Structural validation failed:", file=sys.stderr)
+        for err in structural_errors:
+            print(f"  - {err}", file=sys.stderr)
+        failed_units = sorted({err.split(":", 1)[0] for err in structural_errors if ":" in err}) or ["gradle-infra"]
+        raise StructuralIncompatibilityError(
+            f"Structural validation failed: {structural_errors[0]}",
+            failed_units=failed_units,
+        )
+
+    if deferred_incompatibilities is not None:
+        if write_deferred_incompatibilities(deferred_incompatibilities):
+            git("add", "--", str(DEFERRED_INCOMPATIBILITIES_FILE))
+
+    # Record validated sync state (only cleared/updated after static checks pass; Gradle check runs next before push)
     upstream_head = git("rev-parse", upstream_ref).strip()
-    head_sha = git("rev-parse", "HEAD").strip()
     sync_state = {
         "upstream_sha": upstream_head,
+        "last_validated_upstream_sha": upstream_head,
         "upstream_branch": UPSTREAM_BRANCH,
         "synced_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "base_sha": base,
+        "sync_status": "PARTIAL_DEFERRED" if deferred_incompatibilities else "VALIDATED",
+        "blocked_candidate": None,
+        "publication_block": None,
     }
-    SYNC_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    SYNC_STATE_FILE.write_text(json.dumps(sync_state, indent=2) + "\n", encoding="utf-8")
+    save_sync_state(sync_state)
     git("add", "--", str(SYNC_STATE_FILE))
 
     # Verify PT-BR snapshot integrity: MUST be 100% byte-for-byte identical
@@ -1051,15 +2002,26 @@ def apply_units(
     git("diff", "--check")
 
     commit_msg = "Sync upstream"
+    if deferred_incompatibilities:
+        commit_msg += f" (partially synced, {len(deferred_incompatibilities)} deferred)"
     details = []
     if new_units:
-        details.append("Added extensions:\n" + "\n".join(f"  - {u}" for u in sorted(new_units)))
+        added_eff = [u for u in sorted(new_units) if u not in deferred_units]
+        if added_eff:
+            details.append("Added extensions:\n" + "\n".join(f"  - {u}" for u in added_eff))
     if updated_units:
-        details.append("Updated extensions:\n" + "\n".join(f"  - {u}" for u in sorted(updated_units)))
+        upd_eff = [u for u in sorted(updated_units) if u not in deferred_units]
+        if upd_eff:
+            details.append("Updated extensions:\n" + "\n".join(f"  - {u}" for u in upd_eff))
     if removed_units:
         details.append("Removed extensions:\n" + "\n".join(f"  - {u}" for u in sorted(removed_units)))
     if bumped:
         details.append("Nox-wins version bumps:\n" + "\n".join(f"  - {b}" for b in bumped))
+    if deferred_incompatibilities:
+        details.append(
+            "Deferred incompatible units:\n"
+            + "\n".join(f"  - {u}: {info.get('cause', 'incompatible')}" for u, info in sorted(deferred_incompatibilities.items()))
+        )
     if details:
         commit_msg += "\n\n" + "\n\n".join(details)
     git("commit", "-m", commit_msg)
@@ -1685,34 +2647,79 @@ def recover_pending_publications(
     if gh_token:
         try:
             repo_slug = os.environ.get("GITHUB_REPOSITORY", "ProjectNox-org/anime-fonte-extensoes")
-            # Verify if active build_push.yml runs cover pending units (Finding P1 / P2)
-            def get_active_runs() -> list[dict]:
-                runs_url = f"https://api.github.com/repos/{repo_slug}/actions/workflows/build_push.yml/runs?branch=main&per_page=5"
-                req_runs = urllib.request.Request(
-                    runs_url,
+            def _gh_api_json(api_url: str) -> dict:
+                req_api = urllib.request.Request(
+                    api_url,
                     headers={
                         "Authorization": f"token {gh_token}",
                         "Accept": "application/vnd.github+json",
                         "User-Agent": "Nox-Sync/1.0",
                     },
                 )
-                with urllib.request.urlopen(req_runs, timeout=10) as r_resp:
-                    runs_data = json.loads(r_resp.read().decode("utf-8"))
-                    return [
-                        r for r in runs_data.get("workflow_runs", [])
-                        if r.get("head_branch") == "main" and r.get("status") != "completed"
-                    ]
+                with urllib.request.urlopen(req_api, timeout=10) as api_resp:
+                    return json.loads(api_resp.read().decode("utf-8"))
 
-            active_runs = []
+            def _classify_failed_ci_run(run_obj: dict) -> tuple[str, str]:
+                run_id = run_obj.get("id")
+                if not run_id:
+                    return "DETERMINISTIC_BUILD_FAILURE", "CI run failed without run_id"
+                try:
+                    jobs_data = _gh_api_json(
+                        f"https://api.github.com/repos/{repo_slug}/actions/runs/{run_id}/jobs"
+                    )
+                    failed_jobs = [
+                        j for j in jobs_data.get("jobs", []) if j.get("conclusion") == "failure"
+                    ]
+                    if not failed_jobs:
+                        return "TRANSIENT_BUILD_FAILURE", f"CI run {run_id} failed with no failed job detail"
+                    for job in failed_jobs:
+                        job_id = job.get("id")
+                        if not job_id:
+                            continue
+                        try:
+                            req_log = urllib.request.Request(
+                                f"https://api.github.com/repos/{repo_slug}/actions/jobs/{job_id}/logs",
+                                headers={
+                                    "Authorization": f"token {gh_token}",
+                                    "Accept": "application/vnd.github+json",
+                                    "User-Agent": "Nox-Sync/1.0",
+                                },
+                            )
+                            with urllib.request.urlopen(req_log, timeout=10) as log_resp:
+                                log_text = log_resp.read(200_000).decode("utf-8", errors="ignore")
+                            cls = classify_gradle_failure(log_text)
+                            if cls == "TRANSIENT_NETWORK":
+                                return "TRANSIENT_BUILD_FAILURE", f"Transient network failure in job {job.get('name')}"
+                            return "DETERMINISTIC_BUILD_FAILURE", f"Deterministic failure ({cls}) in job {job.get('name')}"
+                        except Exception:
+                            failed_steps = [
+                                s.get("name", "") for s in job.get("steps", []) if s.get("conclusion") == "failure"
+                            ]
+                            step_desc = ", ".join(failed_steps) or str(job.get("name"))
+                            if any("Build extensions" in str(job.get("name", "")) or "Validate" in step_desc for _ in [1]):
+                                return "DETERMINISTIC_BUILD_FAILURE", f"CI build failed in {job.get('name')} ({step_desc})"
+                except Exception as exc:
+                    return "DETERMINISTIC_BUILD_FAILURE", f"Unable to inspect failed CI run {run_id}: {exc}"
+                return "DETERMINISTIC_BUILD_FAILURE", f"CI run {run_id} failed deterministically"
+
+            def get_recent_runs() -> list[dict]:
+                runs_url = f"https://api.github.com/repos/{repo_slug}/actions/workflows/build_push.yml/runs?branch=main&per_page=10"
+                runs_data = _gh_api_json(runs_url)
+                return [
+                    r for r in runs_data.get("workflow_runs", [])
+                    if r.get("head_branch") == "main"
+                ]
+
             try:
-                active_runs = get_active_runs()
+                recent_runs = get_recent_runs()
             except Exception as e_runs:
                 print(f"Warning: unable to query active runs ({e_runs}). Deferring publication recovery to avoid cancelling active publication.", file=sys.stderr)
                 return "DEFERRED"
 
+            active_runs = [r for r in recent_runs if r.get("status") != "completed"]
+
             if active_runs:
                 print(f"Active workflow build_push.yml run(s) detected ({len(active_runs)}) in progress on main. Waiting briefly for completion before dispatching recovery...")
-                import time
                 max_wait = 20
                 poll_interval = 5
                 waited = 0
@@ -1720,9 +2727,11 @@ def recover_pending_publications(
                     time.sleep(poll_interval)
                     waited += poll_interval
                     try:
-                        current_active = get_active_runs()
+                        polled_runs = get_recent_runs()
+                        current_active = [r for r in polled_runs if r.get("status") != "completed"]
                         if not current_active:
-                            print(f"Active runs finished after {waited}s. Proceeding with recovery dispatch.")
+                            print(f"Active runs finished after {waited}s. Proceeding with recovery check.")
+                            recent_runs = polled_runs
                             break
                     except Exception:
                         pass
@@ -1730,6 +2739,62 @@ def recover_pending_publications(
                     active_ids = [str(r.get("id")) for r in active_runs]
                     print(f"Active build_push.yml run(s) ({', '.join(active_ids)}) still in progress on main after {max_wait}s. Deferring publication recovery to avoid cancelling active publication.")
                     return "DEFERRED"
+
+            current_head = git("rev-parse", "HEAD", check=False).strip()
+            current_code = get_code_sha("HEAD")
+            matching_completed = [
+                r for r in recent_runs
+                if r.get("status") == "completed"
+                and r.get("head_sha") in {current_head, current_code}
+            ]
+            if matching_completed and matching_completed[0].get("conclusion") == "failure":
+                latest_failed = matching_completed[0]
+                fail_kind, fail_cause = _classify_failed_ci_run(latest_failed)
+                state = load_sync_state()
+                prev_pub_block = state.get("publication_block") or {}
+                prev_attempts = (
+                    int(prev_pub_block.get("attempts", 0))
+                    if prev_pub_block.get("code_sha") == current_code
+                    else 0
+                )
+                if fail_kind == "DETERMINISTIC_BUILD_FAILURE" or prev_attempts >= MAX_TRANSIENT_PUB_RETRIES:
+                    reason = fail_cause if fail_kind == "DETERMINISTIC_BUILD_FAILURE" else f"Transient CI failure persisted after {prev_attempts} attempts: {fail_cause}"
+                    state["publication_block"] = {
+                        "code_sha": current_code,
+                        "local_head": current_head,
+                        "run_id": latest_failed.get("id"),
+                        "failure_type": fail_kind,
+                        "cause": reason,
+                        "attempts": prev_attempts + 1,
+                        "recorded_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    }
+                    save_sync_state(state)
+                    print(f"Publication recovery suspended for {current_code[:10]}: {reason}")
+                    return "BLOCKED_DETERMINISTIC"
+                # Transient CI failure within retry budget: enforce bounded backoff
+                next_retry_str = prev_pub_block.get("next_retry_at")
+                now_utc = datetime.datetime.now(datetime.timezone.utc)
+                if next_retry_str:
+                    try:
+                        next_retry_dt = datetime.datetime.fromisoformat(next_retry_str)
+                        if now_utc < next_retry_dt:
+                            print(f"Transient publication failure backoff active until {next_retry_str}; deferring dispatch.")
+                            return "DEFERRED"
+                    except ValueError:
+                        pass
+                next_attempt = prev_attempts + 1
+                backoff_secs = 300 * next_attempt
+                state["publication_block"] = {
+                    "code_sha": current_code,
+                    "local_head": current_head,
+                    "run_id": latest_failed.get("id"),
+                    "failure_type": fail_kind,
+                    "cause": fail_cause,
+                    "attempts": next_attempt,
+                    "recorded_at": now_utc.isoformat(),
+                    "next_retry_at": (now_utc + datetime.timedelta(seconds=backoff_secs)).isoformat(),
+                }
+                save_sync_state(state)
 
             url = f"https://api.github.com/repos/{repo_slug}/actions/workflows/build_push.yml/dispatches"
             payload = {"ref": "main"}
@@ -1754,19 +2819,71 @@ def recover_pending_publications(
 # Main CLI
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _record_and_persist_block(
+    *,
+    code_sha: str,
+    upstream_head: str,
+    failure_type: str,
+    cause: str,
+    failed_units: list[str],
+    push: bool,
+    start_main: str,
+) -> None:
+    state = load_sync_state()
+    last_valid = state.get("last_validated_upstream_sha") or state.get("upstream_sha") or ""
+    sig = compute_deterministic_signature(code_sha, upstream_head, failure_type, failed_units, cause)
+    state["upstream_sha"] = last_valid
+    state["last_validated_upstream_sha"] = last_valid
+    state["sync_status"] = "BLOCKED_DETERMINISTIC"
+    state["blocked_candidate"] = {
+        "upstream_sha": upstream_head,
+        "code_sha": code_sha,
+        "failure_type": failure_type,
+        "cause": cause[:1000],
+        "failed_units": failed_units,
+        "signature": sig,
+        "recorded_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "skip_count": 0,
+    }
+    save_sync_state(state)
+    if push:
+        try:
+            commit_state_only(
+                f"chore(sync): record blocked upstream candidate {upstream_head[:10]}",
+                push=True,
+                start_main=start_main,
+            )
+        except ConcurrencyRaceError:
+            raise
+        except Exception as exc:
+            print(f"Warning: could not push sync-state block record ({exc})", file=sys.stderr)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Sync Yuzono upstream (Nox-wins)")
     parser.add_argument("--dry-run", action="store_true", help="Print plan without modifying files")
     parser.add_argument("--push", action="store_true", help="Commit and push to origin/main and sync")
+    parser.add_argument("--apply-no-push", action="store_true", help="Apply and validate locally without pushing")
+    parser.add_argument("--validate-only", action="store_true", help="Run structural validations and exit")
+    parser.add_argument("--force", action="store_true", help="Bypass deterministic block deduplication")
     parser.add_argument("--catalog-file", type=str, default=None, help="Path to catalog index.min.json")
     parser.add_argument("--distribution-dir", type=str, default=None, help="Path to distribution repository")
     parser.add_argument("--staging-dir", type=str, default=None, help="Path to APK staging directory")
     parser.add_argument("--recover-pending", action="store_true", help="Force publication recovery")
     args = parser.parse_args()
 
-    if args.dry_run and args.push:
-        print("Cannot use --dry-run and --push together", file=sys.stderr)
+    if sum((args.dry_run, args.push, args.apply_no_push, args.validate_only)) > 1:
+        print("Use only one of --dry-run, --push, --apply-no-push, or --validate-only", file=sys.stderr)
         sys.exit(1)
+
+    if args.validate_only:
+        errors = run_structural_validations()
+        if errors:
+            for err in errors:
+                print(f"VALIDATION_ERROR: {err}", file=sys.stderr)
+            sys.exit(1)
+        print("STRUCTURAL_VALIDATION=PASS")
+        return
 
     if not args.dry_run:
         ensure_clean_tree()
@@ -1775,9 +2892,32 @@ def main() -> None:
 
     git("fetch", "origin")
     start_main = git("rev-parse", "origin/main").strip()
+    start_head = git("rev-parse", "HEAD").strip()
+    code_sha = get_code_sha("HEAD")
     git("fetch", UPSTREAM_REMOTE, UPSTREAM_BRANCH)
 
     upstream_ref = f"{UPSTREAM_REMOTE}/{UPSTREAM_BRANCH}"
+    upstream_head = git("rev-parse", upstream_ref).strip()
+
+    sync_state = load_sync_state()
+    blocked_cand = sync_state.get("blocked_candidate") if isinstance(sync_state.get("blocked_candidate"), dict) else None
+    if (
+        not args.force
+        and blocked_cand
+        and blocked_cand.get("code_sha") == code_sha
+        and blocked_cand.get("upstream_sha") == upstream_head
+    ):
+        print("==================================================")
+        print("DEDUPLICATED DETERMINISTIC FAILURE DETECTED")
+        print(f"Failure Type: {blocked_cand.get('failure_type')}")
+        print(f"Cause: {blocked_cand.get('cause')}")
+        print(f"Inputs unchanged (code={code_sha[:10]}, upstream={upstream_head[:10]}).")
+        print("Skipping redundant retry until main code or upstream advances.")
+        print("==================================================")
+        set_github_output("should_pulse", "false")
+        print_observability_footer("BLOCKED_DETERMINISTIC", "SKIPPED", "SKIPPED")
+        return
+
     base = git("merge-base", "HEAD", upstream_ref).strip()
 
     upstream_entries = changed_entries(base, upstream_ref)
@@ -1804,7 +2944,6 @@ def main() -> None:
     protected = get_nox_protected_units(base, upstream_ref)
 
     # Self-healing: check if HEAD has pending differences from upstream_ref
-    # (e.g. from previously skipped syncs or mass-bumps)
     diff_entries = changed_entries("HEAD", upstream_ref)
     diff_units, _ = collect_units(diff_entries)
     effective_diff = pending_sync_units(diff_units, protected, upstream_ref, base=base)
@@ -1828,21 +2967,41 @@ def main() -> None:
     updated_units = sorted(set([u for u in upstream_only if path_exists(base, u)] + conflict_units) | set(indirect_clean))
     removed_units = sorted({u for u in upstream_deleted if not is_ptbr_unit(u) and u not in protected_deletions})
 
-    core_changed = any(
-        path in {"core", "common", "extractor"} or path.startswith(("core/", "common/", "extractor/"))
-        for _, paths in upstream_entries
-        for path in paths
+    infra_paths_in_diff = {
+        path for _, paths in upstream_entries for path in paths
+        if path in INFRA_EXACT_PATHS or path.startswith(INFRA_PREFIXES)
+    }
+    new_up_top_modules = discover_upstream_top_level_modules(upstream_ref) - {m.name for m in discover_local_top_level_modules()}
+    catalog_pending = (
+        reconcile_version_catalog(upstream_ref, LIBS_CATALOG_FILE, apply=False)
+        or reconcile_version_catalog(upstream_ref, KEI_CATALOG_FILE, apply=False)
+        or reconcile_settings_modules(upstream_ref, apply=False)
+    )
+    infra_changed = bool(infra_paths_in_diff or new_up_top_modules or catalog_pending)
+    core_changed = bool(
+        infra_changed
+        or any(
+            path in {"core", "common", "extractor", "extensions-lib"}
+            or path.startswith(("core/", "common/", "extractor/", "extensions-lib/"))
+            for _, paths in upstream_entries
+            for path in paths
+        )
     )
     multisrc_changed = any(
         path.startswith("lib-multisrc/")
         for _, paths in upstream_entries
         for path in paths
     )
-    no_changes = (not upstream_units and not indirect and not upstream_deleted and not effective_diff)
+    no_changes = (
+        not upstream_units
+        and not indirect
+        and not upstream_deleted
+        and not effective_diff
+        and not infra_changed
+    )
 
     trigger = os.environ.get("GITHUB_EVENT_NAME", "workflow_dispatch")
-    local_head = git("rev-parse", "HEAD").strip()
-    upstream_head = git("rev-parse", upstream_ref).strip()
+    local_head = start_head
     last_synced = git("rev-parse", f"origin/{SYNC_BRANCH}", check=False).strip() or base
 
     print_observability_header(
@@ -1887,18 +3046,33 @@ def main() -> None:
         print(f"Pending publication units ({len(pending_pub)}): {', '.join(pending_pub)}")
         print("==================================================")
 
-        if args.dry_run or (not args.push and not args.recover_pending):
+        pub_block = sync_state.get("publication_block") if isinstance(sync_state.get("publication_block"), dict) else None
+        if (
+            not args.force
+            and pub_block
+            and pub_block.get("code_sha") == code_sha
+            and pub_block.get("failure_type") == "DETERMINISTIC_BUILD_FAILURE"
+        ):
+            print("==================================================")
+            print("PUBLICATION_RECOVERY_SUSPENDED (DETERMINISTIC FAILURE)")
+            print(f"Code SHA: {code_sha[:10]} | Cause: {pub_block.get('cause')}")
+            print("Skipping redundant build_push.yml dispatch until code changes.")
+            print("==================================================")
+            set_github_output("should_pulse", "false")
+            print_observability_footer("NO_CHANGES", "SKIPPED", "BLOCKED_DETERMINISTIC")
+            return
+
+        if args.dry_run or (not args.push and not args.apply_no_push and not args.recover_pending):
             print("Dry run — publication recovery planned without modification.")
             print_observability_footer("NO_CHANGES", "SKIPPED", "SKIPPED")
             return
 
-        # Check for concurrent changes before starting publication recovery (Finding 1)
         if args.push:
             try:
                 ensure_main_unchanged(start_main)
             except ConcurrencyRaceError as e:
                 print(f"Transient concurrency conflict: {e}", file=sys.stderr)
-                sys.exit(75)
+                sys.exit(EXIT_TRANSIENT_CONCURRENCY)
 
         recovery_status = recover_pending_publications(
             pending_pub,
@@ -1912,13 +3086,23 @@ def main() -> None:
             resolved_target=resolved_target,
         )
 
-        if recovery_status == "RECOVERED":
+        if recovery_status == "BLOCKED_DETERMINISTIC":
+            if args.push:
+                commit_state_only(
+                    f"chore(sync): suspend deterministic publication loop on {code_sha[:10]}",
+                    push=True,
+                    start_main=start_main,
+                )
+            set_github_output("should_pulse", "false")
+            print_observability_footer("NO_CHANGES", "SKIPPED", "BLOCKED_DETERMINISTIC")
+            return
+        elif recovery_status == "RECOVERED":
             if args.push:
                 try:
                     publish_sync(upstream_ref, start_main)
                 except ConcurrencyRaceError as e:
                     print(f"Transient concurrency conflict: {e}", file=sys.stderr)
-                    sys.exit(75)
+                    sys.exit(EXIT_TRANSIENT_CONCURRENCY)
             print("==================================================")
             print("PUBLICATION_RECOVERED")
             print("==================================================")
@@ -1930,6 +3114,7 @@ def main() -> None:
                 removed_units=[],
                 sync_result="SUCCESS",
             )
+            set_github_output("should_pulse", "true")
             if has_inconclusive:
                 print("::warning::Publication recovery completed for known pending units, but some artifact checks were inconclusive due to network errors.", file=sys.stderr)
                 print_observability_footer("NO_CHANGES", "SUCCESS", "RECOVERED_INCONCLUSIVE")
@@ -1938,11 +3123,16 @@ def main() -> None:
             return
         elif recovery_status == "DISPATCHED":
             if args.push:
+                commit_state_only(
+                    f"chore(sync): record publication recovery attempt on {code_sha[:10]}",
+                    push=False,
+                )
                 try:
                     publish_sync(upstream_ref, start_main)
                 except ConcurrencyRaceError as e:
                     print(f"Transient concurrency conflict: {e}", file=sys.stderr)
-                    sys.exit(75)
+                    sys.exit(EXIT_TRANSIENT_CONCURRENCY)
+            set_github_output("should_pulse", "true")
             print("Publication recovery dispatched to CI workflow.")
             if has_inconclusive:
                 print("::warning::Publication recovery dispatched for known pending units, but some artifact checks were inconclusive due to network errors.", file=sys.stderr)
@@ -1951,7 +3141,14 @@ def main() -> None:
             print_observability_footer("NO_CHANGES", "SUCCESS", "TRIGGERED")
             return
         elif recovery_status == "DEFERRED":
-            print("Publication recovery deferred: active workflow build_push.yml is in progress and will not be cancelled.")
+            if args.push:
+                commit_state_only(
+                    f"chore(sync): defer publication recovery on {code_sha[:10]}",
+                    push=True,
+                    start_main=start_main,
+                )
+            set_github_output("should_pulse", "true")
+            print("Publication recovery deferred: active workflow build_push.yml is in progress or backoff is active.")
             if has_inconclusive:
                 print("::warning::Publication recovery deferred while active build runs, and some artifact checks were inconclusive.", file=sys.stderr)
                 print_observability_footer("NO_CHANGES", "SUCCESS", "DEFERRED_INCONCLUSIVE")
@@ -1960,44 +3157,150 @@ def main() -> None:
             return
         else:
             print("Publication recovery failed: artifact unavailable or workflow dispatch failed.", file=sys.stderr)
+            set_github_output("should_pulse", "false")
             print_observability_footer("NO_CHANGES", "FAILURE", "FAILED")
             sys.exit(1)
 
     if no_changes:
         if has_inconclusive and not pending_pub:
             print("::error::Artifact verification checks were inconclusive due to network errors. Failing controlled to avoid false clean confirmation.", file=sys.stderr)
+            set_github_output("should_pulse", "false")
             print_observability_footer("NO_CHANGES", "FAILURE", "INCONCLUSIVE")
             sys.exit(1)
         print("No upstream changes to apply.")
+        set_github_output("should_pulse", "false")
         if args.push:
             try:
                 publish_sync(upstream_ref, start_main)
             except ConcurrencyRaceError as e:
                 print(f"Transient concurrency conflict: {e}", file=sys.stderr)
-                sys.exit(75)
+                sys.exit(EXIT_TRANSIENT_CONCURRENCY)
         print_observability_footer("NO_CHANGES", "SKIPPED", "SKIPPED")
         return
 
-    if args.dry_run or not args.push:
+    if args.dry_run or not (args.push or args.apply_no_push):
         print("Dry run — no changes applied.")
         print_observability_footer("SUCCESS", "SKIPPED", "SKIPPED")
         return
 
     deployed_codes = fetch_deployed_version_codes()
-    units_to_apply = sorted(set(upstream_units) | set(upstream_deleted) | set(protected_deletions) | set(effective_diff) | set(indirect_clean))
-    bumped = apply_units(
-        upstream_ref,
-        units_to_apply,
-        conflict_set,
-        protected,
-        upstream_deleted,
-        protected_deletions,
-        deployed_codes=deployed_codes,
-        new_units=new_units,
-        updated_units=updated_units,
-        removed_units=removed_units,
-        indirect_units=set(indirect_clean),
+    deferred_incompats = load_deferred_incompatibilities()
+    units_to_apply = sorted(
+        set(upstream_units)
+        | set(upstream_deleted)
+        | set(protected_deletions)
+        | set(effective_diff)
+        | set(indirect_clean)
+        | set(deferred_incompats.keys())
     )
+    validation_units = sorted(
+        {
+            u for u in (set(new_units) | set(updated_units) | set(indirect_clean))
+            if u.startswith("src/") and not is_ptbr_unit(u) and u not in set(removed_units)
+        }
+    )
+
+    try:
+        bumped = apply_units(
+            upstream_ref,
+            units_to_apply,
+            conflict_set,
+            protected,
+            upstream_deleted,
+            protected_deletions,
+            deployed_codes=deployed_codes,
+            new_units=new_units,
+            updated_units=updated_units,
+            removed_units=removed_units,
+            indirect_units=set(indirect_clean),
+        )
+        ok, failed_units, err_out = validate_candidate_with_gradle(
+            "HEAD",
+            infra_changed=infra_changed,
+            validation_units=validation_units,
+        )
+        if not ok:
+            infra_failed = any(
+                u in {"core", "compiler", "extensions-lib", "gradle/build-logic", "gradle-infra"}
+                for u in failed_units
+            )
+            widespread = len(failed_units) >= 10 and len(failed_units) > max(1, len(validation_units)) * 0.4
+            if infra_changed or infra_failed or widespread:
+                raise StructuralIncompatibilityError(
+                    f"Gradle preflight validation failed on {', '.join(failed_units)}: {err_out[-600:]}",
+                    failed_units=failed_units,
+                )
+            newly_deferred: dict[str, dict[str, object]] = dict(deferred_incompats)
+            now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            for fu in failed_units:
+                if fu.startswith("src/"):
+                    newly_deferred[fu] = {
+                        "module": fu,
+                        "upstream_commit": upstream_head[:10],
+                        "cause": err_out[-400:],
+                        "recorded_at": now_iso,
+                    }
+            if not newly_deferred:
+                raise StructuralIncompatibilityError(
+                    f"Gradle preflight failed: {err_out[-600:]}",
+                    failed_units=failed_units,
+                )
+            git("reset", "--hard", start_head)
+            remaining_val = [u for u in validation_units if u not in newly_deferred]
+            bumped = apply_units(
+                upstream_ref,
+                units_to_apply,
+                conflict_set,
+                protected,
+                upstream_deleted,
+                protected_deletions,
+                deployed_codes=deployed_codes,
+                new_units=new_units,
+                updated_units=updated_units,
+                removed_units=removed_units,
+                indirect_units=set(indirect_clean),
+                deferred_incompatibilities=newly_deferred,
+            )
+            ok2, failed2, err2 = validate_candidate_with_gradle(
+                "HEAD",
+                infra_changed=infra_changed,
+                validation_units=remaining_val,
+            )
+            if not ok2:
+                raise StructuralIncompatibilityError(
+                    f"Gradle preflight still failed after isolation ({', '.join(failed2)}): {err2[-600:]}",
+                    failed_units=failed2,
+                )
+    except TransientNetworkError as exc:
+        print(f"Transient network/Gradle failure before push: {exc}", file=sys.stderr)
+        git("reset", "--hard", start_head, check=False)
+        set_github_output("should_pulse", "false")
+        print_observability_footer("TRANSIENT_FAILURE", "SKIPPED", "SKIPPED")
+        sys.exit(EXIT_TRANSIENT_NETWORK)
+    except StructuralIncompatibilityError as exc:
+        print(f"BLOCKED_STRUCTURAL: {exc}", file=sys.stderr)
+        git("reset", "--hard", start_head, check=False)
+        _record_and_persist_block(
+            code_sha=code_sha,
+            upstream_head=upstream_head,
+            failure_type="BLOCKED_STRUCTURAL",
+            cause=str(exc),
+            failed_units=exc.failed_units,
+            push=args.push,
+            start_main=start_main,
+        )
+        write_step_summary(
+            protected=protected,
+            bumped=[],
+            new_units=[],
+            updated_units=[],
+            removed_units=[],
+            sync_result="BLOCKED_STRUCTURAL",
+        )
+        set_github_output("should_pulse", "false")
+        print_observability_footer("BLOCKED_STRUCTURAL", "SKIPPED", "SKIPPED")
+        sys.exit(1)
+
     write_step_summary(
         protected=protected,
         bumped=bumped,
@@ -2006,12 +3309,18 @@ def main() -> None:
         removed_units=removed_units,
         sync_result="SUCCESS",
     )
-    try:
-        publish_sync(upstream_ref, start_main)
-    except ConcurrencyRaceError as e:
-        print(f"Transient concurrency conflict: {e}", file=sys.stderr)
-        sys.exit(75)
-    print_observability_footer("SUCCESS", "SUCCESS", "TRIGGERED")
+    if args.push:
+        try:
+            publish_sync(upstream_ref, start_main)
+        except ConcurrencyRaceError as e:
+            print(f"Transient concurrency conflict: {e}", file=sys.stderr)
+            git("reset", "--hard", start_head, check=False)
+            sys.exit(EXIT_TRANSIENT_CONCURRENCY)
+        set_github_output("should_pulse", "true")
+        print_observability_footer("SUCCESS", "SUCCESS", "TRIGGERED")
+    else:
+        print("Applied and validated locally; no push requested.")
+        print_observability_footer("SUCCESS", "SKIPPED", "SKIPPED")
 
 
 
