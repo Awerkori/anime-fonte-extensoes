@@ -3,18 +3,19 @@ package eu.kanade.tachiyomi.animeextension.pt.cineveo
 import eu.kanade.tachiyomi.animesource.model.AnimeFilter
 import eu.kanade.tachiyomi.animesource.model.AnimeFilterList
 import eu.kanade.tachiyomi.animesource.model.AnimesPage
+import eu.kanade.tachiyomi.animesource.model.Hoster
 import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Video
+import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import eu.kanade.tachiyomi.network.GET
-import keiyoushi.utils.AnimeHttpLegacySource
 import keiyoushi.utils.firstInstanceOrNull
 import keiyoushi.utils.parseAs
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Request
 import okhttp3.Response
 
-class CineVEO : AnimeHttpLegacySource() {
+class CineVEO : AnimeHttpSource() {
     override val name = "CineVEO"
     override val baseUrl = "https://cineveo.cfd"
     override val lang = "pt-BR"
@@ -83,11 +84,16 @@ class CineVEO : AnimeHttpLegacySource() {
         }
     }
 
-    // Asks for one byte: the stream URL redirects to a signed MP4, and the final URL is what the player needs.
-    override fun videoListRequest(episode: SEpisode) = GET(baseUrl + episode.url, headers.newBuilder().set("Range", "bytes=0-0").build())
+    override fun seasonListParse(response: Response): List<SAnime> = throw UnsupportedOperationException()
 
-    override fun videoListParse(response: Response): List<Video> {
+    // Asks for one byte: the stream URL redirects to a signed MP4, and the final URL is what the player needs.
+    override fun hosterListRequest(episode: SEpisode) = GET(baseUrl + episode.url, headersBuilder().set("Range", "bytes=0-0").build())
+
+    override fun hosterListParse(response: Response): List<Hoster> {
         if (!isPlayable(response.code, response.header("Content-Type"))) return emptyList()
-        return listOf(Video(videoUrl = response.request.url.toString(), videoTitle = "CineVEO", headers = headers))
+        val video = Video(videoUrl = response.request.url.toString(), videoTitle = "CineVEO", headers = headers)
+        return listOf(Hoster(hosterName = "CineVEO", videoList = listOf(video)))
     }
+
+    override fun videoUrlParse(response: Response): String = throw UnsupportedOperationException()
 }
