@@ -2,7 +2,7 @@ ext {
     libVersion = 16
     extName = 'RedeToons'
     extClass = '.RedeToons'
-    extVersionCode = 6
+    extVersionCode = 7
     isNsfw = false
 }
 
