@@ -1,7 +1,7 @@
 ext {
     extName = 'CineVEO'
     extClass = '.CineVEO'
-    extVersionCode = 4
+    extVersionCode = 5
     isNsfw = false
 }
 
