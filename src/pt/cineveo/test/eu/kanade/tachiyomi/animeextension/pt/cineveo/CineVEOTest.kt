@@ -1,236 +1,104 @@
 package eu.kanade.tachiyomi.animeextension.pt.cineveo
 
-import kotlinx.serialization.SerialName
-import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
+/**
+ * Regression for project-nox-requests#138: cineveo.cfd replaced the old HTML/player flow with a JSON API.
+ * The fixtures below are real responses (captured 2026-11-21), trimmed only where noted.
+ */
 class CineVEOTest {
 
-    private val json = Json { ignoreUnknownKeys = true; isLenient = true }
+    private val json = Json { ignoreUnknownKeys = true }
 
-    @Serializable
-    private class RfInitialConfig(
-        val file: String = "",
-        val subtitle: String = "",
-        val title: String = "",
-    )
+    // /api?type=series&page=1, first two items
+    private val catalogJson = """{"type":"series","total":32,"page":1,"totalPages":1,"limit":32,"offset":0,"items":[{"id":332839,"internal_id":86139,"tmdb_id":332839,"slug":"a-lei-dos-monstros-18o86l9","type":"series","name":"A Lei dos Monstros","original_name":"A Lei dos Monstros","poster":"https://image.tmdb.org/t/p/w185/xH8G1Knsus1dTqbSmdIOqHJ0nSu.jpg","poster_large":"https://image.tmdb.org/t/p/w185/xH8G1Knsus1dTqbSmdIOqHJ0nSu.jpg","backdrop":"https://image.tmdb.org/t/p/original/iMvGSFcxzvwLWyHDOLqwDX9JQ27.jpg","plot":"Quando o caso de um assassino de meninos ressurge depois de 25 anos como um problema jurídico e social não solucionado, duas antigas amigas são forçadas a confrontar as escolhas que levaram ao fim da amizade e moldaram suas vidas.","genre":"Crime, Drama","year":"2026","rating":0,"audio":"DUB","added":"2026-11-19 02:48:59","category_id":"Crime","duration":0,"extension":"mp4","hidden":false},{"id":213375,"internal_id":74593,"tmdb_id":213375,"slug":"visionquest-dublado","type":"series","name":"VisionQuest","original_name":"VisionQuest","poster":"https://image.tmdb.org/t/p/w185/WGyAyBPncfuu8MZhLY9RtfZPM0.jpg","poster_large":"https://image.tmdb.org/t/p/w185/WGyAyBPncfuu8MZhLY9RtfZPM0.jpg","backdrop":"https://image.tmdb.org/t/p/w780/v50p9hearMiu6BlYfp4O7FACmXl.jpg","plot":"Um Visão repaginado tem se escondido daqueles que buscam usá-lo como arma. Enquanto permanece na clandestinidade, ele consulta as personalidades de IA embutidas em sua programação, incluindo o infame Ultron, para encontrar seu verdadeiro propósito. Essa vida tranquila de autorreflexão chega ao fim quando uma recompensa por sua cabeça o força a fugir ao lado de Thomas Shepard, um garoto misterioso que pode ser a reencarnação de seu filho.","genre":"Sci-Fi & Fantasy, Drama","year":"2026","rating":9.4,"audio":"DUB","added":"2026-11-16 14:18:30","category_id":"Sci-Fi & Fantasy","duration":0,"extension":"mp4","hidden":false}]}"""
+
+    // /api?action=details&type=series&id=332839
+    private val seriesJson = """{"type":"series","item":{"id":332839,"internal_id":86139,"tmdb_id":332839,"slug":"a-lei-dos-monstros-18o86l9","type":"series","name":"A Lei dos Monstros","original_name":"A Lei dos Monstros","poster":"https://image.tmdb.org/t/p/w185/xH8G1Knsus1dTqbSmdIOqHJ0nSu.jpg","poster_large":"https://image.tmdb.org/t/p/w185/xH8G1Knsus1dTqbSmdIOqHJ0nSu.jpg","backdrop":"https://image.tmdb.org/t/p/original/iMvGSFcxzvwLWyHDOLqwDX9JQ27.jpg","plot":"Quando o caso de um assassino de meninos ressurge depois de 25 anos como um problema jurídico e social não solucionado, duas antigas amigas são forçadas a confrontar as escolhas que levaram ao fim da amizade e moldaram suas vidas.","genre":"Crime, Drama","year":"2026","rating":0,"audio":"DUB","added":"2026-11-19 02:48:59","category_id":"Crime","duration":0,"extension":"mp4","hidden":false},"episodes":[{"id":1514127,"tmdb_id":332839,"season":1,"episode":1,"title":"Episódio 1","plot":"","poster":"/api?action=episodeImage&episode_id=1514127","extension":"mp4","available":true,"quality":"","audio":"dub"},{"id":1514128,"tmdb_id":332839,"season":1,"episode":2,"title":"Episódio 2","plot":"","poster":"/api?action=episodeImage&episode_id=1514128","extension":"mp4","available":true,"quality":"","audio":"dub"},{"id":1514129,"tmdb_id":332839,"season":1,"episode":3,"title":"Episódio 3","plot":"","poster":"/api?action=episodeImage&episode_id=1514129","extension":"mp4","available":true,"quality":"","audio":"dub"},{"id":1514130,"tmdb_id":332839,"season":1,"episode":4,"title":"Episódio 4","plot":"","poster":"/api?action=episodeImage&episode_id=1514130","extension":"mp4","available":true,"quality":"","audio":"dub"}],"seasons":[{"season":1,"name":"Temporada 1"}]}"""
+
+    // /api?action=details&type=movie&id=1804941 (one server per language, token redacted)
+    private val movieJson = """{"type":"movie","item":{"id":1804941,"internal_id":81570,"tmdb_id":1804941,"slug":"mike-tyson-return-of-the-mike","type":"movie","name":"Mike Tyson: Return of the Mike","original_name":"Mike Tyson: Return of the Mike","poster":"http://image.tmdb.org/t/p/w500/uaeL5BLgmGhIZXfViBsLSnvYB4i.jpg","poster_large":"http://image.tmdb.org/t/p/w500/uaeL5BLgmGhIZXfViBsLSnvYB4i.jpg","backdrop":"http://image.tmdb.org/t/p/w500/uaeL5BLgmGhIZXfViBsLSnvYB4i.jpg","plot":"O ex-campeão dos pesos pesados ​​retorna ao palco para um show solo cru, transformando suas histórias de vida mais selvagens em comédia de ouro no Seminole Hard Rock Hotel and Casino.","genre":"","year":"2026","rating":0,"audio":"DUB","added":"2026-11-05 00:04:46","category_id":"","duration":0,"extension":"mp4","hidden":false},"stream":"api?action=stream&type=movie&id=1804941","servers":{"dub":[],"leg":[{"id":"cdd5179d2d6aa49c46cc4cca70a5d80e","name":"Player Principal (HD)","quality":"HD","url":"https://cineveo.cfd/api/vod-resolve?token=TOKEN","type":"mp4","audio":"leg","download":"https://cineveo.cfd/api/vod-resolve?token=TOKEN"}]}}"""
+
+    private fun episode(id: Long, season: Int, number: Int) =
+        ApiEpisode(id = id, season = season, episode = number, title = "Episódio $number", extension = "mp4", audio = "dub")
+
+    private fun item(type: String, id: Long) = ApiItem(id = id, type = type, name = "Obra", extension = "mp4")
 
     @Test
-    fun testTicketExtractionRegex() {
-        val varHtml = """<script>var playbackResolveTicket = "v1.token.12345";</script>"""
-        val letHtml = """<script>let playbackResolveTicket = "v1.token.67890";</script>"""
-        val constHtml = """<script>const playbackResolveTicket = "v1.token.abcde";</script>"""
+    fun decodesTheRealCatalogWithNumericIds() {
+        val catalog = json.decodeFromString<ApiCatalog>(catalogJson)
 
-        val regex = Regex("""(?:var|let|const)?\s*playbackResolveTicket\s*=\s*['"]([^'"]+)['"]""")
-
-        assertEquals("v1.token.12345", regex.find(varHtml)?.groupValues?.get(1))
-        assertEquals("v1.token.67890", regex.find(letHtml)?.groupValues?.get(1))
-        assertEquals("v1.token.abcde", regex.find(constHtml)?.groupValues?.get(1))
+        assertEquals(2, catalog.items.size)
+        assertEquals("A Lei dos Monstros", catalog.items[0].name)
+        assertEquals(332839L, catalog.items[0].id)
+        assertEquals("series", catalog.items[0].type)
     }
 
     @Test
-    fun testServerPillsExtractionRegex() {
-        val html = """
-            <button class="server-pill active" onclick="startSelectedServer('default')">
-                <span class="server-pill-icon"><svg>...</svg></span>
-                <span class="server-pill-label">Dublado</span>
-            </button>
-            <button class="server-pill" onclick="startSelectedServer('legendado')">
-                <span class="server-pill-icon"><svg>...</svg></span>
-                <span class="server-pill-label">Legendado</span>
-            </button>
-        """.trimIndent()
-
-        val serverRegex = Regex("""startSelectedServer\(['"]([^'"]+)['"]\)[^>]*>.*?<span class="server-pill-label">([^<]+)</span>""", RegexOption.DOT_MATCHES_ALL)
-        val pills = serverRegex.findAll(html).map {
-            it.groupValues[1].trim() to it.groupValues[2].trim()
-        }.toList()
-
-        assertEquals(2, pills.size)
-        assertEquals("default" to "Dublado", pills[0])
-        assertEquals("legendado" to "Legendado", pills[1])
+    fun buildsDetailsAndStreamPathsFromTypeAndId() {
+        assertEquals("/api?action=details&type=series&id=332839", detailsPath("series", 332839))
+        assertEquals("/api?action=stream&type=series&id=1514127&ext=mp4", streamPath("series", 1514127, "mp4"))
+        assertEquals("/api?action=stream&type=movie&id=1804941&ext=mp4", streamPath("movie", 1804941, null))
     }
 
     @Test
-    fun testRfInitialConfigJsonParsingWithUnicode() {
-        val rawJson = """{"file":"https://r2.cloudflarestorage.com/videos/deadpool.mp4?X-Amz-Algorithm=AWS4-HMAC-SHA256\u0026X-Amz-Credential=test","subtitle":"","thumbnail":"","title":"RedeFlixApi","embed":"","poster":"","autostart":true}"""
-        val config = json.decodeFromString<RfInitialConfig>(rawJson)
+    fun listsEverySeriesEpisodeNewestFirstWithStreamUrls() {
+        val entries = episodeEntries(json.decodeFromString<ApiDetails>(seriesJson))
 
-        assertEquals("https://r2.cloudflarestorage.com/videos/deadpool.mp4?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=test", config.file)
-        assertEquals("", config.subtitle)
-        assertEquals("RedeFlixApi", config.title)
+        assertEquals(4, entries.size)
+        assertEquals("T1 E4 - Episódio 4", entries.first().name)
+        assertEquals("T1 E1 - Episódio 1", entries.last().name)
+        assertEquals("/api?action=stream&type=series&id=1514127&ext=mp4", entries.last().url)
+        assertEquals(listOf(4f, 3f, 2f, 1f), entries.map { it.number })
     }
 
     @Test
-    fun testRfInitialConfigRegexFromHtml() {
-        val playerHtml = """
-            <!DOCTYPE html>
-            <html>
-            <head><title>Player</title></head>
-            <body>
-            <div id="player"></div>
-            <script>window.__RF_INITIAL_CONFIG = {"file":"https://hubby-dmca.com/movie/test.mp4","subtitle":"https://subs.com/pt.vtt","thumbnail":"","title":"RedeFlixApi","embed":"","poster":"","autostart":true};</script>
-            <script>var x = 1;</script>
-            </body>
-            </html>
-        """.trimIndent()
+    fun numbersEpisodesAcrossSeasonsEvenWhenTheApiReturnsThemOutOfOrder() {
+        val details = ApiDetails(
+            item = item("series", 1),
+            episodes = listOf(episode(30, 2, 1), episode(20, 1, 2), episode(10, 1, 1)),
+        )
 
-        val configJson = Regex("""window\.__RF_INITIAL_CONFIG\s*=\s*(\{.+?\});""").find(playerHtml)?.groupValues?.get(1)
-        assertNotNull(configJson)
+        val entries = episodeEntries(details)
 
-        val config = json.decodeFromString<RfInitialConfig>(configJson!!)
-        assertEquals("https://hubby-dmca.com/movie/test.mp4", config.file)
-        assertEquals("https://subs.com/pt.vtt", config.subtitle)
+        assertEquals(listOf("T2 E1 - Episódio 1", "T1 E2 - Episódio 2", "T1 E1 - Episódio 1"), entries.map { it.name })
+        assertEquals(listOf(3f, 2f, 1f), entries.map { it.number })
     }
 
     @Test
-    fun testMovieTitleFallbackCleaning() {
-        val rawTitle = "Assistir Naruto to Boruto: The Live 2019 1080p Online - RedeCanais"
-        val cleaned = rawTitle
-            .removePrefix("Assistir ")
-            .substringBefore(" - ")
-            .replace(Regex("""\s+(?:HD|FHD|\d{3,4}p)(?:\s+Online)?$""", RegexOption.IGNORE_CASE), "")
-        assertEquals("Naruto to Boruto: The Live 2019", cleaned)
+    fun aMovieIsASingleEpisodeThatStreamsTheMovieId() {
+        val entries = episodeEntries(json.decodeFromString<ApiDetails>(movieJson))
+
+        assertEquals(1, entries.size)
+        assertEquals("Filme", entries[0].name)
+        assertEquals("/api?action=stream&type=movie&id=1804941&ext=mp4", entries[0].url)
     }
 
     @Test
-    fun testMultilineRfInitialConfig() {
-        val playerHtml = """
-            <script>
-            window.__RF_INITIAL_CONFIG = {
-                "file": "https://cdn.example.com/video.mp4?a=1\u0026b=2",
-                "subtitle": "",
-                "autostart": true
-            };
-            </script>
-        """.trimIndent()
-
-        val configJson = Regex("""window\.__RF_INITIAL_CONFIG\s*=\s*(\{.+?\});""", RegexOption.DOT_MATCHES_ALL)
-            .find(playerHtml)?.groupValues?.get(1)
-        assertNotNull(configJson)
-
-        val config = json.decodeFromString<RfInitialConfig>(configJson!!)
-        assertEquals("https://cdn.example.com/video.mp4?a=1&b=2", config.file)
+    fun aFullPageMeansThereIsAnotherOne() {
+        assertTrue(hasNextPage(PAGE_SIZE))
+        assertFalse(hasNextPage(PAGE_SIZE - 1))
+        assertFalse(hasNextPage(0))
     }
 
     @Test
-    fun testFallbackRegexUnescape() {
-        val playerHtml = """window.__RF_INITIAL_CONFIG = {"file":"https:\/\/cdn.example.com\/v\/test.mp4?token=abc\u0026exp=123"};"""
-        val fallback = Regex(""""file"\s*:\s*"([^"]+)"""").find(playerHtml)?.groupValues?.get(1)
-            ?.replace("\\/", "/")
-            ?.replace("\\u0026", "&")
-
-        assertEquals("https://cdn.example.com/v/test.mp4?token=abc&exp=123", fallback)
-    }
-
-    @Serializable
-    private class SeasonEpisode(
-        val id: Long = 0,
-        @SerialName("id_tmdb") val idTmdb: Long = 0,
-        val temporada: Int = 1,
-        val episodio: Int = 1,
-        val nome: String? = null,
-        val sinopse: String? = null,
-        val imagem: String? = null,
-        @SerialName("url_video") val urlVideo: String? = null,
-        @SerialName("player_slug") val playerSlug: String? = null,
-    )
-
-    @Test
-    fun testDetailUrlRouting() {
-        val seriesSlug = "reacher-108978"
-        val movieSlug = "jack-reacher-o-ltimo-tiro-svasn"
-        val seriesUrl = "/watch/$seriesSlug"
-        val movieUrl = "/watch/$movieSlug"
-        assertEquals("/watch/reacher-108978", seriesUrl)
-        assertEquals("/watch/jack-reacher-o-ltimo-tiro-svasn", movieUrl)
+    fun onlyAVideoResponseCountsAsPlayable() {
+        assertTrue(isPlayable(206, "video/mp4"))
+        assertTrue(isPlayable(200, "video/mp4"))
+        assertFalse(isPlayable(200, "text/html; charset=UTF-8"))
+        assertFalse(isPlayable(403, "text/plain"))
+        assertFalse(isPlayable(206, null))
     }
 
     @Test
-    fun testEpCodeSaltAlgorithm() {
-        val tmdbId = 108978
-        // Season 1 Episode 1
-        val s1 = 1
-        val e1 = 1
-        val salt1 = (tmdbId * 37 + s1 * 19 + e1 * 41 + 41) % 100
-        val saltStr1 = salt1.toString().padStart(2, '0')
-        val epCode1 = "$tmdbId$s1$e1$saltStr1"
-        assertEquals("1089781187", epCode1)
-
-        // Season 1 Episode 2
-        val s2 = 1
-        val e2 = 2
-        val salt2 = (tmdbId * 37 + s2 * 19 + e2 * 41 + 41) % 100
-        val saltStr2 = salt2.toString().padStart(2, '0')
-        val epCode2 = "$tmdbId$s2$e2$saltStr2"
-        assertEquals("1089781228", epCode2)
-    }
-
-    @Test
-    fun testJwPlayerExtraction() {
-        val html = """
-            <script type="text/javascript">
-                const playerInstance = jwplayer("player").setup({
-                    file: "https://nixplay.lat/series/cinevs-vods/wrcmBDcf4/108978/1/1.mp4",
-                    type: "mp4",
-                    title: "Reacher - T1 E1 - CineVEO",
-                    width: "100%",
-                    height: "100%",
-                    autostart: true
-                });
-            </script>
-        """.trimIndent()
-
-        val file = Regex("""file\s*:\s*["'](https?://[^"']+)["']""").find(html)?.groupValues?.get(1)
-        val title = Regex("""title\s*:\s*["']([^"']+)["']""").find(html)?.groupValues?.get(1)
-            ?.substringBefore(" - CineVEO")
-
-        assertEquals("https://nixplay.lat/series/cinevs-vods/wrcmBDcf4/108978/1/1.mp4", file)
-        assertEquals("Reacher - T1 E1", title)
-    }
-
-    @Test
-    fun testAllSeasonsParsing() {
-        val jsonStr = """
-            {
-                "1": [
-                    {"id": 1147559, "id_tmdb": 108978, "temporada": 1, "episodio": 1, "nome": "Bem-vindo a Margrave"},
-                    {"id": 1147560, "id_tmdb": 108978, "temporada": 1, "episodio": 2, "nome": "Primeira Dança"}
-                ],
-                "2": [
-                    {"id": 1147569, "id_tmdb": 108978, "temporada": 2, "episodio": 1, "nome": "Caixa Eletrônico"}
-                ]
-            }
-        """.trimIndent()
-
-        val seasonsMap = json.decodeFromString<Map<String, List<SeasonEpisode>>>(jsonStr)
-        assertEquals(2, seasonsMap.size)
-        assertEquals(2, seasonsMap["1"]?.size)
-        assertEquals(1, seasonsMap["2"]?.size)
-        assertEquals("Bem-vindo a Margrave", seasonsMap["1"]?.get(0)?.nome)
-    }
-
-    @Test
-    fun testRealReacherAllSeasons() {
-        val sampleJson = """
-            {
-                "1": [
-                    {"id": 1147559, "id_tmdb": 108978, "temporada": 1, "episodio": 1, "nome": "Bem-vindo a Margrave", "sinopse": "Reacher é acusado...", "imagem": "https://image.tmdb.org/t/p/w300/15xLLZN3LLAdvoiHnYL5DcXlsYu.jpg", "url_video": null, "player_slug": null},
-                    {"id": 1147560, "id_tmdb": 108978, "temporada": 1, "episodio": 2, "nome": "Primeira Dança", "sinopse": "Quando mais vítimas...", "imagem": "https://image.tmdb.org/t/p/w300/4nfnpqWMX8dHI1bYZcdxLEvy2c9.jpg", "url_video": null, "player_slug": null}
-                ],
-                "2": [
-                    {"id": 1147569, "id_tmdb": 108978, "temporada": 2, "episodio": 1, "nome": "Caixa Eletrônico", "sinopse": "Reacher e Neagley...", "imagem": "https://image.tmdb.org/t/p/w300/j7hYdtMCzXsRtk8oeoynzcB1skZ.jpg", "url_video": null, "player_slug": null}
-                ]
-            }
-        """.trimIndent()
-        val seasonsMap = json.decodeFromString<Map<String, List<SeasonEpisode>>>(sampleJson)
-        assertEquals(2, seasonsMap.size)
-        assertEquals(2, seasonsMap["1"]?.size)
-        assertEquals(1, seasonsMap["2"]?.size)
-        assertEquals(108978L, seasonsMap["1"]?.get(0)?.idTmdb)
+    fun labelsTheAudioTheSiteReportsAndIgnoresAnythingElse() {
+        assertEquals("Dublado", audioLabel("dub"))
+        assertEquals("Legendado", audioLabel("LEG"))
+        assertEquals(null, audioLabel("xyz"))
+        assertEquals(null, audioLabel(null))
     }
 }
