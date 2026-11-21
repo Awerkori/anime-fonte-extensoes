@@ -1,142 +1,136 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/ProjectNox-org/.github/main/assets/brand/nox-emblem.webp" alt="Emblema oficial do Project Nox" width="80" height="80">
+</p>
+
 # Project Nox · Código-fonte das Extensões de Anime
 
-Repositório central de desenvolvimento, código-fonte em Kotlin, desenvolvimento de extractors de vídeo e automação de compilação das extensões de anime do **Project Nox** para **Aniyomi e forks**.
-
----
+Código-fonte em Kotlin, extractors de vídeo e automação de compilação das extensões de anime do **Project Nox** para **Aniyomi, Anikku e forks**.
 
 > [!IMPORTANT]
-> **Procurando apenas assistir e instalar as extensões no seu player?**  
-> Este repositório destina-se a desenvolvedores e contém o código-fonte em Kotlin para manutenção e criação de fontes. Para instalar os catálogos compilados diretamente no seu aplicativo, acesse o repositório de distribuição oficial:  
-> ➡️ [**Project Nox · Extensões de Anime (Distribuição)**](https://github.com/ProjectNox-org/anime-extensoes)
+> **Quer apenas instalar as extensões para assistir no seu aplicativo?**
+> Este repositório guarda somente o **código-fonte** usado por desenvolvedores. As extensões prontas para instalar ficam em outro repositório:
+> [**Project Nox · Extensões de Anime (`anime-extensoes`)**](https://github.com/ProjectNox-org/anime-extensoes)
+>
+> Para pedir uma extensão nova ou relatar um problema, use a [Central de Pedidos](https://github.com/ProjectNox-org/project-nox-requests) e acompanhe no [Tracker](https://projectnox-org.github.io/project-nox-tracker/).
 
----
+## Sobre o projeto
 
-## 🎯 Sobre o Projeto
+O ecossistema de anime do **Project Nox** desenvolve e mantém extensões para reprodução de vídeo com foco na comunidade brasileira (PT-BR), a partir da base upstream do **Yūzōnō / Aniyomi**:
 
-O ecossistema de anime do **Project Nox** gerencia extensões voltadas à reprodução fluida de mídias audiovisuais com prioridade para a comunidade brasileira (PT-BR). As principais frentes de atuação deste repositório incluem:
+- **Fontes e parsers em Kotlin:** implementação de catálogos, paginação, filtros, listas de episódios, temporadas e resolução de fontes de vídeo para Aniyomi, Anikku e forks.
+- **Extractors de vídeo e HLS/M3U8:** bibliotecas reutilizáveis para decodificação de players e processamento de streams HLS/M3U8 via proxy HTTP local (`m3u8server`).
+- **Compilação e sincronização upstream:** builds modulares em Gradle via GitHub Actions e sincronização contínua com `yuzono/anime-extensions` no modo `Nox-wins`, preservando extensões protegidas em `.github/nox-protected.txt`.
+- **Publicação automática:** alterações na branch `main` compilam os módulos afetados e publicam os APKs assinados e os catálogos atualizados em [`anime-extensoes`](https://github.com/ProjectNox-org/anime-extensoes).
 
-- **Extractors de Vídeo e Servidores Locais:** Desenvolvimento e manutenção de módulos especializados em contornar protetores de links, decodificar tokens efêmeros de players e processar manifestos HLS/M3U8 via proxy local (`m3u8server`), prevenindo travamentos e erros de buffer no player.
-- **Engenharia de Fontes em Kotlin:** Módulos que mapeiam catálogos, paginações, filtros por gênero/temporada e listas de episódios de sites populares de streaming.
-- **Pipeline de Integração Contínua (CI):** Compilação modular automatizada via Gradle e GitHub Actions, com testes sintéticos, empacotamento de APKs assinados e publicação de catálogos.
-- **Publicação Automática e Compatível:** Cada alteração aprovada na branch `main` sincroniza `index.pb` (formato principal, esquema oficial Aniyomi), `index.json` e `index.min.json` (formatos legados mantidos para clientes antigos e forks), além de `repo.json`, no repositório [`anime-extensoes`](https://github.com/ProjectNox-org/anime-extensoes). A geração ocorre sobre o JSON final consolidado após adições, atualizações e remoções.
-- **Sem Recompilação para Republicar:** O workflow manual `catalog_only` valida e republica os catálogos sem compilar APKs; builds normais continuam limitados aos módulos afetados.
+## Estrutura do repositório
 
----
+| Caminho | Finalidade |
+|---|---|
+| `src/` | Extensões organizadas por idioma (`pt/`, `all/`, entre outros). |
+| `lib/` | Extractors de vídeo e bibliotecas compartilhadas (`bloggerextractor`, `mixdropextractor`, `m3u8server`, `hlsdash`, `playlistutils`, etc.). |
+| `lib-multisrc/` | Temas multisource compartilhados (`animestream`, `dooplay`, `anikototheme`, etc.). |
+| `core/` e `extensions-lib/` | Utilitários centrais (`keiyoushi.utils`, `keiyoushi.network`), testes unitários e API das extensões. |
+| `common/` e `compiler/` | Infraestrutura compartilhada e geração de código via KSP. |
+| `.github/` | Workflows (`build_push.yml`, `sync_upstream.yml`), scripts de catálogo/merge e `nox-protected.txt`. |
+| `ext-bootstrap.py`, `build.gradle.kts`, `settings.gradle.kts` | Criação de módulos e configuração modular do Gradle. |
 
-## 🏗️ Estrutura do Repositório
-
-O projeto segue arquitetura modular em Gradle:
-
-```
-├── src/                    # Extensões organizadas por idioma
-│   ├── pt/                 # Extensões em Português (AnimeFire, RedeCanais, Anikyuu, etc.)
-│   └── ...                 # Outros módulos de exibição
-├── lib/                    # Extractors de vídeo e bibliotecas reutilizáveis
-│   ├── bloggerextractor/   # Decodificador de streams hospedados no Google/Blogger
-│   ├── mixdropextractor/   # Parser de links MixDrop e mirrors
-│   ├── m3u8server/         # Servidor HTTP local para servir e desfragmentar streams HLS
-│   └── ...                 # Outros extractors dedicados
-├── .github/
-│   ├── workflows/          # Pipelines de automação (build_push.yml, sync_upstream.yml)
-│   └── scripts/            # Scripts em Python para consolidação do catálogo e merge
-└── build.gradle.kts        # Configurações globais de compilação
-```
-
-### Catálogos publicados
-
-- **Principal:** [`index.pb`](https://raw.githubusercontent.com/ProjectNox-org/anime-extensoes/repo/index.pb), Protobuf compatível com o esquema oficial Aniyomi (`isTorrent=8`, `sources=9`).
-- **Legado:** [`index.json`](https://raw.githubusercontent.com/ProjectNox-org/anime-extensoes/repo/index.json) e [`index.min.json`](https://raw.githubusercontent.com/ProjectNox-org/anime-extensoes/repo/index.min.json). Ambos permanecem publicados e são sincronizados pelo mesmo pipeline; `index.min.json` também atende ao link de instalação automática para clientes legados.
-- **Metadados:** [`repo.json`](https://raw.githubusercontent.com/ProjectNox-org/anime-extensoes/repo/repo.json) referencia `index.pb` por `index_v2` sem remover os metadados existentes.
-
-Para republicar apenas os índices, execute o workflow `CI` manualmente com `catalog_only=true` e `rebuild_all=false`.
-
----
-
-## 💻 Como Compilar e Desenvolver Localmente
+## Desenvolvimento e compilação
 
 ### Pré-requisitos
-- **JDK 17** ou superior instalado e configurado no `JAVA_HOME`.
-- **Android SDK** com Platform-Tools e Build-Tools recentes (API 30+).
 
-### Clonar o repositório
+**Ferramentas necessárias:**
+
+- [JDK 17+](https://adoptium.net/) configurado no `JAVA_HOME` (usado no CI e compatível com o Gradle/AGP do projeto).
+- [Android SDK](https://developer.android.com/studio) com Platform-Tools e Build-Tools (recomendado via Android Studio).
+
+**Configurações do projeto** (`gradle/kei.versions.toml`):
+
+- `compileSdk` e `targetSdk`: `37` | `minSdk`: `24` | compatibilidade de bytecode Java: `11`.
+
+### Clonar e limitar módulos locais
+
 ```bash
 git clone https://github.com/ProjectNox-org/anime-fonte-extensoes.git
 cd anime-fonte-extensoes
 ```
 
-### Compilar Extensões e Extractors
+O repositório contém centenas de módulos. Para compilar rápido localmente, comente `loadAllIndividualExtensions()` em `settings.gradle.kts` e inclua apenas a extensão desejada com `loadIndividualExtension("pt", "anitube")` (sem commitar essa alteração), ou siga o guia de clone parcial em [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
-Para compilar uma extensão específica em modo debug:
-```bash
-./gradlew :src:pt:<nome-da-extensao>:assembleDebug
-```
-O APK resultante fica disponível em:  
-`src/pt/<nome-da-extensao>/build/outputs/apk/debug/`
+### Compilar, testar e formatar
 
-Para compilar e testar um extractor de vídeo específico:
+Os exemplos abaixo usam os módulos reais `:src:pt:anitube` e `:lib:bloggerextractor`. Substitua pelo módulo de extensão ou biblioteca que estiver modificando:
+
 ```bash
+# Verificação rápida de compilação Kotlin (sem empacotar APK)
+./gradlew :src:pt:anitube:compileDebugKotlin
+
+# Compilar APK de debug (saída em src/pt/anitube/build/outputs/apk/debug/)
+./gradlew :src:pt:anitube:assembleDebug
+
+# Compilar uma biblioteca ou extractor compartilhado
 ./gradlew :lib:bloggerextractor:assembleDebug
+
+# Testes unitários existentes (core, unpacker e megaextractor)
+./gradlew --continue :core:testDebugUnitTest :lib:unpacker:testDebugUnitTest :lib:megaextractor:testDebugUnitTest
+
+# Aplicar ou verificar formatação padrão (Spotless / ktlint)
+./gradlew :src:pt:anitube:spotlessApply
+./gradlew :src:pt:anitube:spotlessCheck
 ```
 
-### Formatação de Código
-```bash
-# Validar e aplicar as diretrizes de código Spotless
-./gradlew spotlessApply
-```
+Consulte [`CONTRIBUTING.md`](CONTRIBUTING.md) e [`AGENTS.md`](AGENTS.md) para regras de desenvolvimento, `extensions-lib` 16, helpers de rede e checklist de PR.
 
----
+### Publicação e catálogos
 
-## 🤝 Como Contribuir
+O pipeline de publicação em [`anime-extensoes`](https://github.com/ProjectNox-org/anime-extensoes) mantém sincronizados:
 
-Contribuições da comunidade são muito apreciadas:
+- [`index.pb`](https://raw.githubusercontent.com/ProjectNox-org/anime-extensoes/repo/index.pb) — catálogo principal em Protobuf compatível com o esquema oficial do Aniyomi (`isTorrent=8`, `sources=9`).
+- [`index.json`](https://raw.githubusercontent.com/ProjectNox-org/anime-extensoes/repo/index.json) e [`index.min.json`](https://raw.githubusercontent.com/ProjectNox-org/anime-extensoes/repo/index.min.json) — catálogos legados para clientes antigos e link de instalação automática.
+- [`repo.json`](https://raw.githubusercontent.com/ProjectNox-org/anime-extensoes/repo/repo.json) — metadados do repositório apontando para `index.pb` via `index_v2`.
 
-1. **Verifique os Chamados:** Acesse a [Central de Pedidos](https://github.com/ProjectNox-org/project-nox-requests) para checar fontes reportadas com instabilidade ou novos pedidos prioritários.
-2. **Crie uma branch descritiva:** Ex: `fix/animefire-player` ou `feat/novo-extractor`.
-3. **Reutilização de Extractors:** Caso um novo site utilize um host de vídeo comum a outras fontes, implemente a lógica dentro do diretório `lib/` para reaproveitamento modular.
-4. **Envie seu Pull Request:** Explique a solução adotada, os métodos de bypass de player aplicados e os testes de reprodução realizados.
+Para validar e republicar apenas os catálogos sem recompilar APKs, execute o workflow manual `CI` (`build_push.yml`) com `catalog_only=true` e `rebuild_all=false`.
 
----
+## Como contribuir
 
-## 🛠️ Suporte e Reporte de Erros
+1. **Verifique pedidos existentes:** consulte a [Central de Pedidos](https://github.com/ProjectNox-org/project-nox-requests) antes de começar.
+2. **Crie uma branch a partir da `main`:** use um nome descritivo (ex.: `fix/animefire-player` ou `feat/novo-extractor`).
+3. **Reutilize extractors:** se o site usar um servidor de vídeo comum a outras fontes, implemente ou ajuste o módulo compartilhado em `lib/`.
+4. **Valide antes de enviar:** teste a reprodução no aplicativo, atualize `versionCode` (ou `baseVersionCode` em temas), execute `spotlessApply` no módulo alterado e abra o Pull Request exclusivamente em [`ProjectNox-org/anime-fonte-extensoes`](https://github.com/ProjectNox-org/anime-fonte-extensoes) — nunca nos repositórios upstream.
 
-Identificou uma extensão de anime quebrada, falha ao carregar episódios ou erro no player?
+## Suporte e solicitações
 
-- 🎫 **Abrir solicitação oficial:** [Project Nox · Central de Pedidos](https://github.com/ProjectNox-org/project-nox-requests)
-- 📊 **Acompanhar status em tempo real:** [Project Nox · Tracker](https://projectnox-org.github.io/project-nox-tracker/)
+- **Central de Pedidos ([`project-nox-requests`](https://github.com/ProjectNox-org/project-nox-requests)):** abrir pedidos de novas extensões e relatar falhas em fontes ou players.
+- **Tracker ([Project Nox Tracker](https://projectnox-org.github.io/project-nox-tracker/)):** consultar e acompanhar o status das solicitações.
+- **Issues técnicas ([`issues`](https://github.com/ProjectNox-org/anime-fonte-extensoes/issues)):** dúvidas de desenvolvimento, extractors e compilação neste repositório.
 
----
+## Projetos relacionados
 
-## 🔗 Projetos Relacionados
+- [**Project Nox · Extensões de Anime**](https://github.com/ProjectNox-org/anime-extensoes) — Distribuição oficial de extensões prontas para Aniyomi e forks.
+- [**Project Nox · Código-fonte das Extensões de Mangá**](https://github.com/ProjectNox-org/manga-fonte-extensoes) — Código-fonte das extensões de mangá.
+- [**Project Nox · Extensões de Mangá**](https://github.com/ProjectNox-org/manga-extensoes) — Distribuição oficial das extensões de mangá para Mihon e forks.
 
-- 🎬 [**Project Nox · Extensões de Anime**](https://github.com/ProjectNox-org/anime-extensoes) — Repositório de distribuição (APKs compilados e catálogo JSON para Aniyomi e forks).
-- 📦 [**Project Nox · Extensões de Mangá**](https://github.com/ProjectNox-org/manga-extensoes) — Distribuição de fontes de leitura para Mihon e forks.
-- 💻 [**Project Nox · Código-fonte das Extensões de Mangá**](https://github.com/ProjectNox-org/manga-fonte-extensoes) — Código em Kotlin das extensões de mangá.
-- 🌐 [**Project Nox · Plataforma Web de Mangá**](https://github.com/ProjectNox-org/project-nox-manga) — Plataforma web oficial.
-- ⚙️ [**Project Nox · Importer**](https://github.com/ProjectNox-org/project-nox-importer) — Serviço de ingestão autônoma 24/7.
+## Créditos e atribuições
 
----
+- **Felipe GFA** ([@FelipeGFA](https://github.com/FelipeGFA)): migração estrutural da suíte de anime, desenvolvimento e depuração de parsers (como RedeCanais e BetterAnime) e consolidação dos fluxos de compilação contínua.
+- **Alex** ([@Alex17273747576777](https://github.com/Alex17273747576777)): proposta inicial do catálogo Protobuf para anime, usada como base para esta implementação com o esquema oficial do Aniyomi.
+- **Yūzōnō** ([@yuzono](https://github.com/yuzono)) e **Aniyomi** ([@aniyomiorg](https://github.com/aniyomiorg)): base upstream, extractors de vídeo e arquitetura do ecossistema (incluindo compatibilidade com Anikku e forks).
+- **Javier Tomás** e demais colaboradores históricos do ecossistema open-source e do Project Nox.
 
-## 🌟 Créditos e Reconhecimento
+## Licenças e informações legais
 
-- **Felipe GFA** ([@FelipeGFA](https://github.com/FelipeGFA)): Pela migração estrutural da suíte de anime, desenvolvimento e depuração de parsers avançados (RedeCanais, BetterAnime, etc.) e consolidação dos fluxos de compilação contínua.
-- **Alex** ([@Alex17273747576777](https://github.com/Alex17273747576777)): Pela proposta inicial do catálogo Protobuf para anime, usada como base para esta implementação com o esquema oficial do Aniyomi.
-- **Yūzōnō** ([@yuzono](https://github.com/yuzono)) e equipe **Aniyomi** ([@aniyomiorg](https://github.com/aniyomiorg)): Pela arquitetura upstream dos extractors de vídeo e ecossistema de extensões de reprodução.
-- **Javier Tomás** e comunidade open-source de desenvolvedores.
+Este repositório distribui um trabalho combinado sob a **GNU Affero General Public License v3.0** (`AGPL-3.0-only`), preservando os direitos e avisos das bases upstream:
 
----
+- **Código upstream (Yūzōnō / Aniyomi):** licenciado sob a [Apache License 2.0](LICENSE-APACHE).
+- **Contribuições do Project Nox:** licenciadas sob a [GNU AGPL v3.0](LICENSE) (`AGPL-3.0-only`).
+- **Trabalho combinado:** distribuído sob GNU AGPL v3.0 em compatibilidade com a Apache 2.0, preservando os avisos de copyright e atribuições originais, sem reivindicação de titularidade exclusiva sobre código de terceiros.
+- **Sincronização e governança:** atualizações upstream são incorporadas downstream mantendo créditos e licenças originais; o desenvolvimento do Project Nox permanece exclusivo à organização `ProjectNox-org`, sem envio de PRs ao upstream (Yūzōnō / Aniyomi).
+- **Interação remota de rede (AGPLv3, Seção 13):** conforme os termos da licença, quem operar versão modificada acessível pela rede com interação remota de usuários deve disponibilizar o Código-Fonte Correspondente (*Corresponding Source*).
+- **Identidade e marca (AGPLv3, Seção 7(e) / Apache 2.0, Seção 6):** as licenças de software não concedem direito de uso dos nomes ou marcas "Project Nox", "Awerkori" ou de terceiros para sugerir endosso ou representação oficial.
+- **Isenção de responsabilidade:** software livre para interoperabilidade técnica e pesquisa; o projeto não hospeda, armazena nem distribui conteúdos audiovisuais protegidos por direitos autorais.
 
-## ⚖️ Licença e Copyright
+Consulte [`NOTICE`](NOTICE) para o inventário completo de atribuições e componentes de terceiros (como `jsunpacker` sob Apache 2.0 em `lib/unpacker/`).
 
-O trabalho combinado deste repositório é disponibilizado sob os termos da **GNU Affero General Public License versão 3.0** (`AGPL-3.0-only`), respeitando a compatibilidade e preservando integralmente os direitos dos autores originais:
-
-- **Código Upstream (Yūzōnō / Aniyomi):** Licenciado sob a [Apache License 2.0](LICENSE-APACHE). Todos os avisos de direitos autorais originais foram integralmente mantidos.
-- **Contribuições Originais do Project Nox:** Licenciadas sob a [GNU AGPL v3.0](LICENSE) (`AGPL-3.0-only`).
-- **Trabalho Combinado:** Distribuído sob a **GNU AGPL v3.0** em virtude da compatibilidade unidirecional Apache 2.0 → AGPLv3.
-- **Preservação de Titularidade e Atribuição:** A inclusão de código upstream em trabalho combinado compatível não transfere a titularidade ao Project Nox nem revoga as obrigações de atribuição da Apache 2.0. O Project Nox não declara nem reivindica direitos exclusivos sobre código criado por terceiros, respeitando os componentes e licenças de cada módulo e extractor.
-
-Consulte o arquivo [NOTICE](NOTICE) para o inventário completo de atribuições, componentes incorporados e diretrizes jurídicas.
-
-```
+```text
 Copyright 2015 Javier Tomás
 Copyright (c) Yūzōnō Contributors & Aniyomi Contributors
 Copyright (c) Felipe GFA
@@ -145,16 +139,3 @@ Copyright (C) 2026 Project Nox Contributors & Awerkori
 Licensed under the GNU Affero General Public License, Version 3.0 (for Project Nox contributions
 and combined work) and the Apache License, Version 2.0 (for upstream Yūzōnō/Aniyomi components).
 ```
-
-### 🔄 Sincronização Upstream e Governança
-- O Project Nox sincroniza periodicamente atualizações do ecossistema de extensões de vídeo mantendo os créditos e licenças Apache 2.0 originais intactos.
-- Todo o ciclo de vida, extractors e novos recursos do Project Nox são mantidos exclusivamente dentro da organização `ProjectNox-org`. Nenhum Pull Request é aberto ou enviado para os repositórios upstream de Yūzōnō ou Aniyomi, garantindo estabilidade e autonomia operacional downstream.
-
-### 📌 Interação Remota de Rede (GNU AGPLv3 Seção 13)
-O Project Nox adota oficialmente a licença **GNU AGPL versão 3.0**. Em estrita conformidade com a Seção 13 da AGPLv3, caso uma versão modificada deste software seja operada em servidores ou instâncias acessíveis através de uma rede de computadores com interação remota de usuários, o operador deve oferecer a todos esses usuários remotos a oportunidade de obter o Código-Fonte Correspondente (Corresponding Source) da versão modificada em execução, sem custos e através de meio habitual de disponibilização de software em rede.
-
-### 🛡️ Proteção de Identidade e Marca (AGPLv3 Seção 7(e))
-A concessão das licenças de software livre refere-se estritamente ao código. Ela **não concede** autorização ou licença de uso de marcas, nomes ou logotipos oficiais do "Project Nox", de "Awerkori" ou de terceiros para insinuar endosso, homologação ou representação oficial do projeto sem consentimento prévio por escrito.
-
-### ⚖️ Isenção de Responsabilidade
-O **Project Nox** desenvolve exclusivamente soluções de software livre para fins educacionais e de pesquisa em interoperabilidade técnica. Não armazenamos, hospedamos nem comercializamos materiais audiovisuais protegidos. As extensões atuam estritamente como ferramentas de consulta programática a sites públicos externos.
