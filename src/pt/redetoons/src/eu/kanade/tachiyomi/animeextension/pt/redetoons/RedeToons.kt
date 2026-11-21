@@ -1,5 +1,6 @@
 package eu.kanade.tachiyomi.animeextension.pt.redetoons
 
+import android.text.InputType
 import android.widget.Toast
 import androidx.preference.EditTextPreference
 import androidx.preference.MultiSelectListPreference
@@ -14,17 +15,22 @@ import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import eu.kanade.tachiyomi.network.GET
-import eu.kanade.tachiyomi.network.awaitSuccess
+import eu.kanade.tachiyomi.network.HttpException
+import eu.kanade.tachiyomi.util.asJsoup
+import keiyoushi.network.get
+import keiyoushi.network.post
 import keiyoushi.utils.firstInstanceOrNull
 import keiyoushi.utils.getPreferencesLazy
 import keiyoushi.utils.parseAs
+import keiyoushi.utils.toJsonRequestBody
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import okhttp3.CacheControl
+import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
-import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Request
 import okhttp3.Response
 
@@ -33,291 +39,222 @@ class RedeToons :
     ConfigurableAnimeSource {
     override val name = "RedeToons"
     override val baseUrl: String
-        get() {
-            val prefDomain = preferences.getString(PREF_DOMAIN_KEY, PREF_DOMAIN_DEFAULT)
-            val url = prefDomain?.let(::toBaseUrl) ?: DEFAULT_BASE_URL
-            val host = url.toHttpUrlOrNull()?.host.orEmpty().lowercase()
-            return if (host == "redetoons.gay" || host == "www.redetoons.gay") {
-                DEFAULT_BASE_URL
-            } else {
-                url
-            }
-        }
+        get() = resolveBaseUrl(preferences.getString(PREF_DOMAIN_KEY, PREF_DOMAIN_DEFAULT))
     override val lang = "pt-BR"
     override val supportsLatest = true
     private val preferences by getPreferencesLazy()
-    private val baseHost: String
-        get() = baseUrl.toHttpUrlOrNull()?.host ?: DEFAULT_BASE_HOST
+
+    // Pages live under a locale prefix ("/br/..."); the JSON API lives at the root.
+    private val siteUrl get() = baseUrl.removeSuffix("/br")
+    private val localeUrl get() = "$siteUrl/br"
 
     override fun headersBuilder() = super.headersBuilder()
         .set("Referer", "$baseUrl/")
-        .set("Origin", baseUrl)
-        .set("Accept", "application/json")
 
-    override fun popularAnimeRequest(page: Int): Request = shelvesRequest("popular", page)
-    override fun popularAnimeParse(response: Response): AnimesPage = error("Use getPopularAnime")
-    override suspend fun getPopularAnime(page: Int): AnimesPage = catalogPage("popular", page)
-    override fun latestUpdatesRequest(page: Int): Request = shelvesRequest("recent", page)
-    override fun latestUpdatesParse(response: Response): AnimesPage = error("Use getLatestUpdates")
-    override suspend fun getLatestUpdates(page: Int): AnimesPage = catalogPage("recent", page)
+    // The site answers JSON on the API paths when asked for it.
+    private val jsonHeaders get() = headersBuilder().set("Accept", "application/json").build()
 
-    override fun searchAnimeRequest(page: Int, query: String, filters: AnimeFilterList): Request {
-        val url = "$baseUrl/api/search".toHttpUrl().newBuilder()
-            .addQueryParameter("q", query.trim())
-            .addQueryParameter("cv", "c2052")
-            .build()
-        return GET(url, headers)
+    // ============================== Popular / Latest ==============================
+    override fun popularAnimeRequest(page: Int): Request = GET(browseUrl("trending", page), headers)
+    override fun popularAnimeParse(response: Response): AnimesPage = throw UnsupportedOperationException()
+    override suspend fun getPopularAnime(page: Int): AnimesPage = browsePage("trending", page, selectedContentCategories())
+    override fun latestUpdatesRequest(page: Int): Request = GET(browseUrl("latest", page), headers)
+    override fun latestUpdatesParse(response: Response): AnimesPage = throw UnsupportedOperationException()
+    override suspend fun getLatestUpdates(page: Int): AnimesPage = browsePage("latest", page, selectedContentCategories())
+
+    private fun browseUrl(slider: String, page: Int): HttpUrl = "$localeUrl/browse/$slider".toHttpUrl().newBuilder()
+        .addQueryParameter("page", page.toString())
+        .build()
+
+    private suspend fun browsePage(slider: String, page: Int, categories: Set<ContentCategory>): AnimesPage {
+        val titles = browseTitles(client.get(browseUrl(slider, page), headers).asJsoup())
+        return AnimesPage(titles.filterBy(categories).map { it.toSAnime() }, hasNextBrowsePage(titles.size))
     }
 
-    override fun searchAnimeParse(response: Response): AnimesPage = response.parseAs<SearchResponse>().let {
-        AnimesPage(it.results.map { item -> item.toSAnime() }, false)
-    }
+    // ============================== Search ==============================
+    private fun searchUrl(page: Int, query: String): HttpUrl = "$siteUrl/api/search".toHttpUrl().newBuilder()
+        .addQueryParameter("q", query.trim())
+        .addQueryParameter("page", page.toString())
+        .build()
+
+    override fun searchAnimeRequest(page: Int, query: String, filters: AnimeFilterList): Request = GET(searchUrl(page, query), jsonHeaders)
+
+    override fun searchAnimeParse(response: Response): AnimesPage = throw UnsupportedOperationException()
 
     override suspend fun getSearchAnime(page: Int, query: String, filters: AnimeFilterList): AnimesPage {
         val allowed = allowedCategories(filters)
-        if (query.isBlank()) {
-            val shelves = client.newCall(shelvesRequest()).awaitSuccess().parseAs<ShelvesResponse>().payload
-            return shelves.catalogItems("recent").filterBy(allowed).toPage(page)
-        }
+        if (query.isBlank()) return browsePage("latest", page, allowed)
 
-        val results = client.newCall(searchAnimeRequest(page, query, filters)).awaitSuccess()
-            .parseAs<SearchResponse>().results
-        return AnimesPage(results.filterBy(allowed).map { it.toSAnime() }, false)
+        val result = client.get(searchUrl(page, query), jsonHeaders).parseAs<SearchPage>()
+        return AnimesPage(result.results.filterBy(allowed).map { it.toSAnime() }, result.hasNext)
     }
 
     override fun getFilterList() = AnimeFilterList(Filters.Type())
 
-    override fun setupPreferenceScreen(screen: PreferenceScreen) {
-        EditTextPreference(screen.context).apply {
-            key = PREF_DOMAIN_KEY
-            title = PREF_DOMAIN_TITLE
-            setDefaultValue(PREF_DOMAIN_DEFAULT)
-            summary = getDomainPrefSummary()
+    // ============================== Details ==============================
+    override fun getAnimeUrl(anime: SAnime): String = titleUrl(anime)
 
-            setOnPreferenceChangeListener { _, newValue ->
-                runCatching {
-                    val raw = (newValue as String).trim()
-                    if (raw.isBlank()) {
-                        preferences.edit().putString(key, PREF_DOMAIN_DEFAULT).commit()
-                        summary = PREF_DOMAIN_DEFAULT
-                        text = PREF_DOMAIN_DEFAULT
-                        false
-                    } else if (isValidUrl(raw)) {
-                        val normalized = normalizeInputUrl(raw)
-                        preferences.edit().putString(key, normalized).commit()
-                        summary = normalized
-                        text = normalized
-                        false
-                    } else {
-                        Toast.makeText(
-                            screen.context,
-                            "URL inválida. Configuração anterior mantida.",
-                            Toast.LENGTH_SHORT,
-                        ).show()
-                        false
-                    }
-                }.getOrDefault(false)
-            }
-        }.also(screen::addPreference)
+    override fun animeDetailsRequest(anime: SAnime): Request = GET(titleUrl(anime), headers)
 
-        MultiSelectListPreference(screen.context).apply {
-            key = CONTENT_FILTER_KEY
-            title = "Filtro de conteúdo"
-            entries = ContentCategory.entries.map { it.label }.toTypedArray()
-            entryValues = ContentCategory.entries.map { it.key }.toTypedArray()
-            setDefaultValue(ALL_CONTENT_KEYS)
-            summary = contentSummary(selectedContentCategories())
-            setOnPreferenceChangeListener { _, newValue ->
-                @Suppress("UNCHECKED_CAST")
-                val selected = normalizeContentCategories(newValue as Set<String>)
-                preferences.edit().putStringSet(CONTENT_FILTER_KEY, selected.mapTo(mutableSetOf()) { it.key }).apply()
-                summary = contentSummary(selected)
-                if (selected.size == ContentCategory.entries.size && (newValue as Set<*>).isEmpty()) {
-                    Toast.makeText(screen.context, "Selecione ao menos um tipo. Todos foram restaurados.", Toast.LENGTH_SHORT).show()
-                }
-                false
-            }
-        }.also(screen::addPreference)
-    }
+    override fun animeDetailsParse(response: Response): SAnime = titlePage(response.asJsoup()).title.toSAnimeDetails()
 
-    private fun getDomainPrefSummary(): String = preferences.getString(PREF_DOMAIN_KEY, PREF_DOMAIN_DEFAULT)?.ifBlank { PREF_DOMAIN_DEFAULT } ?: PREF_DOMAIN_DEFAULT
+    private fun titleUrl(anime: SAnime): String = "$localeUrl/titles/${animeRef(anime.url)!!.id}"
 
-    override fun getAnimeUrl(anime: SAnime): String = resolveAnimeUrl(anime.url, baseUrl, baseHost)
-
-    override fun animeDetailsRequest(anime: SAnime): Request = GET(resolveAnimeDetailsEndpoint(anime.url, baseUrl, baseHost), headers)
-
-    override fun animeDetailsParse(response: Response): SAnime = response.parseAs<DetailsDto>().toSAnime(
-        response.request.url.pathSegments.let { segments ->
-            if (segments.size >= 2) "${segments[segments.size - 2]}/${segments.last()}" else segments.last()
-        },
-    )
-
-    override fun episodeListRequest(anime: SAnime): Request {
-        val cleanUrl = if (anime.url.startsWith("http://", ignoreCase = true) || anime.url.startsWith("https://", ignoreCase = true)) {
-            anime.url.toHttpUrlOrNull()?.pathSegments?.takeLast(2)?.joinToString("/").orEmpty()
-        } else {
-            anime.url.trimStart('/')
-        }
-        return if (cleanUrl.startsWith("movie/")) {
-            GET("$baseUrl/api/play-link?contract=3&tmdbId=${cleanUrl.substringAfter('/')}&type=movie", headers)
-        } else {
-            GET("$baseUrl/api/series-playable/${cleanUrl.substringAfter('/')}", headers)
-        }
-    }
-
-    override fun episodeListParse(response: Response): List<SEpisode> {
-        if (response.request.url.queryParameter("type") == "movie") {
-            val id = response.request.url.queryParameter("tmdbId") ?: return emptyList()
-            val playable = response.parseAs<PlayLinkResponse>()
-            if (playable.missing || (playable.variants.isEmpty() && playable.url.isNullOrBlank())) return emptyList()
-            return listOf(
-                SEpisode.create().apply {
-                    url = "movie|$id"
-                    name = "Filme"
-                    episode_number = 1F
-                },
-            )
-        }
-        val id = response.request.url.pathSegments.last()
-        return response.parseAs<EpisodesResponse>().episodes.map { episode ->
-            SEpisode.create().apply {
-                url = "$id|${episode.s}|${episode.e}"
-                name = "T${episode.s}E${episode.e} - ${episode.name ?: "Episódio ${episode.e}"}"
-                episode_number = episode.s + episode.e / 1000f
-            }
-        }.reversed()
-    }
-
-    override fun seasonListParse(response: Response): List<SAnime> = emptyList()
-
-    override fun hosterListRequest(episode: SEpisode): Request = GET(buildHosterUrl(baseUrl, episode.url), headers)
-
-    override fun hosterListParse(response: Response): List<Hoster> = listOf(
-        Hoster(videoList = videos(response)),
-    )
-
-    private fun videos(response: Response): List<Video> {
-        val data = response.parseAs<PlayLinkResponse>()
-        if (data.missing) return emptyList()
-        val variants = data.variants.ifEmpty { listOf(Variant("default", data.url)) }
-        val vidHeaders = videoHeaders(response.request.url, headers)
-        val now = System.currentTimeMillis() / 1000
-
-        return variants.flatMap { variant ->
-            val rawUrl = variant.url?.takeIf { it.startsWith("http") } ?: return@flatMap emptyList()
-            val url = rawUrl.toRedeToonsHost(baseHost)
-            val quality = variant.quality.orEmpty().replaceFirstChar { it.uppercase() }
-            val rawMirrors = variant.mirrors.map { it.toRedeToonsHost(baseHost) }
-
-            val candidateUrls = (listOf(url) + rawMirrors).distinct()
-            val unexpiredUrls = candidateUrls.filterNot { isExpiredSignedUrl(it, now) }
-            val finalUrls = unexpiredUrls.ifEmpty { listOf(url) }
-
-            finalUrls.mapIndexed { index, stream ->
-                val label = if (finalUrls.size > 1 && index > 0) {
-                    "RedeToons - $quality (Espelho $index)"
-                } else {
-                    "RedeToons - $quality"
-                }
-                Video(stream, label, stream, vidHeaders)
-            }
-        }
-    }
-
-    override fun videoUrlParse(response: Response): String = throw UnsupportedOperationException()
-
-    private fun shelvesRequest(shelf: String = "browse", page: Int = 1) = GET("$baseUrl/api/shelves?shelf=$shelf&page=$page", headers)
-
-    private suspend fun catalogPage(kind: String, page: Int): AnimesPage {
-        val shelves = client.newCall(shelvesRequest(kind, page)).awaitSuccess().parseAs<ShelvesResponse>().payload
-        return shelves.catalogItems(kind).filterBy(selectedContentCategories()).toPage(page)
-    }
-
-    private fun CatalogItem.toSAnime() = SAnime.create().apply {
-        url = "${media_type ?: "tv"}/$id"
-        title = this@toSAnime.name ?: this@toSAnime.title ?: id.toString()
-        thumbnail_url = poster_path?.let { toPosterUrl(it) }
-    }
-
-    private fun ShelfItem.toSAnime() = SAnime.create().apply {
-        url = "${media_type ?: "tv"}/$tmdb_id"
-        title = this@toSAnime.title ?: tmdb_id.toString()
-        thumbnail_url = poster_path?.let { toPosterUrl(it) }
-    }
-
-    private fun toPosterUrl(path: String): String = resolvePosterUrl(path, baseHost)
-
-    private fun List<CatalogItem>.toPage(page: Int): AnimesPage {
-        if (page < 1) return AnimesPage(emptyList(), false)
-        val pageItems = distinctBy { it.key }.drop((page - 1) * PAGE_SIZE).take(PAGE_SIZE)
-        return AnimesPage(pageItems.map { it.toSAnime() }, pageItems.size == PAGE_SIZE)
-    }
-
-    private fun ShelvesPayload.catalogItems(kind: String): List<CatalogItem> = listOf(animes, filmes, series)
-        .map { shelves ->
-            shelves.filter { shelf ->
-                (kind == "recent" && shelf.genre_slug == "__recent") ||
-                    (kind == "popular" && shelf.genre_slug in POPULAR_SLUGS)
-            }.flatMap { it.items }.map { it.toCatalogItem() }
-        }
-        .interleave()
-
-    private fun ShelfItem.toCatalogItem() = CatalogItem(tmdb_id, tmdb_id, media_type, title, title, poster_path, year)
-
-    private fun <T> List<List<T>>.interleave(): List<T> = buildList {
-        val largest = this@interleave.maxOfOrNull { it.size } ?: 0
-        repeat(largest) { index -> this@interleave.forEach { items -> items.getOrNull(index)?.let(::add) } }
-    }
-
-    private val CatalogItem.key get() = "${media_type ?: "tv"}/${tmdb_id ?: id}"
-
-    private suspend fun List<CatalogItem>.filterBy(categories: Set<ContentCategory>): List<CatalogItem> {
-        if (categories.size == ContentCategory.entries.size) return this
-        return coroutineScope {
-            val gate = Semaphore(6)
-            map { item ->
+    // ============================== Episodes ==============================
+    override suspend fun getEpisodeList(anime: SAnime): List<SEpisode> {
+        val ref = animeRef(anime.url)!!
+        val first = titlePage(client.get("$localeUrl/titles/${ref.id}", headers).asJsoup())
+        val loaded = first.loadedSeason
+        // The title page carries only one season's episodes; the others come from their own page.
+        val others = first.title.seasons.filter { it.number != loaded?.number && it.episodesCount > 0 }
+        val fetched = coroutineScope {
+            val gate = Semaphore(4)
+            others.map { season ->
                 async {
                     gate.withPermit {
-                        val type = item.media_type ?: "tv"
-                        val details = runCatching {
-                            client.newCall(GET("$baseUrl/api/tmdb/$type/${item.tmdb_id ?: item.id}", headers))
-                                .awaitSuccess()
-                                .parseAs<DetailsDto>()
-                        }.getOrNull() ?: return@withPermit null
-                        if (categories.any { it.matches(type, details) }) item else null
+                        titlePage(client.get("$localeUrl/titles/${ref.id}/season-${season.number}", headers).asJsoup()).loadedSeason
                     }
                 }
             }.awaitAll().filterNotNull()
         }
+        return episodeEntries(first.title.type, ref.id, listOfNotNull(loaded) + fetched).map {
+            SEpisode.create().apply {
+                url = it.url
+                name = it.name
+                episode_number = it.number
+            }
+        }
     }
 
-    private fun DetailsDto.toSAnime(path: String) = SAnime.create().apply {
-        url = path
-        title = this@toSAnime.name ?: this@toSAnime.title ?: original_name ?: original_title ?: id.toString()
-        thumbnail_url = poster_path?.let { toPosterUrl(it) }
-        description = overview
-        genre = genres.mapNotNull { it.name }.joinToString(", ")
-        status = when (state?.lowercase()) {
-            "ended", "canceled" -> SAnime.COMPLETED
+    override fun episodeListParse(response: Response): List<SEpisode> = throw UnsupportedOperationException()
+
+    override fun seasonListParse(response: Response): List<SAnime> = throw UnsupportedOperationException()
+
+    // ============================== Video ==============================
+    // Watching needs a session: log in with the account saved in the settings, open the watch page for its
+    // player url, then ask the site's play API for the signed MP4. No session or no video is an empty list.
+    override suspend fun getHosterList(episode: SEpisode): List<Hoster> {
+        val ref = episodeRef(episode.url) ?: return emptyList()
+        val episodeId = if (ref.type == "movie") null else episodeIdOf(ref) ?: return emptyList()
+        val path = watchPath(ref, episodeId)
+
+        repeat(2) { attempt ->
+            val token = watchEmbed(path)?.let(::playToken) ?: return emptyList()
+            val play = playResponse(token)
+            if (play != null) {
+                val videos = playSources(play).map {
+                    Video(videoUrl = it.src, videoTitle = sourceTitle(it), headers = headers)
+                }
+                return listOf(Hoster(hosterName = "RedeToons", videoList = videos))
+            }
+            // 401: the session ended; sign in again once and retry.
+            if (attempt == 0 && !login()) return emptyList()
+        }
+        return emptyList()
+    }
+
+    override fun hosterListRequest(episode: SEpisode): Request = throw UnsupportedOperationException()
+    override fun hosterListParse(response: Response): List<Hoster> = throw UnsupportedOperationException()
+    override fun videoUrlParse(response: Response): String = throw UnsupportedOperationException()
+
+    private suspend fun episodeIdOf(ref: EpisodeRef): Long? {
+        val season = titlePage(client.get("$localeUrl/titles/${ref.id}/season-${ref.season}", headers).asJsoup()).loadedSeason
+        return episodeIdAt(season, ref.position)
+    }
+
+    // The watch page of someone without a session is the login page, so no player url: sign in and ask again.
+    private suspend fun watchEmbed(path: String): String? {
+        repeat(2) { attempt ->
+            watchEmbedUrl(client.get(siteUrl + path, headers, FRESH).asJsoup())?.let { return it }
+            if (attempt == 0 && !login()) return null
+        }
+        return null
+    }
+
+    // Null when the play API says the session is gone (401).
+    private suspend fun playResponse(firstToken: String): PlayResponse? {
+        var token = firstToken
+        var renewed = false
+        while (true) {
+            val url = "$siteUrl/api/play".toHttpUrl().newBuilder().addPathSegment(token).build()
+            val response = client.get(url, jsonHeaders, FRESH, ensureSuccess = false)
+            when {
+                response.isSuccessful -> return response.parseAs<PlayResponse>()
+                response.code == 401 -> {
+                    response.close()
+                    return null
+                }
+                // The token is short-lived; the site renews it once.
+                response.code == 403 && !renewed -> {
+                    response.close()
+                    renewed = true
+                    token = client.post("$siteUrl/api/play/renovar", jsonHeaders, RenewRequest(token).toJsonRequestBody())
+                        .parseAs<RenewResponse>().p
+                }
+                else -> {
+                    response.close()
+                    throw HttpException(response.code)
+                }
+            }
+        }
+    }
+
+    // False when there is no account saved, the login page is not the expected one, or the site refused the account.
+    private suspend fun login(): Boolean {
+        if (!isSecureUrl(siteUrl)) return false
+        val user = preferences.getString(PREF_USER_KEY, "").orEmpty().trim()
+        val password = preferences.getString(PREF_PASS_KEY, "").orEmpty()
+        if (user.isEmpty() || password.isEmpty()) return false
+
+        val version = inertiaVersion(client.get("$siteUrl/login", headers, FRESH).asJsoup()) ?: return false
+        val loginHeaders = headersBuilder()
+            .set("Accept", "text/html, application/xhtml+xml")
+            .set("X-Requested-With", "XMLHttpRequest")
+            .set("X-Inertia", "true")
+            .set("X-Inertia-Version", version)
+            .set("Origin", siteUrl)
+            .set("Referer", "$siteUrl/login")
+            .build()
+        // The first login attempt needs no captcha: the site only asks for one after failures.
+        // It answers 409 (an Inertia redirect) when the sign-in works, so the status is not the check.
+        client.post("$siteUrl/login", loginHeaders, LoginForm(user, password, remember = false, recaptchaToken = "").toJsonRequestBody(), ensureSuccess = false).close()
+
+        return isLoggedIn(client.get(localeUrl, headers, FRESH).asJsoup())
+    }
+
+    // ============================== Mapping ==============================
+    private fun SiteTitle.toSAnime() = SAnime.create().apply {
+        url = "$type/$id"
+        title = name
+        thumbnail_url = posterUrl(siteUrl, this@toSAnime)
+    }
+
+    private fun SiteTitle.toSAnimeDetails() = toSAnime().apply {
+        description = plot
+        genre = genres.joinToString { it.name }
+        status = when {
+            type == "movie" -> SAnime.COMPLETED
+            this@toSAnimeDetails.status.equals("Ended", true) || this@toSAnimeDetails.status.equals("Canceled", true) -> SAnime.COMPLETED
             else -> SAnime.ONGOING
         }
     }
 
-    @kotlinx.serialization.Serializable data class SearchResponse(val results: List<CatalogItem> = emptyList())
-
-    private enum class ContentCategory(val key: String, val label: String) {
-        ANIMATION("animation", "Animação"),
-        MOVIES("movies", "Filmes"),
-        SERIES("series", "Séries"),
-    }
-
-    private fun ContentCategory.matches(mediaType: String, details: DetailsDto): Boolean {
-        val anime = details.genres.any { it.id == ANIMATION_GENRE_ID } &&
-            (details.original_language.equals("ja", true) || details.origin_country.any { it.equals("JP", true) })
-        return when (this) {
-            ContentCategory.ANIMATION -> anime
-            ContentCategory.MOVIES -> mediaType == "movie" && !anime
-            ContentCategory.SERIES -> mediaType == "tv" && !anime
+    // ============================== Content filter ==============================
+    private suspend fun List<SiteTitle>.filterBy(categories: Set<ContentCategory>): List<SiteTitle> {
+        if (categories.size == ContentCategory.entries.size) return this
+        return coroutineScope {
+            val gate = Semaphore(6)
+            map { title ->
+                async {
+                    gate.withPermit {
+                        // Lists do not say whether a title is Japanese; its preview does.
+                        val preview = runCatching {
+                            client.get("$siteUrl/api/titles/preview/${title.id}", headers).parseAs<SiteTitle>()
+                        }.getOrNull() ?: return@withPermit null
+                        if (categories.any { matchesCategory(it, title.type, preview) }) title else null
+                    }
+                }
+            }.awaitAll().filterNotNull()
         }
     }
 
@@ -352,160 +289,82 @@ class RedeToons :
         }
     }
 
-    companion object {
-        const val PREF_DOMAIN_KEY = "preferred_domain"
-        const val PREF_DOMAIN_TITLE = "Domínio atual (requer reinicialização da app)"
-        const val PREF_DOMAIN_DEFAULT = "https://redetoons.my/browse"
-        const val DEFAULT_BASE_URL = "https://redetoons.my"
-        const val DEFAULT_BASE_HOST = "redetoons.my"
+    // ============================== Settings ==============================
+    override fun setupPreferenceScreen(screen: PreferenceScreen) {
+        EditTextPreference(screen.context).apply {
+            key = PREF_DOMAIN_KEY
+            title = PREF_DOMAIN_TITLE
+            setDefaultValue(PREF_DOMAIN_DEFAULT)
+            summary = getDomainPrefSummary()
 
-        private const val ANIMATION_GENRE_ID = 16
-        private const val CONTENT_FILTER_KEY = "content_filter"
-        private const val PAGE_SIZE = 10
-        private val ALL_CONTENT_KEYS = ContentCategory.entries.mapTo(mutableSetOf()) { it.key }
-        private val POPULAR_SLUGS = setOf("__top10_a", "__top10_b")
-
-        fun toBaseUrl(raw: String?): String {
-            if (raw.isNullOrBlank()) return DEFAULT_BASE_URL
-            val normalized = normalizeInputUrl(raw)
-            val parsed = normalized.toHttpUrlOrNull() ?: return DEFAULT_BASE_URL
-
-            val pathSegments = parsed.pathSegments.filter { it.isNotEmpty() }
-            val newSegments = if (pathSegments.lastOrNull().equals("browse", ignoreCase = true)) {
-                pathSegments.dropLast(1)
-            } else {
-                pathSegments
-            }
-
-            val scheme = parsed.scheme
-            val host = parsed.host
-            val port = if ((scheme == "http" && parsed.port == 80) || (scheme == "https" && parsed.port == 443)) {
-                ""
-            } else {
-                ":${parsed.port}"
-            }
-            val path = if (newSegments.isEmpty()) "" else "/${newSegments.joinToString("/")}"
-            return "$scheme://$host$port$path"
-        }
-
-        fun isValidUrl(raw: String?): Boolean {
-            if (raw.isNullOrBlank()) return false
-            val trimmed = raw.trim()
-            val withScheme = if (trimmed.contains("://")) trimmed else "https://$trimmed"
-            val parsed = withScheme.toHttpUrlOrNull() ?: return false
-            return (parsed.scheme == "http" || parsed.scheme == "https") &&
-                parsed.host.isNotBlank() &&
-                !parsed.host.contains(" ")
-        }
-
-        fun normalizeInputUrl(raw: String): String {
-            val trimmed = raw.trim()
-            val withScheme = if (trimmed.contains("://")) trimmed else "https://$trimmed"
-            val parsed = withScheme.toHttpUrlOrNull() ?: return withScheme.trimEnd('/')
-            return parsed.newBuilder().build().toString().trimEnd('/')
-        }
-
-        fun resolveAnimeUrl(animeUrl: String, baseUrl: String, baseHost: String): String {
-            val clean = animeUrl.trim()
-            return when {
-                clean.startsWith("http://", ignoreCase = true) || clean.startsWith("https://", ignoreCase = true) ->
-                    clean.toRedeToonsHost(baseHost)
-                clean.startsWith("/") -> "$baseUrl$clean"
-                else -> "$baseUrl/$clean"
-            }
-        }
-
-        fun resolveAnimeDetailsEndpoint(animeUrl: String, baseUrl: String, baseHost: String): String {
-            val clean = animeUrl.trim().trimStart('/')
-            return when {
-                clean.startsWith("http://", ignoreCase = true) || clean.startsWith("https://", ignoreCase = true) -> {
-                    val rewritten = clean.toRedeToonsHost(baseHost)
-                    val parsed = rewritten.toHttpUrlOrNull()
-                    if (parsed != null && parsed.encodedPath.contains("/api/tmdb/")) {
-                        rewritten
-                    } else if (parsed != null) {
-                        val segments = parsed.pathSegments.filter { it.isNotEmpty() }
-                        "$baseUrl/api/tmdb/${segments.joinToString("/")}"
+            setOnPreferenceChangeListener { _, newValue ->
+                runCatching {
+                    val raw = (newValue as String).trim()
+                    if (raw.isBlank()) {
+                        preferences.edit().putString(key, PREF_DOMAIN_DEFAULT).commit()
+                        summary = PREF_DOMAIN_DEFAULT
+                        text = PREF_DOMAIN_DEFAULT
+                        false
+                    } else if (isValidUrl(raw)) {
+                        val normalized = normalizeInputUrl(raw)
+                        preferences.edit().putString(key, normalized).commit()
+                        summary = normalized
+                        text = normalized
+                        false
                     } else {
-                        "$baseUrl/api/tmdb/$clean"
+                        Toast.makeText(
+                            screen.context,
+                            "URL inválida. Configuração anterior mantida.",
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                        false
                     }
+                }.getOrDefault(false)
+            }
+        }.also(screen::addPreference)
+
+        EditTextPreference(screen.context).apply {
+            key = PREF_USER_KEY
+            title = "E-mail ou usuário do RedeToons"
+            summary = "O site só libera o vídeo para quem tem conta."
+            setDefaultValue("")
+        }.also(screen::addPreference)
+
+        EditTextPreference(screen.context).apply {
+            key = PREF_PASS_KEY
+            title = "Senha do RedeToons"
+            summary = "Usada só para entrar no RedeToons. Limpar o campo desconecta."
+            setDefaultValue("")
+            setOnBindEditTextListener { it.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD }
+        }.also(screen::addPreference)
+
+        MultiSelectListPreference(screen.context).apply {
+            key = CONTENT_FILTER_KEY
+            title = "Filtro de conteúdo"
+            entries = ContentCategory.entries.map { it.label }.toTypedArray()
+            entryValues = ContentCategory.entries.map { it.key }.toTypedArray()
+            setDefaultValue(ALL_CONTENT_KEYS)
+            summary = contentSummary(selectedContentCategories())
+            setOnPreferenceChangeListener { _, newValue ->
+                @Suppress("UNCHECKED_CAST")
+                val selected = normalizeContentCategories(newValue as Set<String>)
+                preferences.edit().putStringSet(CONTENT_FILTER_KEY, selected.mapTo(mutableSetOf()) { it.key }).apply()
+                summary = contentSummary(selected)
+                if (selected.size == ContentCategory.entries.size && (newValue as Set<*>).isEmpty()) {
+                    Toast.makeText(screen.context, "Selecione ao menos um tipo. Todos foram restaurados.", Toast.LENGTH_SHORT).show()
                 }
-                clean.startsWith("api/tmdb/") -> "$baseUrl/$clean"
-                else -> "$baseUrl/api/tmdb/$clean"
+                false
             }
-        }
-
-        fun resolvePosterUrl(path: String, baseHost: String): String {
-            val clean = path.trim()
-            return when {
-                clean.startsWith("http://", ignoreCase = true) || clean.startsWith("https://", ignoreCase = true) ->
-                    clean.toRedeToonsHost(baseHost)
-                clean.startsWith("/") -> "https://image.tmdb.org/t/p/w500$clean"
-                else -> "https://image.tmdb.org/t/p/w500/$clean"
-            }
-        }
-
-        fun videoHeaders(requestUrl: okhttp3.HttpUrl, baseHeaders: okhttp3.Headers): okhttp3.Headers {
-            val requestHost = requestUrl.host
-            val effectiveHost = if (!isLegacyRedeToonsHost(requestHost)) {
-                requestHost
-            } else {
-                DEFAULT_BASE_HOST
-            }
-            val effectiveScheme = requestUrl.scheme.ifBlank { "https" }
-            val referer = "$effectiveScheme://$effectiveHost/"
-            val origin = "$effectiveScheme://$effectiveHost"
-            return baseHeaders.newBuilder()
-                .set("Referer", referer)
-                .set("Origin", origin)
-                .removeAll("Accept")
-                .build()
-        }
-
-        fun isExpiredSignedUrl(url: String, currentTimeSeconds: Long = System.currentTimeMillis() / 1000): Boolean {
-            val httpUrl = url.toHttpUrlOrNull() ?: return false
-            val exp = httpUrl.queryParameter("exp")?.toLongOrNull() ?: return false
-            return exp <= (currentTimeSeconds - 10)
-        }
-
-        fun buildHosterUrl(baseUrl: String, episodeUrl: String): String {
-            val parts = episodeUrl.split('|')
-            val id = if (parts[0] == "movie") parts[1] else parts[0]
-            val query = if (parts[0] == "movie") {
-                "contract=3&tmdbId=$id&type=movie"
-            } else {
-                "contract=3&tmdbId=$id&type=tv&season=${parts[1]}&episode=${parts[2]}"
-            }
-            return "$baseUrl/api/play-link?$query"
-        }
+        }.also(screen::addPreference)
     }
-}
 
-internal fun String.toRedeToonsHost(baseHost: String): String {
-    val url = toHttpUrlOrNull() ?: return this
-    if (!isLegacyRedeToonsHost(url.host)) return this
-    return url.newBuilder().host(baseHost).build().toString()
-}
+    private fun getDomainPrefSummary(): String = preferences.getString(PREF_DOMAIN_KEY, PREF_DOMAIN_DEFAULT)?.ifBlank { PREF_DOMAIN_DEFAULT } ?: PREF_DOMAIN_DEFAULT
 
-internal fun isLegacyRedeToonsHost(host: String): Boolean {
-    val lower = host.lowercase()
-    if (lower == "redetoons.download" || lower.endsWith(".redetoons.download") ||
-        lower == "radiogaucha.fun" || lower.endsWith(".radiogaucha.fun") ||
-        lower == "8r5v1p.shop" || lower.endsWith(".8r5v1p.shop")
-    ) {
-        return false
+    companion object {
+        private const val PREF_USER_KEY = "username"
+        private const val PREF_PASS_KEY = "password"
+        private val FRESH = CacheControl.FORCE_NETWORK
+        private const val CONTENT_FILTER_KEY = "content_filter"
+        private val ALL_CONTENT_KEYS = ContentCategory.entries.mapTo(mutableSetOf()) { it.key }
     }
-    return lower == "redetoons.win" || lower == "www.redetoons.win" ||
-        lower == "redetoonstv.win" || lower == "www.redetoonstv.win" ||
-        lower.endsWith(".redetoons.win") || lower.endsWith(".redetoonstv.win") ||
-        lower == "redetoons.gay" || lower == "www.redetoons.gay" ||
-        lower.endsWith(".redetoons.gay") ||
-        lower == "redetoons.icu" || lower == "www.redetoons.icu" ||
-        lower.endsWith(".redetoons.icu") ||
-        lower == "redetoons.bond" || lower == "www.redetoons.bond" ||
-        lower.endsWith(".redetoons.bond") ||
-        lower == "redetoons.beer" || lower == "www.redetoons.beer" ||
-        lower.endsWith(".redetoons.beer") ||
-        lower == "redetoons.my" || lower == "www.redetoons.my" ||
-        lower.endsWith(".redetoons.my")
 }
