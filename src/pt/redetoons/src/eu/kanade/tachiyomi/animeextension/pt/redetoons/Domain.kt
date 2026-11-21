@@ -51,11 +51,13 @@ fun normalizeInputUrl(raw: String): String {
 }
 
 // redetoons.my (the old default) and redetoons.gay now redirect to or stand for the current site.
-private val retiredHosts = setOf("redetoons.my", "www.redetoons.my", "redetoons.gay", "www.redetoons.gay")
+// Every domain the extension has used before, with their subdomains: they are dead or someone else's now,
+// and a stored one must not receive the account.
+private val retiredHosts = setOf("redetoons.my", "redetoons.gay", "redetoons.win", "redetoonstv.win", "redetoons.icu", "redetoons.bond", "redetoons.beer")
 
 // The stored domain the source should use: a blank preference or a retired domain falls back to the default.
 fun resolveBaseUrl(stored: String?): String {
     val url = toBaseUrl(stored)
     val host = url.toHttpUrlOrNull()?.host.orEmpty().lowercase()
-    return if (host in retiredHosts) DEFAULT_BASE_URL else url
+    return if (retiredHosts.any { host == it || host.endsWith(".$it") }) DEFAULT_BASE_URL else url
 }

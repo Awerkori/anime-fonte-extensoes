@@ -93,11 +93,21 @@ class RedeToonsTest {
         assertEquals("https://redetoons.li", resolveBaseUrl("https://redetoons.gay/browse"))
     }
 
+    // Every domain the extension ever used is dead or someone else's by now: the account must not follow a stored one.
+    @Test
+    fun everyDomainTheExtensionUsedBeforeFallsBackToTheDefault() {
+        for (host in listOf("redetoons.my", "redetoons.gay", "redetoons.win", "redetoonstv.win", "redetoons.icu", "redetoons.bond", "redetoons.beer")) {
+            assertEquals(host, "https://redetoons.li", resolveBaseUrl("https://$host"))
+            assertEquals(host, "https://redetoons.li", resolveBaseUrl("www.$host/browse"))
+            assertEquals(host, "https://redetoons.li", resolveBaseUrl("https://sub.$host"))
+        }
+    }
+
     @Test
     fun testResolveBaseUrlKeepsADomainTheUserChose() {
         assertEquals("https://redetoons.li", resolveBaseUrl("https://redetoons.li/browse"))
         assertEquals("https://proxy.example.com/sub", resolveBaseUrl("https://proxy.example.com/sub/browse"))
-        assertEquals("https://redetoons.win", resolveBaseUrl("https://redetoons.win"))
+        assertEquals("https://mirror.example.org", resolveBaseUrl("https://mirror.example.org"))
     }
 
     // the account goes in the login form: never over plain http, even if the user typed an http domain

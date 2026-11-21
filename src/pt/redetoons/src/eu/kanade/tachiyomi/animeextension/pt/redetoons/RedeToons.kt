@@ -333,7 +333,7 @@ class RedeToons :
         EditTextPreference(screen.context).apply {
             key = PREF_PASS_KEY
             title = "Senha do RedeToons"
-            summary = "Usada só para entrar no RedeToons. Limpar o campo desconecta."
+            summary = "Usada só para entrar no RedeToons, no domínio configurado acima. Limpar o campo desconecta."
             setDefaultValue("")
             setOnBindEditTextListener { it.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD }
         }.also(screen::addPreference)
