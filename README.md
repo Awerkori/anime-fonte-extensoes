@@ -10,8 +10,8 @@
 
 > [!IMPORTANT]
 > **Quer apenas instalar as extensões para assistir no seu aplicativo?**
-> Este repositório guarda somente o **código-fonte** usado por desenvolvedores. As extensões prontas para instalar ficam em outro repositório:
-> [**Project Nox · Extensões de Anime (`anime-extensoes`)**](https://github.com/ProjectNox-org/anime-extensoes)
+> Você **não precisa baixar este repositório** — ele guarda apenas o código-fonte usado por desenvolvedores. As extensões prontas para instalar ficam no repositório oficial de distribuição:
+> [**Project Nox · Extensões de Anime**](https://github.com/ProjectNox-org/anime-extensoes) (`anime-extensoes`)
 >
 > Para pedir uma extensão nova ou relatar um problema, use a [Central de Pedidos](https://github.com/ProjectNox-org/project-nox-requests) e acompanhe no [Tracker](https://projectnox-org.github.io/project-nox-tracker/).
 
