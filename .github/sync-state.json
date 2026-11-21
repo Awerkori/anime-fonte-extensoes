@@ -1,21 +1,10 @@
 {
-  "upstream_sha": "db62e25e7b7954b67a1ca45556ceeed46b283842",
+  "upstream_sha": "7690eae6870c4d54aa1ee8b9a644f824ee75b776",
+  "last_validated_upstream_sha": "7690eae6870c4d54aa1ee8b9a644f824ee75b776",
   "upstream_branch": "master",
-  "synced_at": "2026-11-18T18:06:59.697694+00:00",
-  "base_sha": "81898d5beb9f95251f244c6b5087d21e33b2176c",
-  "sync_status": "BLOCKED_DETERMINISTIC",
-  "blocked_candidate": {
-    "upstream_sha": "7690eae6870c4d54aa1ee8b9a644f824ee75b776",
-    "code_sha": "e193dda06d4027c6757fa7d4b37ab983ae18d059",
-    "failure_type": "BLOCKED_STRUCTURAL",
-    "cause": "Gradle preflight validation failed on extensions-lib: onfiguration4'.\n   > Could not resolve all files for configuration ':extensions-lib:releaseCompileClasspath'.\n      > Could not find nanohttpd-2.3.1.jar (org.nanohttpd:nanohttpd:2.3.1).\n        Searched in the following locations:\n            https://repo.maven.apache.org/maven2/org/nanohttpd/nanohttpd/2.3.1/nanohttpd-2.3.1.jar\n\n* Try:\n> Run with --stacktrace option to get the stack trace.\n> Run with --info or --debug option to get more log output.\n> Run with --scan to get full insights from a Build Scan (powered by Develocity).\n> Get more help at https://help.gradle.org.\n\nBUILD FAILED in 50s\n",
-    "failed_units": [
-      "extensions-lib"
-    ],
-    "signature": "a4100e70954afdb2cc248b18bb5e0db23cab3261374ff828d8afe619e4e6f04d",
-    "recorded_at": "2026-11-19T07:45:30.471922+00:00",
-    "skip_count": 0
-  },
-  "publication_block": null,
-  "last_validated_upstream_sha": "db62e25e7b7954b67a1ca45556ceeed46b283842"
+  "synced_at": "2026-11-21T01:56:16.461243+00:00",
+  "base_sha": "db62e25e7b7954b67a1ca45556ceeed46b283842",
+  "sync_status": "VALIDATED",
+  "blocked_candidate": null,
+  "publication_block": null
 }
