@@ -1,10 +1,12 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/ProjectNox-org/.github/main/assets/brand/nox-emblem.webp" alt="Emblema oficial do Project Nox" width="80" height="80">
+  <img src="https://raw.githubusercontent.com/ProjectNox-org/.github/main/assets/brand/nox-emblem.webp" alt="Emblema oficial do Project Nox" width="96" />
 </p>
 
-# Project Nox · Código-fonte das Extensões de Anime
+<h1 align="center">Project Nox · Código-fonte das Extensões de Anime</h1>
 
-Código-fonte em Kotlin, extractors de vídeo e automação de compilação das extensões de anime do **Project Nox** para **Aniyomi, Anikku e forks**.
+<p align="center">
+  Código-fonte em Kotlin, parsers e extractors para <strong>Aniyomi, Anikku e forks</strong> (base Yūzōnō / Aniyomi).
+</p>
 
 > [!IMPORTANT]
 > **Quer apenas instalar as extensões para assistir no seu aplicativo?**
